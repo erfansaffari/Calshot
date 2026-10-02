@@ -1,0 +1,361 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A30000000000000000000001 /* CalshotApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* CalshotApp.swift */; };
+		A30000000000000000000002 /* EventDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* EventDraft.swift */; };
+		A30000000000000000000003 /* EventDraftParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* EventDraftParser.swift */; };
+		A30000000000000000000004 /* EventDraftExtractionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* EventDraftExtractionService.swift */; };
+		A30000000000000000000005 /* ScreenTextRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* ScreenTextRecognizer.swift */; };
+		A30000000000000000000006 /* CalendarDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* CalendarDestination.swift */; };
+		A30000000000000000000007 /* EventKitCalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* EventKitCalendarService.swift */; };
+		A30000000000000000000008 /* GoogleCalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* GoogleCalendarService.swift */; };
+		A30000000000000000000009 /* EventDraftParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* EventDraftParserTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A40000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000000000000000000002;
+			remoteInfo = Calshot;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* CalshotApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalshotApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* EventDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDraft.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* EventDraftParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDraftParser.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* EventDraftExtractionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDraftExtractionService.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* ScreenTextRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenTextRecognizer.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 /* CalendarDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarDestination.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 /* EventKitCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitCalendarService.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* GoogleCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleCalendarService.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* EventDraftParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDraftParserTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000000A /* Calshot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Calshot.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000000B /* CalshotTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CalshotTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A50000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A50000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A10000000000000000000003 = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000004 /* . */,
+				A10000000000000000000005 /* Core */,
+				A10000000000000000000006 /* Calendar */,
+				A10000000000000000000007 /* CoreTests */,
+				A10000000000000000000008 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A10000000000000000000004 /* . */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* CalshotApp.swift */,
+			);
+			path = .;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000005 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000002 /* EventDraft.swift */,
+				A20000000000000000000003 /* EventDraftParser.swift */,
+				A20000000000000000000004 /* EventDraftExtractionService.swift */,
+				A20000000000000000000005 /* ScreenTextRecognizer.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000006 /* Calendar */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000006 /* CalendarDestination.swift */,
+				A20000000000000000000007 /* EventKitCalendarService.swift */,
+				A20000000000000000000008 /* GoogleCalendarService.swift */,
+			);
+			path = Calendar;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000007 /* CoreTests */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000009 /* EventDraftParserTests.swift */,
+			);
+			path = CoreTests;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000008 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000A /* Calshot.app */,
+				A2000000000000000000000B /* CalshotTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A10000000000000000000002 /* Calshot */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A90000000000000000000001 /* Build configuration list for PBXNativeTarget "Calshot" */;
+			buildPhases = (
+				A60000000000000000000001 /* Sources */,
+				A50000000000000000000001 /* Frameworks */,
+				A70000000000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Calshot;
+			productName = Calshot;
+			productReference = A2000000000000000000000A /* Calshot.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A10000000000000000000009 /* CalshotTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A90000000000000000000002 /* Build configuration list for PBXNativeTarget "CalshotTests" */;
+			buildPhases = (
+				A60000000000000000000002 /* Sources */,
+				A50000000000000000000002 /* Frameworks */,
+				A70000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A40000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = CalshotTests;
+			productName = CalshotTests;
+			productReference = A2000000000000000000000B /* CalshotTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A10000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					A10000000000000000000002 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					A10000000000000000000009 = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = A10000000000000000000002;
+					};
+				};
+			};
+			buildConfigurationList = A90000000000000000000003 /* Build configuration list for PBXProject "Calshot" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A10000000000000000000003;
+			productRefGroup = A10000000000000000000008 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A10000000000000000000002 /* Calshot */,
+				A10000000000000000000009 /* CalshotTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A70000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A70000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A60000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A30000000000000000000001 /* CalshotApp.swift in Sources */,
+				A30000000000000000000002 /* EventDraft.swift in Sources */,
+				A30000000000000000000003 /* EventDraftParser.swift in Sources */,
+				A30000000000000000000004 /* EventDraftExtractionService.swift in Sources */,
+				A30000000000000000000005 /* ScreenTextRecognizer.swift in Sources */,
+				A30000000000000000000006 /* CalendarDestination.swift in Sources */,
+				A30000000000000000000007 /* EventKitCalendarService.swift in Sources */,
+				A30000000000000000000008 /* GoogleCalendarService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A60000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A30000000000000000000009 /* EventDraftParserTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A40000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000000000000000000002 /* Calshot */;
+			targetProxy = A40000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A80000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8A699Y7VPU;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.calshot.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A80000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8A699Y7VPU;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.calshot.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A80000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.calshot.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Calshot.app/Contents/MacOS/Calshot";
+			};
+			name = Debug;
+		};
+		A80000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.calshot.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Calshot.app/Contents/MacOS/Calshot";
+			};
+			name = Release;
+		};
+		A80000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A80000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A90000000000000000000001 /* Build configuration list for PBXNativeTarget "Calshot" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000001 /* Debug */,
+				A80000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A90000000000000000000002 /* Build configuration list for PBXNativeTarget "CalshotTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000003 /* Debug */,
+				A80000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A90000000000000000000003 /* Build configuration list for PBXProject "Calshot" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000005 /* Debug */,
+				A80000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A10000000000000000000001 /* Project object */;
+}
