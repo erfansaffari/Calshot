@@ -55,7 +55,10 @@ final class RegionSelectionOverlay: NSObject {
         panel.backgroundColor = .black
         panel.hasShadow = false
         panel.level = .screenSaver
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // Attach the selector to the desktop where the shortcut was invoked.
+        // Joining every Space can leave this overlay associated with Calshot's
+        // previous desktop, while stationary keeps it from following the active one.
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
         panel.ignoresMouseEvents = false
         panel.contentView = selector
         window = panel

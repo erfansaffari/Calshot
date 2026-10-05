@@ -79,6 +79,7 @@ final class CalshotModel: ObservableObject {
     private let memoryStore = MemoryStore.shared
     private var currentMemoryRecordID: UUID?
     private var currentCaptureSessionID: UUID?
+    private var shortcutSuspendedForSelection = false
 
     init() {
         hasOpenAIAPIKey = (try? OpenAIAPIKeyStore.load()) != nil
@@ -195,6 +196,7 @@ final class CalshotModel: ObservableObject {
     }
 
     func capture() async {
+        guard selectionOverlay == nil, !isCapturing, !isRecognizing, !isSaving else { return }
         let captureSessionID = UUID()
         currentCaptureSessionID = captureSessionID
         isCapturing = true
@@ -213,12 +215,17 @@ final class CalshotModel: ObservableObject {
             isCapturing = false
             let overlay = RegionSelectionOverlay(image: capture.image, screen: capture.screen) { [weak self] result in
                 guard let self else { return }
-                guard self.currentCaptureSessionID == captureSessionID else { return }
+                guard self.currentCaptureSessionID == captureSessionID else {
+                    self.resumeShortcutAfterSelection()
+                    return
+                }
                 self.selectionOverlay = nil
                 switch result {
                 case .success(let selectedImage):
+                    self.isRecognizing = true
                     Task { await self.analyze(selectedImage, sessionID: captureSessionID) }
                 case .failure(.cancelled):
+                    self.resumeShortcutAfterSelection()
                     self.currentCaptureSessionID = nil
                     self.image = nil
                     self.draft = nil
@@ -226,11 +233,13 @@ final class CalshotModel: ObservableObject {
                     self.isCapturing = false
                     self.showNotchLauncher()
                 case .failure(let error):
+                    self.resumeShortcutAfterSelection()
                     self.status = error.localizedDescription
                     self.openPanel()
                 }
             }
             selectionOverlay = overlay
+            suspendShortcutForSelection()
             overlay.show()
         } catch {
             isCapturing = false
@@ -247,6 +256,18 @@ final class CalshotModel: ObservableObject {
             }
             openPanel()
         }
+    }
+
+    private func suspendShortcutForSelection() {
+        guard !shortcutSuspendedForSelection else { return }
+        shortcutSuspendedForSelection = true
+        HotKeyController.shared.unregister()
+    }
+
+    private func resumeShortcutAfterSelection() {
+        guard shortcutSuspendedForSelection else { return }
+        shortcutSuspendedForSelection = false
+        if !isRecordingShortcut { registerShortcut() }
     }
 
     private func analyze(_ cgImage: CGImage, sessionID: UUID) async {
@@ -332,6 +353,7 @@ final class CalshotModel: ObservableObject {
             }
         }
         isRecognizing = false
+        resumeShortcutAfterSelection()
     }
 
     func saveOpenAIAPIKey(_ key: String) throws {
@@ -361,6 +383,7 @@ final class CalshotModel: ObservableObject {
         currentCaptureSessionID = nil
         selectionOverlay?.cancel()
         selectionOverlay = nil
+        resumeShortcutAfterSelection()
         if saveMessage?.hasPrefix("Added") != true, let currentMemoryRecordID {
             try? memoryStore.deleteRecord(id: currentMemoryRecordID)
             refreshMemory()
