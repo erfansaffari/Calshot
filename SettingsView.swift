@@ -8,14 +8,15 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     var onClose: (() -> Void)?
 
     init(model: CalshotModel) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 620),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         super.init()
         window.title = "Calshot Settings"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 680, height: 520)
-        window.level = .statusBar
+        window.minSize = NSSize(width: 760, height: 560)
+        window.level = .normal
+        window.appearance = NSAppearance(named: .darkAqua)
         window.delegate = self
         window.center()
         window.contentView = NSHostingView(rootView: SettingsView(model: model))
@@ -38,15 +39,30 @@ struct SettingsView: View {
     @State private var isRecordingShortcut = false
     @State private var selectedRecord: MemoryCaptureRecord?
     @State private var showingDeleteAll = false
+    @State private var selectedSection: SettingsSection = .general
 
     var body: some View {
-        TabView {
-            generalTab.tabItem { Label("General", systemImage: "keyboard") }
-            aiTab.tabItem { Label("AI & OCR", systemImage: "sparkles") }
-            memoryTab.tabItem { Label("Memory", systemImage: "clock.arrow.circlepath") }
+        HStack(spacing: 0) {
+            sidebar
+                .frame(width: 196)
+            Rectangle().fill(.white.opacity(0.08)).frame(width: 1)
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(selectedSection.title)
+                        .font(.system(size: 23, weight: .semibold))
+                    Text(selectedSection.subtitle)
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                sectionContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 28)
+            .padding(.bottom, 20)
         }
-        .padding(20)
-        .frame(minWidth: 680, minHeight: 520)
+        .background(Color(red: 0.075, green: 0.08, blue: 0.10))
+        .frame(minWidth: 760, minHeight: 560)
+        .preferredColorScheme(.dark)
         .onAppear { model.refreshMemory() }
         .sheet(item: $selectedRecord) { record in
             MemoryRecordDetail(model: model, record: record)
@@ -57,6 +73,58 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This permanently removes Calshot’s local history from this Mac. It does not remove events from your calendar.")
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 10) {
+                Image("CalshotMark").resizable().scaledToFit().padding(5)
+                    .frame(width: 34, height: 34)
+                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Calshot").font(.system(size: 14, weight: .semibold))
+                    Text("Settings").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+            VStack(spacing: 4) {
+                ForEach(SettingsSection.allCases) { section in
+                    Button { selectedSection = section } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: section.symbol)
+                                .font(.system(size: 13, weight: .medium))
+                                .frame(width: 18)
+                            Text(section.title).font(.system(size: 12, weight: .medium))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(selectedSection == section ? .white : .white.opacity(0.65))
+                        .padding(.horizontal, 11)
+                        .frame(height: 38)
+                        .background(selectedSection == section ? .white.opacity(0.11) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Spacer()
+            HStack(spacing: 7) {
+                Circle().fill(.green).frame(width: 6, height: 6)
+                Text("Ready").font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            .padding(.leading, 11)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 25)
+        .padding(.bottom, 20)
+        .frame(maxHeight: .infinity)
+        .background(Color.black.opacity(0.18))
+    }
+
+    @ViewBuilder private var sectionContent: some View {
+        switch selectedSection {
+        case .general: generalTab
+        case .ai: aiTab
+        case .memory: memoryTab
         }
     }
 
@@ -226,6 +294,35 @@ struct SettingsView: View {
             }
         }
         .padding(.top, 10)
+    }
+}
+
+private enum SettingsSection: String, CaseIterable, Identifiable {
+    case general
+    case ai
+    case memory
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .ai: "AI & OCR"
+        case .memory: "Memory"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .general: "Capture behavior and privacy"
+        case .ai: "Choose how Calshot reads a selection"
+        case .memory: "Browse and manage saved captures"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .general: "slider.horizontal.3"
+        case .ai: "sparkles"
+        case .memory: "clock.arrow.circlepath"
+        }
     }
 }
 

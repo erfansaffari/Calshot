@@ -26,14 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.registerShortcut()
 
-        // Show the review panel when the app opens from Xcode, the Dock, or Finder.
+        // Start with Calshot's compact notch launcher. The review opens after capture.
         DispatchQueue.main.async { [weak self] in
-            self?.model.openPanel()
+            self?.model.showNotchLauncher()
         }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        if !hasVisibleWindows { model.openPanel() }
+        if !hasVisibleWindows { model.showNotchLauncher() }
         return true
     }
 
@@ -49,6 +49,7 @@ final class CalshotModel: ObservableObject {
     @Published var screenCapturePermissionNeeded = false
     @Published var panelController: ReviewPanelController?
     @Published var settingsWindowController: SettingsWindowController?
+    @Published var notchLauncherController: NotchLauncherController?
     @Published var selectionOverlay: RegionSelectionOverlay?
     @Published var destinations: [CalendarDestinationInfo] = []
     @Published var selectedCalendarID: String?
@@ -84,8 +85,16 @@ final class CalshotModel: ObservableObject {
     }
 
     func openPanel() {
+        notchLauncherController?.hide()
         if panelController == nil { panelController = ReviewPanelController(model: self) }
         panelController?.show()
+    }
+
+    func showNotchLauncher() {
+        if notchLauncherController == nil {
+            notchLauncherController = NotchLauncherController(model: self)
+        }
+        notchLauncherController?.show()
     }
 
     func openSettings() {
@@ -99,7 +108,7 @@ final class CalshotModel: ObservableObject {
     }
 
     func settingsDidClose() {
-        openPanel()
+        showNotchLauncher()
     }
 
     func registerShortcut() {
@@ -197,6 +206,7 @@ final class CalshotModel: ObservableObject {
         draft = nil
         currentMemoryRecordID = nil
         panelController?.hide()
+        notchLauncherController?.hide()
         try? await Task.sleep(nanoseconds: 120_000_000)
         do {
             let capture = try await ScreenCaptureService.captureMainDisplayWithScreen()
@@ -214,6 +224,7 @@ final class CalshotModel: ObservableObject {
                     self.draft = nil
                     self.status = nil
                     self.isCapturing = false
+                    self.showNotchLauncher()
                 case .failure(let error):
                     self.status = error.localizedDescription
                     self.openPanel()
@@ -343,6 +354,7 @@ final class CalshotModel: ObservableObject {
     func dismiss() {
         panelController?.close()
         panelController = nil
+        showNotchLauncher()
     }
 
     func cancelReview() {
@@ -408,7 +420,7 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 11) {
-                Image(systemName: "viewfinder").font(.system(size: 20, weight: .semibold)).foregroundStyle(.white)
+                Image("CalshotMark").resizable().scaledToFit().padding(6)
                     .frame(width: 40, height: 40).background(LinearGradient(colors: [.indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Calshot").font(.system(size: 15, weight: .semibold))
@@ -443,6 +455,12 @@ struct MenuBarView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
+            Button { model.showNotchLauncher() } label: {
+                Label("Show notch launcher", systemImage: "capsule.portrait")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
             HStack(spacing: 7) {
                 Circle().fill(model.openAIAnalysisEnabled ? .orange : .green).frame(width: 6, height: 6)
                 Text(model.openAIAnalysisEnabled ? "OpenAI analysis · selected region sent online" : "Private by design · processed on your Mac")
@@ -452,11 +470,106 @@ struct MenuBarView: View {
     }
 }
 
+@MainActor
+final class NotchLauncherController {
+    private let panel: NSPanel
+
+    init(model: CalshotModel) {
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 238, height: 46),
+                        styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        panel.isFloatingPanel = true
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .stationary]
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.isMovableByWindowBackground = true
+        panel.hidesOnDeactivate = false
+        panel.contentView = NSHostingView(rootView: NotchLauncherView(model: model, close: { [weak panel] in
+            panel?.orderOut(nil)
+        }))
+        position(on: NSScreen.main)
+    }
+
+    func show() {
+        position(on: NSScreen.main)
+        panel.orderFrontRegardless()
+    }
+
+    func hide() { panel.orderOut(nil) }
+
+    private func position(on screen: NSScreen?) {
+        guard let screen else { panel.center(); return }
+        let size = panel.frame.size
+        let notchDepth = screen.safeAreaInsets.top
+        let y = notchDepth > 0
+            ? screen.frame.maxY - size.height + 8
+            : screen.visibleFrame.maxY - size.height - 6
+        panel.setFrameOrigin(NSPoint(x: screen.frame.midX - size.width / 2, y: y))
+    }
+}
+
+private struct NotchLauncherView: View {
+    @ObservedObject var model: CalshotModel
+    let close: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button { Task { await model.capture() } } label: {
+                Image("CalshotMark")
+                    .resizable().scaledToFit().padding(5)
+                    .frame(width: 29, height: 29)
+                    .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
+            }
+            .buttonStyle(.plain)
+            .help("Select an event region · \(model.shortcut.label)")
+
+            Button { Task { await model.capture() } } label: {
+                HStack(spacing: 5) {
+                    Text("Capture").font(.system(size: 11, weight: .semibold))
+                    Text(model.shortcut.label).font(.system(size: 9, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Select an event region")
+
+            Spacer(minLength: 0)
+
+            Button { model.openSettings() } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 25, height: 25)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
+
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.54))
+                    .frame(width: 21, height: 21)
+                    .background(Color.white.opacity(0.08), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Hide Calshot")
+        }
+        .padding(.horizontal, 8)
+        .frame(width: 238, height: 46)
+        .background(Color(red: 0.035, green: 0.04, blue: 0.055), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).strokeBorder(.white.opacity(0.11), lineWidth: 1))
+        .preferredColorScheme(.dark)
+    }
+}
+
 final class ReviewPanelController {
     private let panel: NSPanel
     init(model: CalshotModel) {
         let view = ReviewPanelView(model: model)
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 660), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 620), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         panel.title = "Calshot"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
@@ -515,16 +628,17 @@ struct ReviewPanelView: View {
             }
             footer
         }
-        .frame(width: 480, height: 660)
-        .background(.regularMaterial)
+        .frame(width: 440, height: 620)
+        .background(Color(red: 0.075, green: 0.08, blue: 0.10))
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(0.28), lineWidth: 1))
-        .preferredColorScheme(nil)
+        .preferredColorScheme(.dark)
     }
 
     private var header: some View {
         HStack(spacing: 10) {
-            Image(systemName: "viewfinder").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).frame(width: 30, height: 30).background(.indigo.gradient, in: RoundedRectangle(cornerRadius: 9))
+            Image("CalshotMark").resizable().scaledToFit().padding(5).frame(width: 32, height: 32)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Calshot").font(.system(size: 13, weight: .semibold))
                 Text(model.draft == nil ? "Screen capture" : model.analyzedWithOpenAI ? "OpenAI event review" : "On-device event review")
@@ -691,7 +805,7 @@ struct ReviewPanelView: View {
             } else {
                 Button { Task { await model.capture() } } label: { Label("Select a region", systemImage: "camera.viewfinder").font(.system(size: 12, weight: .semibold)).frame(width: 150, height: 38) }.buttonStyle(.plain).foregroundStyle(.white).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 11))
             }
-        }.padding(.horizontal, 19).padding(.vertical, 14).background(.ultraThinMaterial)
+        }.padding(.horizontal, 19).padding(.vertical, 14).background(Color.black.opacity(0.24))
     }
 
     private var isDraftReadyToSave: Bool {
