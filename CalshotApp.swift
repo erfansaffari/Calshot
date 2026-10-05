@@ -21,10 +21,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = CalshotModel()
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        HotKeyController.shared.onPress = {
-            DispatchQueue.main.async { (NSApp.delegate as? AppDelegate)?.capture() }
+        HotKeyController.shared.onPress = { [weak model = self.model] in
+            Task { @MainActor in await model?.capture() }
         }
-        HotKeyController.shared.register()
+        model.registerShortcut()
 
         // Show the review panel when the app opens from Xcode, the Dock, or Finder.
         DispatchQueue.main.async { [weak self] in
@@ -37,13 +37,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    func capture() {
-        NotificationCenter.default.post(name: .calshotCaptureRequested, object: nil)
-    }
-}
-
-extension Notification.Name {
-    static let calshotCaptureRequested = Notification.Name("CalshotCaptureRequested")
 }
 
 @MainActor
@@ -55,6 +48,8 @@ final class CalshotModel: ObservableObject {
     @Published var status: String?
     @Published var screenCapturePermissionNeeded = false
     @Published var panelController: ReviewPanelController?
+    @Published var settingsWindowController: SettingsWindowController?
+    @Published var selectionOverlay: RegionSelectionOverlay?
     @Published var destinations: [CalendarDestinationInfo] = []
     @Published var selectedCalendarID: String?
     @Published var isSaving = false
@@ -64,24 +59,135 @@ final class CalshotModel: ObservableObject {
         didSet { UserDefaults.standard.set(openAIAnalysisEnabled, forKey: "openAIAnalysisEnabled") }
     }
     @Published var analyzedWithOpenAI = false
+    @Published var shortcut: GlobalShortcut = CalshotModel.loadShortcut() {
+        didSet {
+            if let data = try? JSONEncoder().encode(shortcut) {
+                UserDefaults.standard.set(data, forKey: "globalShortcut")
+            }
+            if !isRecordingShortcut { registerShortcut() }
+        }
+    }
+    @Published var shortcutRegistrationStatus: OSStatus = -1
+    @Published var isRecordingShortcut = false
+    @Published var memoryRecords: [MemoryCaptureRecord] = []
+    @Published var memoryLocationMessage: String?
+    @Published var lastAnalysisProvider: String?
+    @Published var lastOCRStatus = "No OCR run yet"
+    @Published var lastCaptureSummary = "No capture yet"
     private let calendarService = EventKitCalendarService()
-    private var observer: NSObjectProtocol?
+    private let memoryStore = MemoryStore.shared
+    private var currentMemoryRecordID: UUID?
+    private var currentCaptureSessionID: UUID?
 
     init() {
         hasOpenAIAPIKey = (try? OpenAIAPIKeyStore.load()) != nil
-        observer = NotificationCenter.default.addObserver(forName: .calshotCaptureRequested, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in await self?.capture() }
-        }
     }
-
-    deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
 
     func openPanel() {
         if panelController == nil { panelController = ReviewPanelController(model: self) }
         panelController?.show()
     }
 
+    func openSettings() {
+        panelController?.hide()
+        if settingsWindowController == nil {
+            let controller = SettingsWindowController(model: self)
+            controller.onClose = { [weak self] in self?.settingsDidClose() }
+            settingsWindowController = controller
+        }
+        settingsWindowController?.show()
+    }
+
+    func settingsDidClose() {
+        openPanel()
+    }
+
+    func registerShortcut() {
+        shortcutRegistrationStatus = HotKeyController.shared.register(shortcut)
+    }
+
+    func setShortcutRecording(_ recording: Bool) {
+        guard isRecordingShortcut != recording else { return }
+        isRecordingShortcut = recording
+        if recording {
+            HotKeyController.shared.unregister()
+        } else {
+            registerShortcut()
+        }
+    }
+
+    func updateShortcut(_ newShortcut: GlobalShortcut) {
+        shortcut = newShortcut
+    }
+
+    func testOpenAIConnection(using draftKey: String? = nil) async throws -> String {
+        let key = draftKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? draftKey : try OpenAIAPIKeyStore.load()
+        guard let key else { throw OpenAIEventAnalyzer.AnalyzerError.apiError(statusCode: 0, message: "Save an API key first.") }
+        return try await OpenAIEventAnalyzer.testConnection(apiKey: key)
+    }
+
+    func refreshMemory() { memoryRecords = memoryStore.listRecords() }
+
+    var memoryDirectoryURL: URL { memoryStore.locationURL }
+
+    func revealMemoryFolder() {
+        do {
+            try FileManager.default.createDirectory(at: memoryStore.locationURL,
+                                                    withIntermediateDirectories: true)
+            NSWorkspace.shared.activateFileViewerSelecting([memoryStore.locationURL])
+            memoryLocationMessage = nil
+        } catch {
+            memoryLocationMessage = "Couldn’t open the Memory folder: \(error.localizedDescription)"
+        }
+    }
+
+    func chooseMemoryLocation() {
+        let picker = NSOpenPanel()
+        picker.title = "Choose a folder for Calshot Memory"
+        picker.message = "Calshot will create a Calshot/Memory folder here and move your capture history into it."
+        picker.prompt = "Choose Folder"
+        picker.canChooseFiles = false
+        picker.canChooseDirectories = true
+        picker.canCreateDirectories = true
+        picker.allowsMultipleSelection = false
+        picker.begin { [weak self] response in
+            guard response == .OK, let parent = picker.url else { return }
+            Task { @MainActor in self?.moveMemory(toParentFolder: parent) }
+        }
+    }
+
+    private func moveMemory(toParentFolder parent: URL) {
+        let destination = parent.appendingPathComponent("Calshot", isDirectory: true)
+            .appendingPathComponent("Memory", isDirectory: true)
+        do {
+            try memoryStore.move(to: destination)
+            refreshMemory()
+            memoryLocationMessage = "Memory moved to \(destination.path)"
+        } catch {
+            memoryLocationMessage = "Couldn’t move Memory: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteMemoryRecord(_ id: UUID) {
+        do { try memoryStore.deleteRecord(id: id); refreshMemory() }
+        catch { status = "Couldn’t delete capture history: \(error.localizedDescription)" }
+    }
+
+    func deleteAllMemory() {
+        do { try memoryStore.deleteAll(); refreshMemory() }
+        catch { status = "Couldn’t clear capture history: \(error.localizedDescription)" }
+    }
+
+    private static func loadShortcut() -> GlobalShortcut {
+        guard let data = UserDefaults.standard.data(forKey: "globalShortcut"),
+              let shortcut = try? JSONDecoder().decode(GlobalShortcut.self, from: data) else { return .default }
+        return shortcut
+    }
+
     func capture() async {
+        let captureSessionID = UUID()
+        currentCaptureSessionID = captureSessionID
         isCapturing = true
         status = nil
         analyzedWithOpenAI = false
@@ -89,69 +195,35 @@ final class CalshotModel: ObservableObject {
         saveMessage = nil
         image = nil
         draft = nil
+        currentMemoryRecordID = nil
         panelController?.hide()
         try? await Task.sleep(nanoseconds: 120_000_000)
         do {
-            let cgImage = try await ScreenCaptureService.captureMainDisplay()
-            image = NSImage(cgImage: cgImage, size: .zero)
+            let capture = try await ScreenCaptureService.captureMainDisplayWithScreen()
             isCapturing = false
-            openPanel()
-            isRecognizing = true
-            var candidates: [EventDraft]
-            var fallbackStatus: String?
-            let apiKey = try? OpenAIAPIKeyStore.load()
-            if openAIAnalysisEnabled, let apiKey {
-                analyzedWithOpenAI = true
-                status = "Analyzing screenshot with OpenAI…"
-                do {
-                    candidates = try await OpenAIEventAnalyzer.analyze(
-                        image: cgImage, apiKey: apiKey, referenceDate: .now,
-                        timeZone: .current, locale: .current
-                    )
-                } catch {
-                    analyzedWithOpenAI = false
-                    fallbackStatus = "OpenAI analysis failed; used on-device analysis. \(error.localizedDescription)"
-                    let text = try await ScreenTextRecognizer.recognize(in: cgImage)
-                    candidates = await EventDraftExtractionService.extract(text)
+            let overlay = RegionSelectionOverlay(image: capture.image, screen: capture.screen) { [weak self] result in
+                guard let self else { return }
+                guard self.currentCaptureSessionID == captureSessionID else { return }
+                self.selectionOverlay = nil
+                switch result {
+                case .success(let selectedImage):
+                    Task { await self.analyze(selectedImage, sessionID: captureSessionID) }
+                case .failure(.cancelled):
+                    self.currentCaptureSessionID = nil
+                    self.image = nil
+                    self.draft = nil
+                    self.status = nil
+                    self.isCapturing = false
+                case .failure(let error):
+                    self.status = error.localizedDescription
+                    self.openPanel()
                 }
-            } else {
-                analyzedWithOpenAI = false
-                if openAIAnalysisEnabled && !hasOpenAIAPIKey {
-                    fallbackStatus = "Add an OpenAI API key in the menu bar settings. Used on-device analysis instead."
-                }
-                let text = try await ScreenTextRecognizer.recognize(in: cgImage)
-                candidates = await EventDraftExtractionService.extract(text)
             }
-            draft = candidates.first
-            if var first = draft, let start = first.startDate,
-               first.endDate == nil || first.endDate! <= start {
-                if first.isAllDay {
-                    var calendar = Calendar.current
-                    if let zone = first.timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) {
-                        calendar.timeZone = zone
-                    }
-                    let dayStart = calendar.startOfDay(for: start)
-                    first.startDate = dayStart
-                    first.endDate = calendar.date(byAdding: .day, value: 1, to: dayStart)
-                } else {
-                    first.endDate = start.addingTimeInterval(3600)
-                    if !first.ambiguities.contains(.missingEndTime) {
-                        first.ambiguities.append(.missingEndTime)
-                    }
-                }
-                draft = first
-            }
-            if candidates.isEmpty {
-                status = fallbackStatus ?? (analyzedWithOpenAI
-                    ? "OpenAI didn’t find a calendar event. Try a clearer page with event details."
-                    : "No event date found. You can still add the details manually.")
-            } else {
-                status = fallbackStatus
-            }
-            isRecognizing = false
+            selectionOverlay = overlay
+            overlay.show()
         } catch {
             isCapturing = false
-            isRecognizing = false
+            currentCaptureSessionID = nil
             if let captureError = error as? ScreenCaptureService.CaptureError,
                captureError == .permissionDenied {
                 screenCapturePermissionNeeded = true
@@ -160,10 +232,95 @@ final class CalshotModel: ObservableObject {
                       captureError == .noDisplay {
                 status = "Couldn’t capture the screen: \(error.localizedDescription)"
             } else {
-                status = "Couldn’t analyze the screenshot: \(error.localizedDescription)"
+                status = "Couldn’t capture the screen: \(error.localizedDescription)"
             }
             openPanel()
         }
+    }
+
+    private func analyze(_ cgImage: CGImage, sessionID: UUID) async {
+        guard currentCaptureSessionID == sessionID else { return }
+        image = NSImage(cgImage: cgImage, size: .zero)
+        isCapturing = false
+        openPanel()
+        isRecognizing = true
+        status = nil
+        saveMessage = nil
+        var candidates: [EventDraft]
+        var fallbackStatus: String?
+        let recognizedText: String
+        do {
+            recognizedText = try await ScreenTextRecognizer.recognize(in: cgImage)
+            let characterCount = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines).count
+            lastOCRStatus = characterCount == 0 ? "Vision ran, but found no readable text." : "Vision recognized \(characterCount) characters."
+        } catch {
+            recognizedText = ""
+            lastOCRStatus = "Vision OCR failed: \(error.localizedDescription)"
+        }
+        guard currentCaptureSessionID == sessionID else { return }
+        let apiKey = try? OpenAIAPIKeyStore.load()
+        if openAIAnalysisEnabled, let apiKey {
+            analyzedWithOpenAI = true
+            status = "Cross-checking screenshot and Vision OCR with OpenAI…"
+            do {
+                candidates = try await OpenAIEventAnalyzer.analyze(
+                    image: cgImage, apiKey: apiKey, referenceDate: .now,
+                    timeZone: .current, locale: .current, recognizedText: recognizedText
+                )
+                lastAnalysisProvider = "OpenAI (\(OpenAIEventAnalyzer.modelName)) + Vision OCR"
+            } catch {
+                analyzedWithOpenAI = false
+                fallbackStatus = "OpenAI analysis failed; used on-device analysis. \(error.localizedDescription)"
+                candidates = await EventDraftExtractionService.extract(recognizedText)
+                lastAnalysisProvider = "On-device fallback + Vision OCR"
+            }
+        } else {
+            analyzedWithOpenAI = false
+            if openAIAnalysisEnabled && !hasOpenAIAPIKey {
+                fallbackStatus = "Add an OpenAI API key in Settings. Used on-device analysis instead."
+            }
+            candidates = await EventDraftExtractionService.extract(recognizedText)
+            lastAnalysisProvider = "On-device analysis + Vision OCR"
+        }
+        guard currentCaptureSessionID == sessionID else { return }
+        draft = candidates.first
+        if var first = draft, let start = first.startDate,
+           first.endDate == nil || first.endDate! <= start {
+            if first.isAllDay {
+                var calendar = Calendar.current
+                if let zone = first.timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) {
+                    calendar.timeZone = zone
+                }
+                let dayStart = calendar.startOfDay(for: start)
+                first.startDate = dayStart
+                first.endDate = calendar.date(byAdding: .day, value: 1, to: dayStart)
+            } else {
+                first.endDate = start.addingTimeInterval(3600)
+                if !first.ambiguities.contains(.missingEndTime) { first.ambiguities.append(.missingEndTime) }
+            }
+            draft = first
+        }
+        if candidates.isEmpty {
+            status = fallbackStatus ?? (analyzedWithOpenAI
+                ? "OpenAI didn’t find a calendar event. Try selecting a tighter region around the event details."
+                : "No event date found. You can still add the details manually.")
+        } else { status = fallbackStatus }
+        let captureDate = Date()
+        lastCaptureSummary = "\(captureDate.formatted(date: .abbreviated, time: .shortened)) · \(draft?.title ?? "No event found")"
+        if let png = NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:]) {
+            do {
+                let record = try memoryStore.recordCapture(imageData: png, draft: draft,
+                                                           recognizedText: recognizedText,
+                                                           analysisProvider: lastAnalysisProvider,
+                                                           createdAt: captureDate)
+                currentMemoryRecordID = record.id
+                refreshMemory()
+            } catch {
+                status = [status, "Couldn’t save local capture history: \(error.localizedDescription)"]
+                    .compactMap { $0 }.joined(separator: " ")
+            }
+        }
+        isRecognizing = false
     }
 
     func saveOpenAIAPIKey(_ key: String) throws {
@@ -188,6 +345,25 @@ final class CalshotModel: ObservableObject {
         panelController = nil
     }
 
+    func cancelReview() {
+        currentCaptureSessionID = nil
+        selectionOverlay?.cancel()
+        selectionOverlay = nil
+        if saveMessage?.hasPrefix("Added") != true, let currentMemoryRecordID {
+            try? memoryStore.deleteRecord(id: currentMemoryRecordID)
+            refreshMemory()
+        }
+        currentMemoryRecordID = nil
+        image = nil
+        draft = nil
+        isCapturing = false
+        isRecognizing = false
+        isSaving = false
+        status = nil
+        saveMessage = nil
+        dismiss()
+    }
+
     func loadCalendars() async {
         do {
             destinations = try await calendarService.availableDestinations().filter { !$0.isReadOnly }
@@ -197,15 +373,30 @@ final class CalshotModel: ObservableObject {
     }
 
     func saveEvent() async {
-        guard let draft, let selectedCalendarID,
+        guard let draft,
+              !draft.ambiguities.contains(where: { $0 == .missingDate || $0 == .missingYear || $0 == .ambiguousDate }),
+              let startDate = draft.startDate,
+              let endDate = draft.endDate,
+              endDate > startDate else {
+            saveMessage = "Choose a valid event date and time before adding it."
+            return
+        }
+        guard let selectedCalendarID,
               destinations.contains(where: { $0.id == selectedCalendarID }) else {
             saveMessage = "Choose a writable calendar to continue."; return
         }
         isSaving = true; saveMessage = nil
         do {
-            _ = try await calendarService.save(draft, to: .eventKit(calendarIdentifier: selectedCalendarID))
+            let eventIdentifier = try await calendarService.save(draft, to: .eventKit(calendarIdentifier: selectedCalendarID))
             let calendarName = destinations.first(where: { $0.id == selectedCalendarID })?.title ?? "your calendar"
             saveMessage = "Added ‘\(draft.title)’ to \(calendarName)."
+            if let currentMemoryRecordID {
+                _ = try? memoryStore.updateEventDetails(for: currentMemoryRecordID, draft: draft)
+                _ = try? memoryStore.markSavedToCalendar(for: currentMemoryRecordID,
+                                                         calendarName: calendarName,
+                                                         eventIdentifier: eventIdentifier)
+                refreshMemory()
+            }
         } catch { saveMessage = error.localizedDescription }
         isSaving = false
     }
@@ -213,9 +404,6 @@ final class CalshotModel: ObservableObject {
 
 struct MenuBarView: View {
     @ObservedObject var model: CalshotModel
-    @State private var showingOpenAISettings = false
-    @State private var apiKeyDraft = ""
-    @State private var openAISettingsMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -228,11 +416,11 @@ struct MenuBarView: View {
                 }
             }
             Button { Task { await model.capture() } } label: {
-                    HStack { Image(systemName: "camera.viewfinder"); Text("Capture this screen"); Spacer(); Text("⌃⇧C").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.65)) }
+                    HStack { Image(systemName: "camera.viewfinder"); Text("Select event region"); Spacer(); Text(model.shortcut.label).font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.65)) }
                     .padding(.horizontal, 12).padding(.vertical, 11).contentShape(Rectangle())
             }.buttonStyle(.plain).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 11)).foregroundStyle(.white)
             Toggle(isOn: $model.openAIAnalysisEnabled) {
-                Label("Analyze screenshot with OpenAI", systemImage: "cloud")
+                Label("Send selected image to OpenAI", systemImage: "cloud")
                     .font(.system(size: 11, weight: .medium))
             }
             .toggleStyle(.switch)
@@ -243,43 +431,12 @@ struct MenuBarView: View {
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                     .padding(.leading, 2)
             }
-            Button { showingOpenAISettings.toggle() } label: {
-                Label(model.hasOpenAIAPIKey ? "OpenAI API key settings" : "Set up OpenAI", systemImage: "key.horizontal")
+            Button { model.openSettings() } label: {
+                Label("Settings…", systemImage: "gearshape")
                     .font(.system(size: 11, weight: .medium))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-            if showingOpenAISettings {
-                VStack(alignment: .leading, spacing: 9) {
-                    Text("OpenAI API").font(.system(size: 12, weight: .semibold))
-                    SecureField("Paste API key", text: $apiKeyDraft)
-                        .textFieldStyle(.roundedBorder).font(.system(size: 11))
-                    HStack(spacing: 9) {
-                        Button("Save & enable") {
-                            do {
-                                try model.saveOpenAIAPIKey(apiKeyDraft)
-                                apiKeyDraft = ""
-                                openAISettingsMessage = "Saved in Keychain. Screenshots will be sent to OpenAI when you capture."
-                            } catch { openAISettingsMessage = error.localizedDescription }
-                        }
-                        .buttonStyle(.borderedProminent).controlSize(.small)
-                        .disabled(apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if model.hasOpenAIAPIKey {
-                            Button("Remove key") {
-                                do {
-                                    try model.removeOpenAIAPIKey()
-                                    openAISettingsMessage = "Removed. Captures will stay on this Mac."
-                                } catch { openAISettingsMessage = error.localizedDescription }
-                            }
-                            .buttonStyle(.bordered).controlSize(.small)
-                        }
-                    }
-                    Text(openAISettingsMessage ?? "Your key stays in macOS Keychain. With this mode on, each full-display screenshot is sent to OpenAI. API usage may incur charges.")
-                        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(10)
-                .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
-            }
             Button { model.openPanel() } label: {
                 Label("Open Calshot", systemImage: "macwindow")
                     .font(.system(size: 11, weight: .medium))
@@ -288,7 +445,7 @@ struct MenuBarView: View {
             .buttonStyle(.plain)
             HStack(spacing: 7) {
                 Circle().fill(model.openAIAnalysisEnabled ? .orange : .green).frame(width: 6, height: 6)
-                Text(model.openAIAnalysisEnabled ? "OpenAI analysis · screenshot sent online" : "Private by design · processed on your Mac")
+                Text(model.openAIAnalysisEnabled ? "OpenAI analysis · selected region sent online" : "Private by design · processed on your Mac")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }.padding(14).frame(width: 310)
@@ -374,6 +531,15 @@ struct ReviewPanelView: View {
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             Spacer()
+            Button { model.openSettings() } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(.quaternary, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
             Button { model.dismiss() } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).frame(width: 26, height: 26).background(.quaternary, in: Circle()) }.buttonStyle(.plain).help("Dismiss")
         }.padding(.horizontal, 19).padding(.top, 17).padding(.bottom, 11)
     }
@@ -382,7 +548,7 @@ struct ReviewPanelView: View {
         if let image = model.image {
             ZStack(alignment: .topTrailing) {
                 Button { expandedScreenshot.toggle() } label: {
-                    Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: expandedScreenshot ? .fit : .fill).frame(height: expandedScreenshot ? 330 : 148).frame(maxWidth: .infinity).clipped().clipShape(RoundedRectangle(cornerRadius: 13))
+                Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(height: expandedScreenshot ? 330 : 148).frame(maxWidth: .infinity).background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 13)).clipShape(RoundedRectangle(cornerRadius: 13))
                 }.buttonStyle(.plain).accessibilityLabel(expandedScreenshot ? "Show compact screenshot" : "Show larger screenshot").help("Click to resize screenshot preview")
                 Button { Task { await model.capture() } } label: { Label("Retake", systemImage: "arrow.clockwise").font(.system(size: 10, weight: .medium)).padding(.horizontal, 9).padding(.vertical, 6).background(.ultraThinMaterial, in: Capsule()) }.buttonStyle(.plain).padding(9)
             }
@@ -396,7 +562,7 @@ struct ReviewPanelView: View {
             Image(systemName: "rectangle.dashed.badge.record").font(.system(size: 28, weight: .light)).foregroundStyle(.indigo)
             Text("Capture an event page").font(.system(size: 15, weight: .semibold))
             Text("Calshot looks for dates and event details on your screen, then gives you a chance to review everything.").font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 320)
-            Text("Press  ⌃⇧C  anywhere to capture").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.tertiary).padding(.top, 3)
+            Text("Press  \(model.shortcut.label)  anywhere to select a region").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.tertiary).padding(.top, 3)
         }.frame(maxWidth: .infinity).padding(.vertical, 28)
     }
 
@@ -408,7 +574,7 @@ struct ReviewPanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if model.analyzedWithOpenAI {
-                Label("Analyzed by OpenAI · screenshot sent to the API", systemImage: "cloud")
+                Label("Analyzed by OpenAI · selected image sent to the API", systemImage: "cloud")
                     .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
             }
             HStack(alignment: .firstTextBaseline) {
@@ -483,6 +649,7 @@ struct ReviewPanelView: View {
                 DatePicker("Start", selection: Binding(get: { model.draft?.startDate ?? .now }, set: { value in
                     let selected = model.draft?.isAllDay == true ? Calendar.current.startOfDay(for: value) : value
                     model.draft?.startDate = selected
+                    model.draft?.ambiguities.removeAll { $0 == .missingDate || $0 == .missingYear || $0 == .ambiguousDate || $0 == .missingTime }
                     if model.draft?.isAllDay == true { model.draft?.endDate = Calendar.current.date(byAdding: .day, value: 1, to: selected) }
                     else if model.draft?.endDate == nil || (model.draft?.endDate ?? .distantPast) <= selected { model.draft?.endDate = selected.addingTimeInterval(3600) }
                 }), displayedComponents: draft.isAllDay ? [.date] : [.date, .hourAndMinute]).labelsHidden().datePickerStyle(.compact).font(.system(size: 11))
@@ -494,7 +661,9 @@ struct ReviewPanelView: View {
             } else { HStack(spacing: 12) {
                 Color.clear.frame(width: 16)
                 Text("Ends").font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 37, alignment: .leading)
-                DatePicker("End", selection: Binding(get: { model.draft?.endDate ?? (model.draft?.startDate ?? .now).addingTimeInterval(3600) }, set: { model.draft?.endDate = $0 }), displayedComponents: draft.isAllDay ? [.date] : [.date, .hourAndMinute]).labelsHidden().datePickerStyle(.compact).font(.system(size: 11))
+                DatePicker("End", selection: Binding(get: { model.draft?.endDate ?? (model.draft?.startDate ?? .now).addingTimeInterval(3600) }, set: { value in
+                    model.draft?.endDate = value
+                }), displayedComponents: draft.isAllDay ? [.date] : [.date, .hourAndMinute]).labelsHidden().datePickerStyle(.compact).font(.system(size: 11))
                 Spacer()
             } }
         }.padding(.vertical, 7)
@@ -513,16 +682,23 @@ struct ReviewPanelView: View {
 
     private var footer: some View {
         HStack(spacing: 9) {
-            Button { model.dismiss() } label: { Text("Cancel").font(.system(size: 12, weight: .medium)).frame(width: 86, height: 38) }.buttonStyle(.plain).background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 11))
+            Button { model.cancelReview() } label: { Text("Cancel").font(.system(size: 12, weight: .medium)).frame(width: 86, height: 38) }.buttonStyle(.plain).background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 11)).disabled(model.isSaving)
             Spacer()
             if model.draft != nil {
                 Button { Task { await model.saveEvent() } } label: {
                     HStack(spacing: 8) { if model.isSaving { ProgressView().controlSize(.small).tint(.white) } else { Image(systemName: model.saveMessage?.hasPrefix("Added") == true ? "checkmark" : "calendar.badge.plus") }; Text(model.isSaving ? "Adding…" : model.saveMessage?.hasPrefix("Added") == true ? "Added" : "Add to Calendar") }.font(.system(size: 12, weight: .semibold)).frame(width: 150, height: 38)
-                }.buttonStyle(.plain).foregroundStyle(.white).background(model.saveMessage?.hasPrefix("Added") == true ? Color.green : Color.accentColor, in: RoundedRectangle(cornerRadius: 11)).disabled(model.isSaving || model.saveMessage?.hasPrefix("Added") == true)
+                }.buttonStyle(.plain).foregroundStyle(.white).background(model.saveMessage?.hasPrefix("Added") == true ? Color.green : Color.accentColor, in: RoundedRectangle(cornerRadius: 11)).disabled(model.isSaving || model.saveMessage?.hasPrefix("Added") == true || !isDraftReadyToSave)
             } else {
-                Button { Task { await model.capture() } } label: { Label("Capture screen", systemImage: "camera.viewfinder").font(.system(size: 12, weight: .semibold)).frame(width: 150, height: 38) }.buttonStyle(.plain).foregroundStyle(.white).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 11))
+                Button { Task { await model.capture() } } label: { Label("Select a region", systemImage: "camera.viewfinder").font(.system(size: 12, weight: .semibold)).frame(width: 150, height: 38) }.buttonStyle(.plain).foregroundStyle(.white).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 11))
             }
         }.padding(.horizontal, 19).padding(.vertical, 14).background(.ultraThinMaterial)
+    }
+
+    private var isDraftReadyToSave: Bool {
+        guard let draft = model.draft,
+              !draft.ambiguities.contains(where: { $0 == .missingDate || $0 == .missingYear || $0 == .ambiguousDate }),
+              let start = draft.startDate, let end = draft.endDate else { return false }
+        return end > start
     }
 }
 
@@ -597,14 +773,21 @@ private enum OpenAIAPIKeyStore {
 }
 
 enum ScreenCaptureService {
-    static func captureMainDisplay() async throws -> CGImage {
+    struct CaptureResult {
+        let image: CGImage
+        let screen: NSScreen
+    }
+
+    static func captureMainDisplayWithScreen() async throws -> CaptureResult {
         guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
             throw CaptureError.permissionDenied
         }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let pointer = NSEvent.mouseLocation
-        let targetScreen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? NSScreen.main
-        let displayID = targetScreen?.deviceDescription[ NSDeviceDescriptionKey("NSScreenNumber") ] as? CGDirectDisplayID
+        guard let targetScreen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? NSScreen.main else {
+            throw CaptureError.noDisplay
+        }
+        let displayID = targetScreen.deviceDescription[ NSDeviceDescriptionKey("NSScreenNumber") ] as? CGDirectDisplayID
         let display = displayID.flatMap { id in content.displays.first(where: { $0.displayID == id }) } ?? content.displays.first
         guard let display else { throw CaptureError.noDisplay }
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
@@ -612,7 +795,8 @@ enum ScreenCaptureService {
         config.width = display.width
         config.height = display.height
         config.capturesAudio = false
-        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        return CaptureResult(image: image, screen: targetScreen)
     }
     enum CaptureError: LocalizedError, Equatable {
         case permissionDenied
@@ -624,25 +808,5 @@ enum ScreenCaptureService {
             case .noDisplay: "No display is available to capture."
             }
         }
-    }
-}
-
-final class HotKeyController {
-    static let shared = HotKeyController()
-    var onPress: (() -> Void)?
-    private var hotKeyRef: EventHotKeyRef?
-    private init() {}
-    func register() {
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let handlerStatus = InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
-            guard let userData else { return noErr }
-            let controller = Unmanaged<HotKeyController>.fromOpaque(userData).takeUnretainedValue()
-            NSLog("Calshot: global shortcut received")
-            controller.onPress?()
-            return noErr
-        }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), nil)
-        let hotKeyID = EventHotKeyID(signature: OSType(0x43414C53), id: 1)
-        let hotKeyStatus = RegisterEventHotKey(UInt32(kVK_ANSI_C), UInt32(controlKey | shiftKey), hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
-        NSLog("Calshot: shortcut registration handler=%d hotkey=%d", handlerStatus, hotKeyStatus)
     }
 }

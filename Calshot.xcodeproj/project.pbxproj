@@ -17,6 +17,11 @@
 		A30000000000000000000008 /* GoogleCalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* GoogleCalendarService.swift */; };
 		A30000000000000000000009 /* EventDraftParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* EventDraftParserTests.swift */; };
 		A3000000000000000000000A /* OpenAIEventAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* OpenAIEventAnalyzer.swift */; };
+		A3000000000000000000000B /* GlobalShortcut.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* GlobalShortcut.swift */; };
+		A3000000000000000000000C /* RegionSelectionOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* RegionSelectionOverlay.swift */; };
+		A3000000000000000000000D /* MemoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* MemoryStore.swift */; };
+		A3000000000000000000000E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* SettingsView.swift */; };
+		A3000000000000000000000F /* MemoryStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* MemoryStoreTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -42,6 +47,11 @@
 		A2000000000000000000000A /* Calshot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Calshot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000B /* CalshotTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CalshotTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000C /* OpenAIEventAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIEventAnalyzer.swift; sourceTree = "<group>"; };
+		A2000000000000000000000D /* GlobalShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalShortcut.swift; sourceTree = "<group>"; };
+		A2000000000000000000000E /* RegionSelectionOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegionSelectionOverlay.swift; sourceTree = "<group>"; };
+		A2000000000000000000000F /* MemoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000010 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A20000000000000000000011 /* MemoryStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryStoreTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -77,6 +87,9 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000001 /* CalshotApp.swift */,
+				A2000000000000000000000E /* RegionSelectionOverlay.swift */,
+				A2000000000000000000000F /* MemoryStore.swift */,
+				A20000000000000000000010 /* SettingsView.swift */,
 			);
 			path = .;
 			sourceTree = "<group>";
@@ -89,6 +102,7 @@
 				A20000000000000000000004 /* EventDraftExtractionService.swift */,
 				A20000000000000000000005 /* ScreenTextRecognizer.swift */,
 				A2000000000000000000000C /* OpenAIEventAnalyzer.swift */,
+				A2000000000000000000000D /* GlobalShortcut.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -107,6 +121,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000009 /* EventDraftParserTests.swift */,
+				A20000000000000000000011 /* MemoryStoreTests.swift */,
 			);
 			path = CoreTests;
 			sourceTree = "<group>";
@@ -226,6 +241,10 @@
 				A30000000000000000000007 /* EventKitCalendarService.swift in Sources */,
 				A30000000000000000000008 /* GoogleCalendarService.swift in Sources */,
 				A3000000000000000000000A /* OpenAIEventAnalyzer.swift in Sources */,
+				A3000000000000000000000B /* GlobalShortcut.swift in Sources */,
+				A3000000000000000000000C /* RegionSelectionOverlay.swift in Sources */,
+				A3000000000000000000000D /* MemoryStore.swift in Sources */,
+				A3000000000000000000000E /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -234,6 +253,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A30000000000000000000009 /* EventDraftParserTests.swift in Sources */,
+				A3000000000000000000000F /* MemoryStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
