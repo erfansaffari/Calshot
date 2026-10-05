@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import Security
 import ScreenCaptureKit
 import SwiftUI
 
@@ -58,10 +59,16 @@ final class CalshotModel: ObservableObject {
     @Published var selectedCalendarID: String?
     @Published var isSaving = false
     @Published var saveMessage: String?
+    @Published var hasOpenAIAPIKey = false
+    @Published var openAIAnalysisEnabled = UserDefaults.standard.bool(forKey: "openAIAnalysisEnabled") {
+        didSet { UserDefaults.standard.set(openAIAnalysisEnabled, forKey: "openAIAnalysisEnabled") }
+    }
+    @Published var analyzedWithOpenAI = false
     private let calendarService = EventKitCalendarService()
     private var observer: NSObjectProtocol?
 
     init() {
+        hasOpenAIAPIKey = (try? OpenAIAPIKeyStore.load()) != nil
         observer = NotificationCenter.default.addObserver(forName: .calshotCaptureRequested, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in await self?.capture() }
         }
@@ -77,6 +84,7 @@ final class CalshotModel: ObservableObject {
     func capture() async {
         isCapturing = true
         status = nil
+        analyzedWithOpenAI = false
         screenCapturePermissionNeeded = false
         saveMessage = nil
         image = nil
@@ -89,8 +97,31 @@ final class CalshotModel: ObservableObject {
             isCapturing = false
             openPanel()
             isRecognizing = true
-            let text = try await ScreenTextRecognizer.recognize(in: cgImage)
-            let candidates = await EventDraftExtractionService.extract(text)
+            var candidates: [EventDraft]
+            var fallbackStatus: String?
+            let apiKey = try? OpenAIAPIKeyStore.load()
+            if openAIAnalysisEnabled, let apiKey {
+                analyzedWithOpenAI = true
+                status = "Analyzing screenshot with OpenAI…"
+                do {
+                    candidates = try await OpenAIEventAnalyzer.analyze(
+                        image: cgImage, apiKey: apiKey, referenceDate: .now,
+                        timeZone: .current, locale: .current
+                    )
+                } catch {
+                    analyzedWithOpenAI = false
+                    fallbackStatus = "OpenAI analysis failed; used on-device analysis. \(error.localizedDescription)"
+                    let text = try await ScreenTextRecognizer.recognize(in: cgImage)
+                    candidates = await EventDraftExtractionService.extract(text)
+                }
+            } else {
+                analyzedWithOpenAI = false
+                if openAIAnalysisEnabled && !hasOpenAIAPIKey {
+                    fallbackStatus = "Add an OpenAI API key in the menu bar settings. Used on-device analysis instead."
+                }
+                let text = try await ScreenTextRecognizer.recognize(in: cgImage)
+                candidates = await EventDraftExtractionService.extract(text)
+            }
             draft = candidates.first
             if var first = draft, let start = first.startDate,
                first.endDate == nil || first.endDate! <= start {
@@ -110,7 +141,13 @@ final class CalshotModel: ObservableObject {
                 }
                 draft = first
             }
-            if candidates.isEmpty { status = text.isEmpty ? "No text found. Try selecting a page with event details." : "No event date found. You can still add the details manually." }
+            if candidates.isEmpty {
+                status = fallbackStatus ?? (analyzedWithOpenAI
+                    ? "OpenAI didn’t find a calendar event. Try a clearer page with event details."
+                    : "No event date found. You can still add the details manually.")
+            } else {
+                status = fallbackStatus
+            }
             isRecognizing = false
         } catch {
             isCapturing = false
@@ -119,11 +156,26 @@ final class CalshotModel: ObservableObject {
                captureError == .permissionDenied {
                 screenCapturePermissionNeeded = true
                 status = "Screen Recording is still denied for this signed Calshot build. Remove the old Calshot entry under System Settings → Privacy & Security → Screen & System Audio Recording, add this build again, then quit and reopen Calshot."
-            } else {
+            } else if let captureError = error as? ScreenCaptureService.CaptureError,
+                      captureError == .noDisplay {
                 status = "Couldn’t capture the screen: \(error.localizedDescription)"
+            } else {
+                status = "Couldn’t analyze the screenshot: \(error.localizedDescription)"
             }
             openPanel()
         }
+    }
+
+    func saveOpenAIAPIKey(_ key: String) throws {
+        try OpenAIAPIKeyStore.save(key)
+        hasOpenAIAPIKey = true
+        openAIAnalysisEnabled = true
+    }
+
+    func removeOpenAIAPIKey() throws {
+        try OpenAIAPIKeyStore.delete()
+        hasOpenAIAPIKey = false
+        openAIAnalysisEnabled = false
     }
 
     func openScreenCaptureSettings() {
@@ -161,6 +213,10 @@ final class CalshotModel: ObservableObject {
 
 struct MenuBarView: View {
     @ObservedObject var model: CalshotModel
+    @State private var showingOpenAISettings = false
+    @State private var apiKeyDraft = ""
+    @State private var openAISettingsMessage: String?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 11) {
@@ -175,14 +231,67 @@ struct MenuBarView: View {
                     HStack { Image(systemName: "camera.viewfinder"); Text("Capture this screen"); Spacer(); Text("⌃⇧C").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.65)) }
                     .padding(.horizontal, 12).padding(.vertical, 11).contentShape(Rectangle())
             }.buttonStyle(.plain).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 11)).foregroundStyle(.white)
+            Toggle(isOn: $model.openAIAnalysisEnabled) {
+                Label("Analyze screenshot with OpenAI", systemImage: "cloud")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(!model.hasOpenAIAPIKey)
+            if !model.hasOpenAIAPIKey {
+                Text("Add your API key to enable OpenAI analysis.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .padding(.leading, 2)
+            }
+            Button { showingOpenAISettings.toggle() } label: {
+                Label(model.hasOpenAIAPIKey ? "OpenAI API key settings" : "Set up OpenAI", systemImage: "key.horizontal")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            if showingOpenAISettings {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("OpenAI API").font(.system(size: 12, weight: .semibold))
+                    SecureField("Paste API key", text: $apiKeyDraft)
+                        .textFieldStyle(.roundedBorder).font(.system(size: 11))
+                    HStack(spacing: 9) {
+                        Button("Save & enable") {
+                            do {
+                                try model.saveOpenAIAPIKey(apiKeyDraft)
+                                apiKeyDraft = ""
+                                openAISettingsMessage = "Saved in Keychain. Screenshots will be sent to OpenAI when you capture."
+                            } catch { openAISettingsMessage = error.localizedDescription }
+                        }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                        .disabled(apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if model.hasOpenAIAPIKey {
+                            Button("Remove key") {
+                                do {
+                                    try model.removeOpenAIAPIKey()
+                                    openAISettingsMessage = "Removed. Captures will stay on this Mac."
+                                } catch { openAISettingsMessage = error.localizedDescription }
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                        }
+                    }
+                    Text(openAISettingsMessage ?? "Your key stays in macOS Keychain. With this mode on, each full-display screenshot is sent to OpenAI. API usage may incur charges.")
+                        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(10)
+                .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+            }
             Button { model.openPanel() } label: {
                 Label("Open Calshot", systemImage: "macwindow")
                     .font(.system(size: 11, weight: .medium))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-            HStack(spacing: 7) { Circle().fill(.green).frame(width: 6, height: 6); Text("Private by design · processed on your Mac").font(.system(size: 10)).foregroundStyle(.secondary) }
-        }.padding(14).frame(width: 290)
+            HStack(spacing: 7) {
+                Circle().fill(model.openAIAnalysisEnabled ? .orange : .green).frame(width: 6, height: 6)
+                Text(model.openAIAnalysisEnabled ? "OpenAI analysis · screenshot sent online" : "Private by design · processed on your Mac")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }.padding(14).frame(width: 310)
     }
 }
 
@@ -230,7 +339,7 @@ struct ReviewPanelView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     screenshot
-                    if model.isRecognizing { HStack(spacing: 9) { ProgressView().controlSize(.small); Text("Reading event details…").font(.system(size: 12)).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading) }
+                    if model.isRecognizing { HStack(spacing: 9) { ProgressView().controlSize(.small); Text(model.openAIAnalysisEnabled && model.hasOpenAIAPIKey ? "Analyzing with OpenAI… screenshot is being sent" : "Reading event details on this Mac…").font(.system(size: 12)).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading) }
                     if let draft = model.draft { eventForm(draft) }
                     else if let status = model.status {
                         VStack(alignment: .leading, spacing: 10) {
@@ -259,7 +368,11 @@ struct ReviewPanelView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: "viewfinder").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).frame(width: 30, height: 30).background(.indigo.gradient, in: RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 1) { Text("Calshot").font(.system(size: 13, weight: .semibold)); Text(model.draft == nil ? "Screen capture" : "Review event").font(.system(size: 10)).foregroundStyle(.secondary) }
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Calshot").font(.system(size: 13, weight: .semibold))
+                Text(model.draft == nil ? "Screen capture" : model.analyzedWithOpenAI ? "OpenAI event review" : "On-device event review")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
             Spacer()
             Button { model.dismiss() } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).frame(width: 26, height: 26).background(.quaternary, in: Circle()) }.buttonStyle(.plain).help("Dismiss")
         }.padding(.horizontal, 19).padding(.top, 17).padding(.bottom, 11)
@@ -289,6 +402,15 @@ struct ReviewPanelView: View {
 
     private func eventForm(_ initial: EventDraft) -> some View {
         VStack(alignment: .leading, spacing: 13) {
+            if let status = model.status {
+                Label(status, systemImage: "info.circle")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if model.analyzedWithOpenAI {
+                Label("Analyzed by OpenAI · screenshot sent to the API", systemImage: "cloud")
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
+            }
             HStack(alignment: .firstTextBaseline) {
                 Text("EVENT DETAILS").font(.system(size: 9, weight: .bold)).tracking(1).foregroundStyle(.secondary)
                 Spacer()
@@ -298,7 +420,15 @@ struct ReviewPanelView: View {
                 editableRow(icon: "textformat", placeholder: "Event title", text: binding(initial, \.title))
                 Divider().padding(.leading, 39)
                 if initial.ambiguities.contains(.missingTime) { Label("No time detected — review as all-day or add a time.", systemImage: "exclamationmark.triangle.fill").font(.system(size: 10, weight: .medium)).foregroundStyle(.orange).padding(.leading, 39).padding(.vertical, 7) }
-                if initial.ambiguities.contains(where: { String(describing: $0).lowercased().contains("date") || String(describing: $0).lowercased().contains("year") }) { Label("Check the date — a year may be missing", systemImage: "exclamationmark.triangle.fill").font(.system(size: 10, weight: .medium)).foregroundStyle(.orange).padding(.leading, 39).padding(.vertical, 7) }
+                if initial.ambiguities.contains(.missingDate) {
+                    Label("No event date detected — choose one below.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
+                        .padding(.leading, 39).padding(.vertical, 7)
+                } else if initial.ambiguities.contains(.missingYear) || initial.ambiguities.contains(.ambiguousDate) {
+                    Label("Check the date — confirm the year and day.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
+                        .padding(.leading, 39).padding(.vertical, 7)
+                }
                 dateRow(initial)
                 if let start = model.draft?.startDate,
                    let end = model.draft?.endDate, end <= start {
@@ -393,6 +523,76 @@ struct ReviewPanelView: View {
                 Button { Task { await model.capture() } } label: { Label("Capture screen", systemImage: "camera.viewfinder").font(.system(size: 12, weight: .semibold)).frame(width: 150, height: 38) }.buttonStyle(.plain).foregroundStyle(.white).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 11))
             }
         }.padding(.horizontal, 19).padding(.vertical, 14).background(.ultraThinMaterial)
+    }
+}
+
+private enum OpenAIAPIKeyStore {
+    private static let service = "com.calshot.openai"
+    private static let account = "api-key"
+
+    static func load() throws -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            throw KeychainError.operationFailed(status)
+        }
+        return value
+    }
+
+    static func save(_ key: String) throws {
+        let cleaned = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { throw KeychainError.emptyKey }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(cleaned.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var insert = query
+            attributes.forEach { insert[$0.key] = $0.value }
+            let addStatus = SecItemAdd(insert as CFDictionary, nil)
+            guard addStatus == errSecSuccess else { throw KeychainError.operationFailed(addStatus) }
+        } else if status != errSecSuccess {
+            throw KeychainError.operationFailed(status)
+        }
+    }
+
+    static func delete() throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.operationFailed(status)
+        }
+    }
+
+    enum KeychainError: LocalizedError {
+        case emptyKey
+        case operationFailed(OSStatus)
+
+        var errorDescription: String? {
+            switch self {
+            case .emptyKey: "Enter an API key first."
+            case .operationFailed(let status): "Could not update the API key in Keychain (\(status))."
+            }
+        }
     }
 }
 

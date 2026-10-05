@@ -16,6 +16,7 @@
 		A30000000000000000000007 /* EventKitCalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* EventKitCalendarService.swift */; };
 		A30000000000000000000008 /* GoogleCalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* GoogleCalendarService.swift */; };
 		A30000000000000000000009 /* EventDraftParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* EventDraftParserTests.swift */; };
+		A3000000000000000000000A /* OpenAIEventAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* OpenAIEventAnalyzer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -40,6 +41,7 @@
 		A20000000000000000000009 /* EventDraftParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDraftParserTests.swift; sourceTree = "<group>"; };
 		A2000000000000000000000A /* Calshot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Calshot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000B /* CalshotTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CalshotTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000000C /* OpenAIEventAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIEventAnalyzer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -86,6 +88,7 @@
 				A20000000000000000000003 /* EventDraftParser.swift */,
 				A20000000000000000000004 /* EventDraftExtractionService.swift */,
 				A20000000000000000000005 /* ScreenTextRecognizer.swift */,
+				A2000000000000000000000C /* OpenAIEventAnalyzer.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -222,6 +225,7 @@
 				A30000000000000000000006 /* CalendarDestination.swift in Sources */,
 				A30000000000000000000007 /* EventKitCalendarService.swift in Sources */,
 				A30000000000000000000008 /* GoogleCalendarService.swift in Sources */,
+				A3000000000000000000000A /* OpenAIEventAnalyzer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
