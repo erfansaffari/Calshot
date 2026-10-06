@@ -9,6 +9,21 @@ import Security
 actor ChatGPTConnection {
     static let shared = ChatGPTConnection()
 
+    struct ModelOption: Identifiable, Equatable, Sendable {
+        let slug: String
+        let displayName: String
+        var id: String { slug }
+    }
+
+    struct UsageRecord: Codable, Identifiable, Sendable {
+        var id = UUID()
+        let date: Date
+        var model: String
+        var requestCount: Int = 1
+        var inputTokens: Int
+        var outputTokens: Int
+    }
+
     struct Account: Codable {
         let clientID: String
         let subject: String
@@ -144,13 +159,34 @@ actor ChatGPTConnection {
 
     func refreshPreferredModel() async throws -> Account {
         let access = try await access()
-        let preferred = try await chooseModel(accessToken: access.token)
+        let models = try await fetchModels(accessToken: access.token)
+        let selectedModel = models.contains(where: { $0.slug == access.model })
+            ? access.model
+            : models.first(where: { $0.slug == "gpt-5.6-luna" })?.slug ?? models.first?.slug ?? ""
         guard let account = Self.savedAccount() else { throw ConnectionError.notConnected }
-        guard preferred != account.model else { return account }
+        guard selectedModel != account.model else { return account }
         let updated = Account(clientID: account.clientID, subject: account.subject,
                               email: account.email, idToken: account.idToken,
                               accessToken: account.accessToken, refreshToken: account.refreshToken,
-                              scopes: account.scopes, expiresAt: account.expiresAt, model: preferred)
+                              scopes: account.scopes, expiresAt: account.expiresAt, model: selectedModel)
+        try Keychain.save(JSONEncoder().encode(updated))
+        return updated
+    }
+
+    func availableModels() async throws -> [ModelOption] {
+        let access = try await access()
+        return try await fetchModels(accessToken: access.token)
+    }
+
+    func selectModel(_ slug: String) async throws -> Account {
+        let access = try await access()
+        let models = try await fetchModels(accessToken: access.token)
+        guard models.contains(where: { $0.slug == slug }),
+              let account = Self.savedAccount() else { throw ConnectionError.noModel }
+        let updated = Account(clientID: account.clientID, subject: account.subject,
+                              email: account.email, idToken: account.idToken,
+                              accessToken: account.accessToken, refreshToken: account.refreshToken,
+                              scopes: account.scopes, expiresAt: account.expiresAt, model: slug)
         try Keychain.save(JSONEncoder().encode(updated))
         return updated
     }
@@ -199,17 +235,28 @@ actor ChatGPTConnection {
     }
 
     private func chooseModel(accessToken: String) async throws -> String {
+        let models = try await fetchModels(accessToken: accessToken)
+        guard let selected = ["gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]
+            .first(where: { slug in models.contains(where: { $0.slug == slug }) }) ?? models.first?.slug else {
+            throw ConnectionError.noModel
+        }
+        return selected
+    }
+
+    private func fetchModels(accessToken: String) async throws -> [ModelOption] {
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models")!)
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw ConnectionError.noModel }
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let models = (object?["models"] ?? object?["data"]) as? [[String: Any]] ?? []
+        let models = object?["models"] as? [[String: Any]] ?? []
         let listed = models.filter { ($0["visibility"] as? String ?? "list") == "list" }
-        let slugs = listed.compactMap { ($0["slug"] ?? $0["id"]) as? String }
-        guard let selected = ["gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"].first(where: slugs.contains)
-                ?? slugs.first(where: { $0.hasPrefix("gpt-") }) else { throw ConnectionError.noModel }
-        return selected
+        let options = listed.compactMap { item -> ModelOption? in
+            guard let slug = item["slug"] as? String else { return nil }
+            return ModelOption(slug: slug, displayName: item["display_name"] as? String ?? slug)
+        }
+        guard !options.isEmpty else { throw ConnectionError.noModel }
+        return options
     }
 
     private struct Identity { let subject: String; let email: String }

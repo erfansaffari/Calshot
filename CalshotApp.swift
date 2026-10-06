@@ -59,6 +59,8 @@ final class CalshotModel: ObservableObject {
     @Published var saveMessage: String?
     @Published var hasOpenAIAPIKey = false
     @Published var chatGPTAccount: ChatGPTConnection.Account?
+    @Published var chatGPTModels: [ChatGPTConnection.ModelOption] = []
+    @Published var chatGPTUsage: [ChatGPTConnection.UsageRecord] = CalshotModel.loadChatGPTUsage()
     @Published var openAIAnalysisEnabled = UserDefaults.standard.bool(forKey: "openAIAnalysisEnabled") {
         didSet { UserDefaults.standard.set(openAIAnalysisEnabled, forKey: "openAIAnalysisEnabled") }
     }
@@ -302,11 +304,16 @@ final class CalshotModel: ObservableObject {
             status = "Analyzing screenshot with your ChatGPT plan…"
             do {
                 let access = try await ChatGPTConnection.shared.access()
-                candidates = try await OpenAIEventAnalyzer.analyze(
+                let result = try await OpenAIEventAnalyzer.analyze(
                     image: cgImage, apiKey: access.token, model: access.model, stream: true,
                     referenceDate: .now, timeZone: .current, locale: .current,
                     recognizedText: recognizedText
                 )
+                candidates = result.drafts
+                if let usage = result.usage {
+                    recordChatGPTUsage(model: access.model, inputTokens: usage.inputTokens,
+                                       outputTokens: usage.outputTokens)
+                }
                 lastAnalysisProvider = "ChatGPT plan (\(access.model)) + Vision OCR"
             } catch {
                 analyzedWithOpenAI = false
@@ -318,10 +325,11 @@ final class CalshotModel: ObservableObject {
             analyzedWithOpenAI = true
             status = "Cross-checking screenshot and Vision OCR with OpenAI…"
             do {
-                candidates = try await OpenAIEventAnalyzer.analyze(
+                let result = try await OpenAIEventAnalyzer.analyze(
                     image: cgImage, apiKey: apiKey, referenceDate: .now,
                     timeZone: .current, locale: .current, recognizedText: recognizedText
                 )
+                candidates = result.drafts
                 lastAnalysisProvider = "OpenAI (\(OpenAIEventAnalyzer.modelName)) + Vision OCR"
             } catch {
                 analyzedWithOpenAI = false
@@ -389,16 +397,58 @@ final class CalshotModel: ObservableObject {
         let account = try await ChatGPTConnection.shared.connect()
         chatGPTAccount = account
         openAIAnalysisEnabled = account.canUsePlan || hasOpenAIAPIKey
+        chatGPTModels = (try? await ChatGPTConnection.shared.availableModels()) ?? []
+    }
+
+    func refreshChatGPTModels() async {
+        guard chatGPTAccount?.canUsePlan == true else { chatGPTModels = []; return }
+        do {
+            chatGPTModels = try await ChatGPTConnection.shared.availableModels()
+        } catch {
+            status = "Couldn’t load ChatGPT models: \(error.localizedDescription)"
+        }
+    }
+
+    func selectChatGPTModel(_ slug: String) async throws {
+        let account = try await ChatGPTConnection.shared.selectModel(slug)
+        chatGPTAccount = account
+    }
+
+    private static let chatGPTUsageKey = "chatGPTPlanUsage.v1"
+    private static func loadChatGPTUsage() -> [ChatGPTConnection.UsageRecord] {
+        guard let data = UserDefaults.standard.data(forKey: chatGPTUsageKey),
+              let records = try? JSONDecoder().decode([ChatGPTConnection.UsageRecord].self, from: data) else { return [] }
+        return records
+    }
+
+    private func recordChatGPTUsage(model: String, inputTokens: Int, outputTokens: Int) {
+        let today = Calendar.current.startOfDay(for: .now)
+        if let index = chatGPTUsage.firstIndex(where: { Calendar.current.isDate($0.date, inSameDayAs: today) }) {
+            chatGPTUsage[index].model = model
+            chatGPTUsage[index].requestCount += 1
+            chatGPTUsage[index].inputTokens += inputTokens
+            chatGPTUsage[index].outputTokens += outputTokens
+        } else {
+            chatGPTUsage.append(.init(date: today, model: model,
+                                      inputTokens: inputTokens, outputTokens: outputTokens))
+        }
+        chatGPTUsage.sort { $0.date < $1.date }
+        if chatGPTUsage.count > 365 { chatGPTUsage.removeFirst(chatGPTUsage.count - 365) }
+        if let data = try? JSONEncoder().encode(chatGPTUsage) {
+            UserDefaults.standard.set(data, forKey: Self.chatGPTUsageKey)
+        }
     }
 
     func disconnectChatGPT() async throws {
         do { try await ChatGPTConnection.shared.disconnect() }
         catch {
             chatGPTAccount = nil
+            chatGPTModels = []
             if !hasOpenAIAPIKey { openAIAnalysisEnabled = false }
             throw error
         }
         chatGPTAccount = nil
+        chatGPTModels = []
         if !hasOpenAIAPIKey { openAIAnalysisEnabled = false }
     }
 

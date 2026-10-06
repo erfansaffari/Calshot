@@ -12,6 +12,8 @@ struct SettingsView: View {
     @State private var isTestingConnection = false
     @State private var isConnectingChatGPT = false
     @State private var chatGPTSignInTask: Task<Void, Never>?
+    @State private var selectedChatGPTModel = ""
+    @State private var isLoadingChatGPTModels = false
     @State private var isRecordingShortcut = false
     @State private var selectedRecord: MemoryCaptureRecord?
     @State private var showingDeleteAll = false
@@ -110,7 +112,34 @@ struct SettingsView: View {
                     settingsDivider
                     settingsValueRow("Using", value: model.chatGPTAccount?.canUsePlan == true ? "ChatGPT plan" : model.hasOpenAIAPIKey ? "OpenAI API key" : "On-device only", color: model.chatGPTAccount?.canUsePlan == true ? .green : .secondary)
                     settingsDivider
-                    settingsValueRow("Model", value: model.chatGPTAccount?.canUsePlan == true ? (model.chatGPTAccount?.model ?? "") : OpenAIEventAnalyzer.modelName, color: .secondary)
+                    if model.chatGPTAccount?.canUsePlan == true {
+                        HStack(spacing: 16) {
+                            settingLabel("Analysis model", detail: "Choose from models available to your ChatGPT account.")
+                            Spacer(minLength: 8)
+                            if isLoadingChatGPTModels {
+                                ProgressView().controlSize(.small)
+                            } else if model.chatGPTModels.isEmpty {
+                                Text("Models unavailable").font(.system(size: 11)).foregroundStyle(.secondary)
+                            } else {
+                                Picker("Analysis model", selection: $selectedChatGPTModel) {
+                                    ForEach(model.chatGPTModels) { option in
+                                        Text(option.displayName).tag(option.slug)
+                                    }
+                                }
+                                .labelsHidden().pickerStyle(.menu).controlSize(.small)
+                                .onChange(of: selectedChatGPTModel) { _, slug in
+                                    guard !slug.isEmpty, slug != model.chatGPTAccount?.model else { return }
+                                    Task {
+                                        do { try await model.selectChatGPTModel(slug); connectionMessage = "Model changed to \(slug)." }
+                                        catch { connectionMessage = error.localizedDescription; selectedChatGPTModel = model.chatGPTAccount?.model ?? "" }
+                                    }
+                                }
+                            }
+                        }
+                        .onChange(of: model.chatGPTAccount?.model) { _, slug in selectedChatGPTModel = slug ?? "" }
+                    } else {
+                        settingsValueRow("Model", value: OpenAIEventAnalyzer.modelName, color: .secondary)
+                    }
                 }
                 settingsGroup("CHATGPT ACCOUNT") {
                     if let account = model.chatGPTAccount {
@@ -128,9 +157,6 @@ struct SettingsView: View {
                                     }
                                 }.buttonStyle(GlassActionButtonStyle()).disabled(isConnectingChatGPT)
                             }
-                            Button("Manage usage") {
-                                NSWorkspace.shared.open(URL(string: "https://chatgpt.com/settings/usage")!)
-                            }.buttonStyle(GlassActionButtonStyle())
                             Spacer(minLength: 0)
                             Button("Disconnect", role: .destructive) {
                                 Task {
@@ -204,6 +230,31 @@ struct SettingsView: View {
                         }
                     }.padding(.top, 12).padding(.bottom, 8)
                 }
+                settingsGroup("CHATGPT PLAN USAGE") {
+                    let records = model.chatGPTUsage.filter { $0.date >= Calendar.current.date(byAdding: .day, value: -29, to: .now)! }
+                    let requests = records.reduce(0) { $0 + $1.requestCount }
+                    let input = records.reduce(0) { $0 + $1.inputTokens }
+                    let output = records.reduce(0) { $0 + $1.outputTokens }
+                    HStack(spacing: 0) {
+                        usageMetric("Requests", value: requests.formatted(), symbol: "sparkle.magnifyingglass")
+                        usageMetric("Input tokens", value: input.formatted(), symbol: "arrow.down.left")
+                        usageMetric("Output tokens", value: output.formatted(), symbol: "arrow.up.right")
+                        usageMetric("Active days", value: records.filter { $0.requestCount > 0 }.count.formatted(), symbol: "calendar")
+                    }.padding(.vertical, 10)
+                    settingsDivider
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Tracked by Calshot on this Mac")
+                                .font(.system(size: 12, weight: .medium))
+                            Text("Last 30 days · ChatGPT plan limits are shared and managed in ChatGPT.")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Button("Manage usage") {
+                            NSWorkspace.shared.open(URL(string: "https://chatgpt.com/settings/usage")!)
+                        }.buttonStyle(GlassActionButtonStyle())
+                    }.padding(.vertical, 9)
+                }
                 settingsGroup("RECENT ACTIVITY") {
                     settingsValueRow("Last analysis", value: model.lastCaptureSummary, color: .secondary)
                     if let provider = model.lastAnalysisProvider { settingsDivider; settingsValueRow("Provider", value: provider, color: .secondary) }
@@ -213,7 +264,14 @@ struct SettingsView: View {
                 Text("Only selected screenshots are sent for analysis. ChatGPT plan usage requires separate consent and follows your ChatGPT limits.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 4)
             }.frame(maxWidth: 790, alignment: .leading).padding(.top, 6)
-        }.scrollIndicators(.visible)
+        }
+        .scrollIndicators(.visible)
+        .task {
+            selectedChatGPTModel = model.chatGPTAccount?.model ?? ""
+            isLoadingChatGPTModels = model.chatGPTAccount?.canUsePlan == true
+            await model.refreshChatGPTModels()
+            isLoadingChatGPTModels = false
+        }
     }
 
     private func settingsGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -242,6 +300,18 @@ struct SettingsView: View {
             Spacer(minLength: 10)
             Text(value).font(.system(size: 12)).foregroundStyle(color).multilineTextAlignment(.trailing)
         }.padding(.vertical, 11)
+    }
+
+    private func usageMetric(_ title: String, value: String, symbol: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.8)
+            Text(value).font(.system(size: 20, weight: .semibold, design: .rounded))
+                .contentTransition(.numericText())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11).padding(.vertical, 7)
     }
 
     private struct GlassActionButtonStyle: ButtonStyle {

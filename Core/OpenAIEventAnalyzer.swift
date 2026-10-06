@@ -29,6 +29,13 @@ enum OpenAIEventAnalyzer {
     }
 
     struct APIResponse: Decodable {
+        struct Usage: Decodable {
+            var inputTokens: Int
+            var outputTokens: Int
+            enum CodingKeys: String, CodingKey {
+                case inputTokens = "input_tokens", outputTokens = "output_tokens"
+            }
+        }
         struct OutputItem: Decodable {
             struct ContentItem: Decodable {
                 var type: String?
@@ -37,6 +44,12 @@ enum OpenAIEventAnalyzer {
             var content: [ContentItem]?
         }
         var output: [OutputItem]?
+        var usage: Usage?
+    }
+
+    struct AnalysisResult {
+        let drafts: [EventDraft]
+        let usage: APIResponse.Usage?
     }
 
     private struct APIErrorResponse: Decodable {
@@ -65,7 +78,7 @@ enum OpenAIEventAnalyzer {
     static func analyze(image: CGImage, apiKey: String, model: String = modelName,
                         stream: Bool = false, referenceDate: Date = .now,
                         timeZone: TimeZone = .current, locale: Locale = .current,
-                        recognizedText: String = "") async throws -> [EventDraft] {
+                        recognizedText: String = "") async throws -> AnalysisResult {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
             throw AnalyzerError.apiError(statusCode: 0, message: "An API key is required.")
@@ -113,10 +126,11 @@ enum OpenAIEventAnalyzer {
             .joined(separator: "\n")
         guard let text, let json = text.data(using: .utf8) else { throw AnalyzerError.invalidResponse }
         let collection = try JSONDecoder().decode(EventCollection.self, from: json)
-        return collection.events.compactMap {
+        let drafts = collection.events.compactMap {
             makeDraft($0, referenceDate: referenceDate, defaultTimeZone: timeZone,
                       sourceText: recognizedText)
         }
+        return AnalysisResult(drafts: drafts, usage: responseBody.usage)
     }
 
     /// The ChatGPT plan route requires streaming. A result is usable only after
