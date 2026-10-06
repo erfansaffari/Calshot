@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 
 /// A small, fixed notch launcher that grows into an action menu while the pointer is over it.
@@ -7,11 +8,13 @@ final class NotchExperienceController: ObservableObject {
     private let panel: NSPanel
     private weak var model: CalshotModel?
     @Published private(set) var isExpanded = false
+    @Published private(set) var launcherSize = NSSize(width: 184, height: 24)
     private var isPointerInside = false
     private var collapseWorkItem: DispatchWorkItem?
+    private var screenChangeObserver: NSObjectProtocol?
 
-    private let compactSize = NSSize(width: 184, height: 38)
-    private let expandedSize = NSSize(width: 286, height: 164)
+    private var compactSize = NSSize(width: 184, height: 24)
+    private let expandedSize = NSSize(width: 340, height: 190)
 
     init(model: CalshotModel) {
         self.model = model
@@ -22,11 +25,11 @@ final class NotchExperienceController: ObservableObject {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = .statusBar
+        panel.level = .mainMenu + 3
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .stationary]
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
@@ -40,11 +43,18 @@ final class NotchExperienceController: ObservableObject {
             openSettings: { [weak self] in self?.openSettings() },
             close: { [weak self] in self?.hide() }
         ))
-        position(on: NSScreen.main)
+        screenChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.screenConfigurationChanged() }
+        }
+        position(on: screenUnderPointer() ?? NSScreen.main)
     }
 
     func show() {
-        position(on: NSScreen.main)
+        position(on: screenUnderPointer() ?? NSScreen.main)
         panel.orderFrontRegardless()
     }
 
@@ -95,28 +105,54 @@ final class NotchExperienceController: ObservableObject {
         guard isExpanded != expanded else { return }
         isExpanded = expanded
         let size = expanded ? expandedSize : compactSize
-        let origin = origin(for: size, on: NSScreen.main)
-        panel.setFrame(NSRect(origin: origin, size: size), display: true, animate: false)
+        let screen = screenForPanel() ?? NSScreen.main
+        let frame = NSRect(origin: origin(for: size, on: screen), size: size)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = expanded ? 0.32 : 0.24
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(frame, display: true)
+        }
     }
 
     private func position(on screen: NSScreen?) {
+        guard let screen else { return }
+        compactSize = closedSize(on: screen)
+        launcherSize = compactSize
         let size = isExpanded ? expandedSize : compactSize
-        panel.setFrame(NSRect(origin: origin(for: size, on: screen), size: size), display: true)
+        panel.setFrame(NSRect(origin: origin(for: size, on: screen), size: size), display: true, animate: false)
     }
 
     private func origin(for size: NSSize, on screen: NSScreen?) -> NSPoint {
         guard let screen else { return NSPoint(x: 0, y: 0) }
         let x = screen.frame.midX - size.width / 2
-        // A notched display reports a top safe-area inset. Keep the pill centered at the
-        // physical top edge and grow the menu downward from the same fixed top anchor.
-        let y: CGFloat
-        if screen.safeAreaInsets.top > 0 {
-            let topAnchor = screen.frame.maxY - max(2, screen.safeAreaInsets.top - 4)
-            y = topAnchor - size.height
-        } else {
-            y = screen.visibleFrame.maxY - size.height - 6
+        // Keep the panel's top edge at the physical top of the display. The closed
+        // frame then exactly overlays the notch, while expansion unfolds downward.
+        return NSPoint(x: x, y: screen.frame.maxY - size.height)
+    }
+
+    private func closedSize(on screen: NSScreen) -> NSSize {
+        // Auxiliary top areas describe the actual camera housing width on notched Macs.
+        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea,
+           screen.safeAreaInsets.top > 0 {
+            return NSSize(width: max(150, screen.frame.width - left.width - right.width + 2),
+                          height: max(1, screen.safeAreaInsets.top))
         }
-        return NSPoint(x: x, y: y)
+        // On displays without a notch, use the centered menu bar band as the hover target.
+        return NSSize(width: 184, height: max(22, screen.frame.maxY - screen.visibleFrame.maxY))
+    }
+
+    private func screenUnderPointer() -> NSScreen? {
+        let point = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(point) }
+    }
+
+    private func screenForPanel() -> NSScreen? {
+        NSScreen.screens.first { $0.frame.intersects(panel.frame) }
+    }
+
+    private func screenConfigurationChanged() {
+        guard panel.isVisible else { return }
+        position(on: screenUnderPointer() ?? screenForPanel() ?? NSScreen.main)
     }
 }
 
@@ -132,46 +168,54 @@ private struct NotchExperienceView: View {
 
     var body: some View {
         VStack(spacing: 9) {
-            HStack(spacing: 8) {
-                Image("CalshotMark")
-                    .resizable().scaledToFit()
-                    .padding(4)
-                    .frame(width: 27, height: 27)
-                    .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
-                Text("Calshot")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer(minLength: 2)
-                Text(model.shortcut.label)
-                    .font(.system(size: 9, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.5))
-                Button(action: close) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.55))
-                        .frame(width: 20, height: 20)
-                        .background(.white.opacity(0.08), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .help("Hide Calshot")
-                .accessibilityLabel("Hide Calshot")
-            }
-            .contentShape(Rectangle())
-            .onTapGesture(perform: expand)
-
             if controller.isExpanded {
+                HStack(spacing: 8) {
+                    Text("Calshot")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer(minLength: 2)
+                    Text(model.shortcut.label)
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                    Button(action: close) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .frame(width: 20, height: 20)
+                            .background(.white.opacity(0.08), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Hide Calshot")
+                    .accessibilityLabel("Hide Calshot")
+                }
+                .contentShape(Rectangle())
+                .onTapGesture(perform: expand)
+
                 actionRow("Capture", symbol: "camera.viewfinder", action: capture, prominent: true)
                 actionRow("Open App", symbol: "macwindow", action: openApp)
                 actionRow("Settings", symbol: "gearshape", action: openSettings)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, controller.isExpanded ? 10 : 5)
-        .frame(width: controller.isExpanded ? 286 : 184,
-               height: controller.isExpanded ? 164 : 38,
+        .padding(.horizontal, 14)
+        .padding(.vertical, controller.isExpanded ? 12 : 0)
+        .frame(width: controller.isExpanded ? 340 : controller.launcherSize.width,
+               height: controller.isExpanded ? 190 : controller.launcherSize.height,
                alignment: .top)
-        .background(Color(red: 0.035, green: 0.04, blue: 0.055), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        .background {
+            if controller.isExpanded {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Color.black.opacity(0.76)))
+                    .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 1))
+            } else {
+                // Leave the closed hit region transparent. On a notched display the
+                // physical camera housing supplies the black surface; other displays
+                // remain visually untouched.
+                Color.clear
+            }
+        }
+        .contentShape(Rectangle())
         .onHover(perform: pointerChanged)
+        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: controller.isExpanded)
         .preferredColorScheme(.dark)
     }
 
@@ -187,39 +231,5 @@ private struct NotchExperienceView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
-    }
-}
-
-/// An AppKit tracking area covers the whole hosting view, including the controls.
-private struct PointerTrackingView: NSViewRepresentable {
-    let onChange: (Bool) -> Void
-
-    func makeNSView(context: Context) -> TrackingView {
-        let view = TrackingView()
-        view.onChange = onChange
-        return view
-    }
-
-    func updateNSView(_ nsView: TrackingView, context: Context) {
-        nsView.onChange = onChange
-    }
-
-    final class TrackingView: NSView {
-        var onChange: ((Bool) -> Void)?
-        private var tracking: NSTrackingArea?
-
-        override func updateTrackingAreas() {
-            super.updateTrackingAreas()
-            if let tracking { removeTrackingArea(tracking) }
-            let area = NSTrackingArea(rect: .zero,
-                                      options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                                      owner: self,
-                                      userInfo: nil)
-            addTrackingArea(area)
-            tracking = area
-        }
-
-        override func mouseEntered(with event: NSEvent) { onChange?(true) }
-        override func mouseExited(with event: NSEvent) { onChange?(false) }
     }
 }

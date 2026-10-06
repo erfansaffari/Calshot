@@ -5,12 +5,20 @@ import SwiftUI
 struct CalshotWorkspaceView: View {
     @ObservedObject var model: CalshotModel
     @State private var settingsSection: SettingsSection = .general
+    @State private var sidebarVisible = true
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-            Rectangle().fill(.white.opacity(0.07)).frame(width: 1)
-            mainContent
+        VStack(spacing: 0) {
+            windowBar
+            Rectangle().fill(.white.opacity(0.07)).frame(height: 1)
+            HStack(spacing: 0) {
+                if sidebarVisible {
+                    sidebar
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                    Rectangle().fill(.white.opacity(0.07)).frame(width: 1)
+                }
+                mainContent
+            }
         }
         .frame(minWidth: 900, minHeight: 620)
         .background(Color(red: 0.055, green: 0.06, blue: 0.075))
@@ -18,19 +26,44 @@ struct CalshotWorkspaceView: View {
         .onAppear { model.refreshMemory() }
     }
 
+    private var windowBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.24)) { sidebarVisible.toggle() }
+            } label: {
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 28, height: 28)
+            }
+            .help(sidebarVisible ? "Hide sidebar" : "Show sidebar")
+            Text("Calshot")
+                .font(.system(size: 13, weight: .semibold))
+            Spacer()
+            Button { model.workspaceWindowController?.minimize() } label: {
+                Image(systemName: "minus").font(.system(size: 12, weight: .medium)).frame(width: 28, height: 28)
+            }.help("Minimize")
+            Button { model.workspaceWindowController?.zoom() } label: {
+                Image(systemName: "square.on.square").font(.system(size: 12, weight: .medium)).frame(width: 28, height: 28)
+            }.help("Zoom")
+            Button { model.workspaceWindowController?.close() } label: {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).frame(width: 28, height: 28)
+            }.help("Close window")
+        }
+        .buttonStyle(ChromeButtonStyle())
+        .foregroundStyle(.white.opacity(0.75))
+        .padding(.horizontal, 15)
+        .frame(height: 50)
+        .background(Color(red: 0.07, green: 0.075, blue: 0.085))
+    }
+
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 24) {
-            HStack(spacing: 11) {
-                Image("CalshotMark").resizable().scaledToFit().padding(6)
-                    .frame(width: 38, height: 38)
-                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Calshot").font(.system(size: 15, weight: .semibold))
-                    Text("SCREEN MEMORY").font(.system(size: 9, weight: .semibold, design: .rounded)).tracking(1.1).foregroundStyle(.tertiary)
-                }
-            }
+            Text("WORKSPACE")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .tracking(1.1)
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 11)
             VStack(alignment: .leading, spacing: 6) {
-                Text("WORKSPACE").font(.system(size: 9, weight: .semibold)).tracking(1.1).foregroundStyle(.tertiary).padding(.horizontal, 11).padding(.bottom, 3)
                 navRow(.capture)
                 navRow(.library)
             }
@@ -58,7 +91,7 @@ struct CalshotWorkspaceView: View {
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
             }.padding(.horizontal, 11)
         }
-        .padding(.horizontal, 15).padding(.top, 24).padding(.bottom, 18)
+        .padding(.horizontal, 15).padding(.top, 20).padding(.bottom, 18)
         .frame(width: 220)
         .frame(maxHeight: .infinity, alignment: .topLeading)
         .background(Color.white.opacity(0.018))
@@ -116,25 +149,6 @@ struct CalshotWorkspaceView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         ScreenshotCanvasView(image: image, onRetake: { Task { await model.capture() } })
                             .frame(height: 390)
-                        if !model.recognizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Text("Recognized text").font(.system(size: 15, weight: .semibold))
-                                    Spacer()
-                                    Button("Copy Text") {
-                                        NSPasteboard.general.clearContents()
-                                        NSPasteboard.general.setString(model.recognizedText, forType: .string)
-                                    }.buttonStyle(.bordered)
-                                }
-                                Text(model.recognizedText)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .padding(17)
-                            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 15))
-                        }
                         if let draft = model.draft { eventSuggestion(draft) }
                         else if let status = model.status { Label(status, systemImage: model.screenCapturePermissionNeeded ? "lock.shield" : "info.circle").font(.system(size: 12)).foregroundStyle(.secondary).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12)) }
                     }
@@ -209,4 +223,13 @@ struct CalshotWorkspaceView: View {
 enum WorkspaceSection: String { case capture, library, settings
     var title: String { switch self { case .capture: "Capture"; case .library: "Memory"; case .settings: "Settings" } }
     var symbol: String { switch self { case .capture: "viewfinder"; case .library: "square.stack.3d.up"; case .settings: "gearshape" } }
+}
+
+private struct ChromeButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(configuration.isPressed ? .white.opacity(0.14) : .clear,
+                        in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+    }
 }

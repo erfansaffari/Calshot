@@ -58,114 +58,135 @@ struct SettingsView: View {
     }
 
     private var generalTab: some View {
-        Form {
-            Section("Capture") {
-                Toggle("Copy captures to the clipboard automatically", isOn: $automaticallyCopyCapture)
-                Text("When enabled, each selected screenshot is copied as an image as soon as capture finishes.")
-                    .font(.callout).foregroundStyle(.secondary)
-                LabeledContent("Global shortcut") {
-                    HStack(spacing: 10) {
-                        ShortcutRecorder(shortcut: model.shortcut, isRecording: $isRecordingShortcut, model: model) { newShortcut in
-                            model.updateShortcut(newShortcut)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                settingsGroup("CAPTURE") {
+                    Toggle(isOn: $automaticallyCopyCapture) {
+                        settingLabel("Copy captures automatically", detail: "Copy each selected screenshot to the clipboard when capture finishes.")
+                    }.toggleStyle(.switch).controlSize(.small).tint(.accentColor)
+                    settingsDivider
+                    HStack(spacing: 12) {
+                        settingLabel("Global shortcut", detail: "Select a region, then press Return. Press Escape to cancel.")
+                        Spacer(minLength: 12)
+                        HStack(spacing: 8) {
+                            ShortcutRecorder(shortcut: model.shortcut, isRecording: $isRecordingShortcut, model: model) { model.updateShortcut($0) }
+                                .frame(width: 150, height: 30)
+                            Button("Reset") { model.updateShortcut(.default) }
+                                .buttonStyle(GlassActionButtonStyle())
+                                .disabled(model.shortcut == .default || model.isRecordingShortcut)
                         }
-                        Button("Reset") { model.updateShortcut(.default) }
-                            .disabled(model.shortcut == .default || model.isRecordingShortcut)
                     }
+                    settingsDivider
+                    settingsValueRow("Registration", value: model.isRecordingShortcut ? "Listening…" : model.shortcutRegistrationStatus == noErr ? "Active" : "Unavailable",
+                                     color: model.isRecordingShortcut ? .accentColor : model.shortcutRegistrationStatus == noErr ? .green : .orange)
+                    settingsDivider
+                    settingsValueRow("Last capture", value: model.lastCaptureSummary, color: .secondary)
                 }
-                Text("Press the shortcut, select a screen region, then press Return. Press Escape to cancel.")
-                    .font(.callout).foregroundStyle(.secondary)
-                LabeledContent("Registration") {
-                    Text(model.isRecordingShortcut ? "Listening for shortcut…" : model.shortcutRegistrationStatus == noErr
-                         ? "Active" : "Couldn’t register (status \(model.shortcutRegistrationStatus))")
-                        .foregroundStyle(model.isRecordingShortcut ? Color.accentColor : model.shortcutRegistrationStatus == noErr ? Color.green : Color.orange)
+                settingsGroup("PRIVACY") {
+                    settingLabel("Capture storage", detail: "Screenshots and recognized text are saved in the folder shown in Memory settings. Cloud-synced folders may sync these files.")
+                    settingsDivider
+                    settingLabel("OpenAI analysis", detail: "When enabled, only the selected region and its recognized text are sent to OpenAI. Delete captures any time from Memory.")
                 }
-                LabeledContent("Last capture") {
-                    Text(model.lastCaptureSummary).foregroundStyle(.secondary)
-                }
-            }
-            Section("Privacy") {
-                Label("Screenshots and recognized text are saved in the folder shown in Memory settings.", systemImage: "externaldrive.badge.icloud")
-                Text("If you choose a cloud-synced folder, that service may sync these files too.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Text("Delete captures any time from the Memory tab. If OpenAI analysis is enabled, only the selected region and its OCR text are sent to OpenAI.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-        .padding(.top, 10)
+            }.padding(.top, 10)
+        }.scrollIndicators(.visible)
     }
 
     private var aiTab: some View {
-        Form {
-            Section("Analysis provider") {
-                Toggle("Send the selected image directly to OpenAI", isOn: $model.openAIAnalysisEnabled)
-                    .disabled(!model.hasOpenAIAPIKey)
-                LabeledContent("Connection") {
-                    HStack(spacing: 7) {
-                        Circle().fill(model.hasOpenAIAPIKey ? .green : .secondary).frame(width: 8, height: 8)
-                        Text(model.hasOpenAIAPIKey ? "API key saved in Keychain" : "Not configured")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                settingsGroup("ANALYSIS PROVIDER") {
+                    Toggle(isOn: $model.openAIAnalysisEnabled) {
+                        settingLabel("Send selected image to OpenAI", detail: "Allow OpenAI to analyze the selected screenshot.")
+                    }.toggleStyle(.switch).controlSize(.small).tint(.accentColor).disabled(!model.hasOpenAIAPIKey)
+                    settingsDivider
+                    settingsValueRow("Connection", value: model.hasOpenAIAPIKey ? "API key saved in Keychain" : "Not configured", color: model.hasOpenAIAPIKey ? .green : .secondary)
+                    settingsDivider
+                    settingsValueRow("Model", value: OpenAIEventAnalyzer.modelName, color: .secondary)
+                    Text("GPT-6 Luna is the current cost-efficient OpenAI model for screenshot analysis.").font(.system(size: 12)).foregroundStyle(.secondary)
+                    if let connectionMessage {
+                        Text(connectionMessage).font(.system(size: 12)).foregroundStyle(connectionMessage.hasPrefix("Connected") ? .green : .secondary).textSelection(.enabled)
                     }
                 }
-                LabeledContent("Model") { Text(OpenAIEventAnalyzer.modelName).foregroundStyle(.secondary) }
-                Text("GPT-6 Luna is the current cost-efficient OpenAI model for screenshot analysis.")
-                    .font(.callout).foregroundStyle(.secondary)
-                if let connectionMessage {
-                    Text(connectionMessage).font(.callout)
-                        .foregroundStyle(connectionMessage.hasPrefix("Connected") ? .green : .secondary)
-                        .textSelection(.enabled)
-                }
-            }
-            Section("API key") {
-                SecureField(model.hasOpenAIAPIKey ? "Replace saved API key" : "Paste API key", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                HStack {
-                    Button("Save in Keychain") {
-                        do {
-                            try model.saveOpenAIAPIKey(apiKey)
-                            apiKey = ""
-                            connectionMessage = "Key saved. Test the connection to check model access."
-                        } catch { connectionMessage = error.localizedDescription }
-                    }
-                    .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button {
-                        isTestingConnection = true
-                        let testKey = apiKey.isEmpty ? nil : apiKey
-                        Task {
-                            defer { isTestingConnection = false }
-                            do { connectionMessage = try await model.testOpenAIConnection(using: testKey) }
+                settingsGroup("API KEY") {
+                    SecureField(model.hasOpenAIAPIKey ? "Replace saved API key" : "Paste API key", text: $apiKey)
+                        .textFieldStyle(.plain).padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                    HStack(spacing: 9) {
+                        Button("Save in Keychain") {
+                            do { try model.saveOpenAIAPIKey(apiKey); apiKey = ""; connectionMessage = "Key saved. Test the connection to check model access." }
                             catch { connectionMessage = error.localizedDescription }
-                        }
-                    } label: {
-                        if isTestingConnection { ProgressView().controlSize(.small) }
-                        else { Text("Test connection") }
-                    }
-                    .disabled(isTestingConnection || (apiKey.isEmpty && !model.hasOpenAIAPIKey))
-                    if model.hasOpenAIAPIKey {
-                        Button("Remove key", role: .destructive) {
-                            do {
-                                try model.removeOpenAIAPIKey()
-                                connectionMessage = "Key removed from Keychain."
-                            } catch { connectionMessage = error.localizedDescription }
+                        }.buttonStyle(GlassActionButtonStyle()).disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button {
+                            isTestingConnection = true
+                            let testKey = apiKey.isEmpty ? nil : apiKey
+                            Task {
+                                defer { isTestingConnection = false }
+                                do { connectionMessage = try await model.testOpenAIConnection(using: testKey) }
+                                catch { connectionMessage = error.localizedDescription }
+                            }
+                        } label: {
+                            if isTestingConnection { ProgressView().controlSize(.small) } else { Text("Test connection") }
+                        }.buttonStyle(GlassActionButtonStyle()).disabled(isTestingConnection || (apiKey.isEmpty && !model.hasOpenAIAPIKey))
+                        if model.hasOpenAIAPIKey {
+                            Button("Remove key", role: .destructive) {
+                                do { try model.removeOpenAIAPIKey(); connectionMessage = "Key removed from Keychain." }
+                                catch { connectionMessage = error.localizedDescription }
+                            }.buttonStyle(GlassActionButtonStyle(destructive: true))
                         }
                     }
                 }
-            }
-            Section("Accuracy diagnostics") {
-                LabeledContent("Last analysis", value: model.lastCaptureSummary)
-                if let provider = model.lastAnalysisProvider {
-                    LabeledContent("Provider", value: provider)
+                settingsGroup("ACCURACY") {
+                    settingsValueRow("Last analysis", value: model.lastCaptureSummary, color: .secondary)
+                    if let provider = model.lastAnalysisProvider { settingsDivider; settingsValueRow("Provider", value: provider, color: .secondary) }
+                    settingsDivider
+                    settingsValueRow("Vision OCR", value: model.lastOCRStatus, color: .secondary)
+                    Text("Calshot runs Vision OCR and includes recognized text with the screenshot for OpenAI to cross-check. Local analysis uses Apple’s on-device model when available, then the local parser.").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
-                LabeledContent("Vision OCR", value: model.lastOCRStatus)
-                Text("Calshot runs Vision OCR and includes the recognized text with the screenshot for OpenAI to cross-check. For local analysis, the same OCR text goes to Apple’s on-device model when available, then the local parser.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-            Section("Data and cost") {
-                Text("Connection testing checks access to the model without sending a screenshot. Captures sent for analysis may incur OpenAI API charges. The key stays in macOS Keychain.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
+                settingsGroup("DATA & COST") {
+                    settingLabel("Your key stays in macOS Keychain", detail: "Connection testing checks model access without sending a screenshot. Captures sent for analysis may incur OpenAI API charges.")
+                }
+            }.padding(.top, 10)
+        }.scrollIndicators(.visible)
+    }
+
+    private func settingsGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.system(size: 10, weight: .bold)).tracking(1.3).foregroundStyle(.secondary).padding(.horizontal, 4)
+            VStack(alignment: .leading, spacing: 0, content: content)
+                .padding(.horizontal, 15).padding(.vertical, 5)
+                .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.075), lineWidth: 1))
         }
-        .formStyle(.grouped)
-        .padding(.top, 10)
+    }
+
+    private var settingsDivider: some View { Rectangle().fill(Color.white.opacity(0.075)).frame(height: 1) }
+
+    private func settingLabel(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.primary)
+            Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.padding(.vertical, 10)
+    }
+
+    private func settingsValueRow(_ title: String, value: String, color: Color) -> some View {
+        HStack(spacing: 12) {
+            Text(title).font(.system(size: 13, weight: .medium))
+            Spacer(minLength: 10)
+            Text(value).font(.system(size: 12)).foregroundStyle(color).multilineTextAlignment(.trailing)
+        }.padding(.vertical, 11)
+    }
+
+    private struct GlassActionButtonStyle: ButtonStyle {
+        var destructive = false
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label.font(.system(size: 11, weight: .medium))
+                .foregroundStyle(destructive ? Color.red : Color.primary)
+                .padding(.horizontal, 11).padding(.vertical, 7)
+                .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.white.opacity(0.09), lineWidth: 1))
+                .opacity(configuration.isPressed ? 0.8 : 1)
+        }
     }
 
     private var memoryTab: some View {
@@ -178,8 +199,10 @@ struct SettingsView: View {
                 }
                 Spacer()
                 Button("Delete All…", role: .destructive) { showingDeleteAll = true }
+                    .buttonStyle(GlassActionButtonStyle(destructive: true))
                     .disabled(model.memoryRecords.isEmpty)
                 Button { model.refreshMemory() } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(GlassActionButtonStyle())
                     .help("Refresh history")
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -187,8 +210,8 @@ struct SettingsView: View {
                     Label("Storage location", systemImage: "folder")
                         .font(.system(size: 12, weight: .medium))
                     Spacer()
-                    Button("Show in Finder") { model.revealMemoryFolder() }
-                    Button("Change…") { model.chooseMemoryLocation() }
+                    Button("Show in Finder") { model.revealMemoryFolder() }.buttonStyle(GlassActionButtonStyle())
+                    Button("Change…") { model.chooseMemoryLocation() }.buttonStyle(GlassActionButtonStyle())
                 }
                 Text(model.memoryDirectoryURL.path)
                     .font(.system(.caption, design: .monospaced))
@@ -205,8 +228,9 @@ struct SettingsView: View {
                         .textSelection(.enabled)
                 }
             }
-            .padding(12)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+            .padding(14)
+            .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.075), lineWidth: 1))
             if model.memoryRecords.isEmpty {
                 ContentUnavailableView("No captures yet", systemImage: "photo.on.rectangle.angled",
                                        description: Text("Captured regions will appear here with their analysis and save status."))
@@ -320,11 +344,6 @@ private struct MemoryRecordDetail: View {
                         if let saved = record.savedCalendarName { GridRow { Text("Saved to").foregroundStyle(.secondary); Text(saved) } }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
-            }
-            DisclosureGroup("Recognized source text · \(record.analysisProvider ?? "unknown provider")") {
-                ScrollView { Text(record.recognizedText ?? record.event?.sourceText ?? "No OCR text saved.")
-                    .font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(10) }
-                    .frame(maxHeight: 180).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
             }
             Spacer(minLength: 0)
             HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
