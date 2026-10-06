@@ -2,71 +2,44 @@ import AppKit
 import Carbon.HIToolbox
 import SwiftUI
 
-@MainActor
-final class SettingsWindowController: NSObject, NSWindowDelegate {
-    private let window: NSWindow
-    var onClose: (() -> Void)?
-
-    init(model: CalshotModel) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 620),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                          backing: .buffered, defer: false)
-        super.init()
-        window.title = "Calshot Settings"
-        window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 760, height: 560)
-        window.level = .normal
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.delegate = self
-        window.center()
-        window.contentView = NSHostingView(rootView: SettingsView(model: model))
-    }
-
-    func show() {
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    func windowWillClose(_ notification: Notification) { onClose?() }
-}
-
 struct SettingsView: View {
     @ObservedObject var model: CalshotModel
+    let section: SettingsSection
+    let showsHeading: Bool
+    @AppStorage("automaticallyCopyCapture") private var automaticallyCopyCapture = true
     @State private var apiKey = ""
     @State private var connectionMessage: String?
     @State private var isTestingConnection = false
     @State private var isRecordingShortcut = false
     @State private var selectedRecord: MemoryCaptureRecord?
     @State private var showingDeleteAll = false
-    @State private var selectedSection: SettingsSection = .general
+
+    init(model: CalshotModel, section: SettingsSection = .general, showsHeading: Bool = true) {
+        self.model = model
+        self.section = section
+        self.showsHeading = showsHeading
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-                .frame(width: 196)
-            Rectangle().fill(.white.opacity(0.08)).frame(width: 1)
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
+            if showsHeading {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(selectedSection.title)
+                    Text(section.title)
                         .font(.system(size: 23, weight: .semibold))
-                    Text(selectedSection.subtitle)
+                    Text(section.subtitle)
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
-                sectionContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 28)
-            .padding(.bottom, 20)
+            sectionContent.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .background(Color(red: 0.075, green: 0.08, blue: 0.10))
-        .frame(minWidth: 760, minHeight: 560)
+        .padding(.horizontal, 28).padding(.top, 28).padding(.bottom, 20)
+        .background(Color(red: 0.055, green: 0.06, blue: 0.075))
+        .frame(minWidth: 600, minHeight: 500)
         .preferredColorScheme(.dark)
         .onAppear { model.refreshMemory() }
         .sheet(item: $selectedRecord) { record in
             MemoryRecordDetail(model: model, record: record)
-                .frame(minWidth: 600, minHeight: 500)
+                .frame(minWidth: 900, minHeight: 700)
         }
         .alert("Delete all saved screenshots and event history?", isPresented: $showingDeleteAll) {
             Button("Delete All", role: .destructive) { model.deleteAllMemory() }
@@ -76,52 +49,8 @@ struct SettingsView: View {
         }
     }
 
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 10) {
-                Image("CalshotMark").resizable().scaledToFit().padding(5)
-                    .frame(width: 34, height: 34)
-                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Calshot").font(.system(size: 14, weight: .semibold))
-                    Text("Settings").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-            }
-            VStack(spacing: 4) {
-                ForEach(SettingsSection.allCases) { section in
-                    Button { selectedSection = section } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: section.symbol)
-                                .font(.system(size: 13, weight: .medium))
-                                .frame(width: 18)
-                            Text(section.title).font(.system(size: 12, weight: .medium))
-                            Spacer(minLength: 0)
-                        }
-                        .foregroundStyle(selectedSection == section ? .white : .white.opacity(0.65))
-                        .padding(.horizontal, 11)
-                        .frame(height: 38)
-                        .background(selectedSection == section ? .white.opacity(0.11) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 10))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            Spacer()
-            HStack(spacing: 7) {
-                Circle().fill(.green).frame(width: 6, height: 6)
-                Text("Ready").font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            .padding(.leading, 11)
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 25)
-        .padding(.bottom, 20)
-        .frame(maxHeight: .infinity)
-        .background(Color.black.opacity(0.18))
-    }
-
     @ViewBuilder private var sectionContent: some View {
-        switch selectedSection {
+        switch section {
         case .general: generalTab
         case .ai: aiTab
         case .memory: memoryTab
@@ -131,6 +60,9 @@ struct SettingsView: View {
     private var generalTab: some View {
         Form {
             Section("Capture") {
+                Toggle("Copy captures to the clipboard automatically", isOn: $automaticallyCopyCapture)
+                Text("When enabled, each selected screenshot is copied as an image as soon as capture finishes.")
+                    .font(.callout).foregroundStyle(.secondary)
                 LabeledContent("Global shortcut") {
                     HStack(spacing: 10) {
                         ShortcutRecorder(shortcut: model.shortcut, isRecording: $isRecordingShortcut, model: model) { newShortcut in
@@ -140,7 +72,7 @@ struct SettingsView: View {
                             .disabled(model.shortcut == .default || model.isRecordingShortcut)
                     }
                 }
-                Text("Press the shortcut, drag over the event details, then press Return. Press Escape to cancel.")
+                Text("Press the shortcut, select a screen region, then press Return. Press Escape to cancel.")
                     .font(.callout).foregroundStyle(.secondary)
                 LabeledContent("Registration") {
                     Text(model.isRecordingShortcut ? "Listening for shortcut…" : model.shortcutRegistrationStatus == noErr
@@ -297,7 +229,7 @@ struct SettingsView: View {
     }
 }
 
-private enum SettingsSection: String, CaseIterable, Identifiable {
+enum SettingsSection: String, CaseIterable, Identifiable {
     case general
     case ai
     case memory
@@ -339,7 +271,7 @@ private struct MemoryRecordRow: View {
             }
             .frame(width: 84, height: 56).clipped().clipShape(RoundedRectangle(cornerRadius: 8))
             VStack(alignment: .leading, spacing: 4) {
-                Text(record.event?.title ?? "No event found").font(.headline).lineLimit(1)
+                Text(record.event?.title ?? "Screenshot").font(.headline).lineLimit(1)
                 Text(record.event?.startDate?.formatted(date: .abbreviated, time: .shortened) ?? record.createdAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.callout).foregroundStyle(.secondary)
                 HStack {
@@ -372,8 +304,11 @@ private struct MemoryRecordDetail: View {
                 Button("Delete Capture…", role: .destructive) { showingDelete = true }
             }
             if let data = MemoryStore.shared.imageData(for: record), let image = NSImage(data: data) {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(maxWidth: .infinity, maxHeight: 240)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                ScreenshotCanvasView(image: image, onRetake: {
+                    dismiss()
+                    Task { await model.capture() }
+                })
+                    .frame(height: 420)
             }
             if let event = record.event {
                 GroupBox("Event") {

@@ -26,14 +26,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.registerShortcut()
 
-        // Start with Calshot's compact notch launcher. The review opens after capture.
         DispatchQueue.main.async { [weak self] in
             self?.model.showNotchLauncher()
+            self?.model.openPanel()
         }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        if !hasVisibleWindows { model.showNotchLauncher() }
+        model.showNotchLauncher()
+        if !hasVisibleWindows { model.openPanel() }
         return true
     }
 
@@ -42,14 +43,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 final class CalshotModel: ObservableObject {
     @Published var image: NSImage?
+    @Published var recognizedText = ""
     @Published var draft: EventDraft?
     @Published var isCapturing = false
     @Published var isRecognizing = false
     @Published var status: String?
     @Published var screenCapturePermissionNeeded = false
-    @Published var panelController: ReviewPanelController?
-    @Published var settingsWindowController: SettingsWindowController?
-    @Published var notchLauncherController: NotchLauncherController?
+    var workspaceWindowController: WorkspaceWindowController?
+    var notchLauncherController: NotchExperienceController?
+    @Published var workspaceSelection: WorkspaceSection = .capture
     @Published var selectionOverlay: RegionSelectionOverlay?
     @Published var destinations: [CalendarDestinationInfo] = []
     @Published var selectedCalendarID: String?
@@ -86,30 +88,20 @@ final class CalshotModel: ObservableObject {
     }
 
     func openPanel() {
-        notchLauncherController?.hide()
-        if panelController == nil { panelController = ReviewPanelController(model: self) }
-        panelController?.show()
+        if workspaceWindowController == nil { workspaceWindowController = WorkspaceWindowController(model: self) }
+        workspaceWindowController?.show()
     }
 
     func showNotchLauncher() {
         if notchLauncherController == nil {
-            notchLauncherController = NotchLauncherController(model: self)
+            notchLauncherController = NotchExperienceController(model: self)
         }
         notchLauncherController?.show()
     }
 
     func openSettings() {
-        panelController?.hide()
-        if settingsWindowController == nil {
-            let controller = SettingsWindowController(model: self)
-            controller.onClose = { [weak self] in self?.settingsDidClose() }
-            settingsWindowController = controller
-        }
-        settingsWindowController?.show()
-    }
-
-    func settingsDidClose() {
-        showNotchLauncher()
+        workspaceSelection = .settings
+        openPanel()
     }
 
     func registerShortcut() {
@@ -205,9 +197,10 @@ final class CalshotModel: ObservableObject {
         screenCapturePermissionNeeded = false
         saveMessage = nil
         image = nil
+        recognizedText = ""
         draft = nil
         currentMemoryRecordID = nil
-        panelController?.hide()
+        workspaceWindowController?.hide()
         notchLauncherController?.hide()
         try? await Task.sleep(nanoseconds: 120_000_000)
         do {
@@ -273,8 +266,11 @@ final class CalshotModel: ObservableObject {
     private func analyze(_ cgImage: CGImage, sessionID: UUID) async {
         guard currentCaptureSessionID == sessionID else { return }
         image = NSImage(cgImage: cgImage, size: .zero)
+        if CaptureClipboard.automaticallyCopyCapture, let image { CaptureClipboard.copy(image) }
         isCapturing = false
+        workspaceSelection = .capture
         openPanel()
+        showNotchLauncher()
         isRecognizing = true
         status = nil
         saveMessage = nil
@@ -290,6 +286,7 @@ final class CalshotModel: ObservableObject {
             lastOCRStatus = "Vision OCR failed: \(error.localizedDescription)"
         }
         guard currentCaptureSessionID == sessionID else { return }
+        self.recognizedText = recognizedText
         let apiKey = try? OpenAIAPIKeyStore.load()
         if openAIAnalysisEnabled, let apiKey {
             analyzedWithOpenAI = true
@@ -374,8 +371,7 @@ final class CalshotModel: ObservableObject {
     }
 
     func dismiss() {
-        panelController?.close()
-        panelController = nil
+        workspaceWindowController?.hide()
         showNotchLauncher()
     }
 
@@ -384,10 +380,6 @@ final class CalshotModel: ObservableObject {
         selectionOverlay?.cancel()
         selectionOverlay = nil
         resumeShortcutAfterSelection()
-        if saveMessage?.hasPrefix("Added") != true, let currentMemoryRecordID {
-            try? memoryStore.deleteRecord(id: currentMemoryRecordID)
-            refreshMemory()
-        }
         currentMemoryRecordID = nil
         image = nil
         draft = nil
@@ -443,15 +435,15 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 11) {
-                Image("CalshotMark").resizable().scaledToFit().padding(6)
-                    .frame(width: 40, height: 40).background(LinearGradient(colors: [.indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 12))
+                Image("CalshotMark").resizable().scaledToFit()
+                    .frame(width: 40, height: 40)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Calshot").font(.system(size: 15, weight: .semibold))
-                    Text("Turn what you see into a calendar event").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("Capture, read, remember").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
             Button { Task { await model.capture() } } label: {
-                    HStack { Image(systemName: "camera.viewfinder"); Text("Select event region"); Spacer(); Text(model.shortcut.label).font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.65)) }
+                    HStack { Image(systemName: "camera.viewfinder"); Text("New Capture"); Spacer(); Text(model.shortcut.label).font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.65)) }
                     .padding(.horizontal, 12).padding(.vertical, 11).contentShape(Rectangle())
             }.buttonStyle(.plain).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 11)).foregroundStyle(.white)
             Toggle(isOn: $model.openAIAnalysisEnabled) {
@@ -473,7 +465,7 @@ struct MenuBarView: View {
             }
             .buttonStyle(.plain)
             Button { model.openPanel() } label: {
-                Label("Open Calshot", systemImage: "macwindow")
+                Label("Open Workspace", systemImage: "macwindow")
                     .font(.system(size: 11, weight: .medium))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -490,352 +482,6 @@ struct MenuBarView: View {
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }.padding(14).frame(width: 310)
-    }
-}
-
-@MainActor
-final class NotchLauncherController {
-    private let panel: NSPanel
-
-    init(model: CalshotModel) {
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 238, height: 46),
-                        styleMask: [.borderless, .nonactivatingPanel],
-                        backing: .buffered, defer: false)
-        panel.isFloatingPanel = true
-        panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .stationary]
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = true
-        panel.isMovableByWindowBackground = true
-        panel.hidesOnDeactivate = false
-        panel.contentView = NSHostingView(rootView: NotchLauncherView(model: model, close: { [weak panel] in
-            panel?.orderOut(nil)
-        }))
-        position(on: NSScreen.main)
-    }
-
-    func show() {
-        position(on: NSScreen.main)
-        panel.orderFrontRegardless()
-    }
-
-    func hide() { panel.orderOut(nil) }
-
-    private func position(on screen: NSScreen?) {
-        guard let screen else { panel.center(); return }
-        let size = panel.frame.size
-        let notchDepth = screen.safeAreaInsets.top
-        let y = notchDepth > 0
-            ? screen.frame.maxY - size.height + 8
-            : screen.visibleFrame.maxY - size.height - 6
-        panel.setFrameOrigin(NSPoint(x: screen.frame.midX - size.width / 2, y: y))
-    }
-}
-
-private struct NotchLauncherView: View {
-    @ObservedObject var model: CalshotModel
-    let close: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Button { Task { await model.capture() } } label: {
-                Image("CalshotMark")
-                    .resizable().scaledToFit().padding(5)
-                    .frame(width: 29, height: 29)
-                    .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
-            }
-            .buttonStyle(.plain)
-            .help("Select an event region · \(model.shortcut.label)")
-
-            Button { Task { await model.capture() } } label: {
-                HStack(spacing: 5) {
-                    Text("Capture").font(.system(size: 11, weight: .semibold))
-                    Text(model.shortcut.label).font(.system(size: 9, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.55))
-                }
-            }
-            .buttonStyle(.plain)
-            .help("Select an event region")
-
-            Spacer(minLength: 0)
-
-            Button { model.openSettings() } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .frame(width: 25, height: 25)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .help("Settings")
-
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.54))
-                    .frame(width: 21, height: 21)
-                    .background(Color.white.opacity(0.08), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .help("Hide Calshot")
-        }
-        .padding(.horizontal, 8)
-        .frame(width: 238, height: 46)
-        .background(Color(red: 0.035, green: 0.04, blue: 0.055), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).strokeBorder(.white.opacity(0.11), lineWidth: 1))
-        .preferredColorScheme(.dark)
-    }
-}
-
-final class ReviewPanelController {
-    private let panel: NSPanel
-    init(model: CalshotModel) {
-        let view = ReviewPanelView(model: model)
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 620), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
-        panel.title = "Calshot"
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.isFloatingPanel = true
-        panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        panel.isMovableByWindowBackground = true
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = true
-        panel.contentView = NSHostingView(rootView: view)
-        panel.centerNearMenuBar()
-    }
-    func show() { panel.centerNearMenuBar(); panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
-    func hide() { panel.orderOut(nil) }
-    func close() { panel.orderOut(nil) }
-}
-
-private extension NSPanel {
-    func centerNearMenuBar() {
-        guard let screen = NSScreen.main else { center(); return }
-        let visible = screen.visibleFrame
-        setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2, y: visible.maxY - frame.height - 10))
-    }
-}
-
-struct ReviewPanelView: View {
-    @ObservedObject var model: CalshotModel
-    @State private var showSource = false
-    @State private var expandedScreenshot = false
-    @State private var saved = false
-    private let ink = Color.primary
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    screenshot
-                    if model.isRecognizing { HStack(spacing: 9) { ProgressView().controlSize(.small); Text(model.openAIAnalysisEnabled && model.hasOpenAIAPIKey ? "Analyzing with OpenAI… screenshot is being sent" : "Reading event details on this Mac…").font(.system(size: 12)).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading) }
-                    if let draft = model.draft { eventForm(draft) }
-                    else if let status = model.status {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Label(status, systemImage: model.screenCapturePermissionNeeded ? "lock.shield" : "info.circle")
-                                .font(.system(size: 12)).foregroundStyle(.secondary)
-                            if model.screenCapturePermissionNeeded {
-                                Button("Open Screen Recording Settings") { model.openScreenCaptureSettings() }
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                        }
-                        .padding(13).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
-                    }
-                    else if model.image == nil { emptyState }
-                }.padding(20)
-            }
-            footer
-        }
-        .frame(width: 440, height: 620)
-        .background(Color(red: 0.075, green: 0.08, blue: 0.10))
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(0.28), lineWidth: 1))
-        .preferredColorScheme(.dark)
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image("CalshotMark").resizable().scaledToFit().padding(5).frame(width: 32, height: 32)
-                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Calshot").font(.system(size: 13, weight: .semibold))
-                Text(model.draft == nil ? "Screen capture" : model.analyzedWithOpenAI ? "OpenAI event review" : "On-device event review")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button { model.openSettings() } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
-                    .background(.quaternary, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .help("Settings")
-            Button { model.dismiss() } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).frame(width: 26, height: 26).background(.quaternary, in: Circle()) }.buttonStyle(.plain).help("Dismiss")
-        }.padding(.horizontal, 19).padding(.top, 17).padding(.bottom, 11)
-    }
-
-    @ViewBuilder private var screenshot: some View {
-        if let image = model.image {
-            ZStack(alignment: .topTrailing) {
-                Button { expandedScreenshot.toggle() } label: {
-                Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(height: expandedScreenshot ? 330 : 148).frame(maxWidth: .infinity).background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 13)).clipShape(RoundedRectangle(cornerRadius: 13))
-                }.buttonStyle(.plain).accessibilityLabel(expandedScreenshot ? "Show compact screenshot" : "Show larger screenshot").help("Click to resize screenshot preview")
-                Button { Task { await model.capture() } } label: { Label("Retake", systemImage: "arrow.clockwise").font(.system(size: 10, weight: .medium)).padding(.horizontal, 9).padding(.vertical, 6).background(.ultraThinMaterial, in: Capsule()) }.buttonStyle(.plain).padding(9)
-            }
-        } else if model.isCapturing {
-            RoundedRectangle(cornerRadius: 13).fill(.quaternary.opacity(0.55)).frame(height: 148).overlay(VStack(spacing: 9) { ProgressView(); Text("Capturing your screen…").font(.system(size: 12)).foregroundStyle(.secondary) })
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "rectangle.dashed.badge.record").font(.system(size: 28, weight: .light)).foregroundStyle(.indigo)
-            Text("Capture an event page").font(.system(size: 15, weight: .semibold))
-            Text("Calshot looks for dates and event details on your screen, then gives you a chance to review everything.").font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 320)
-            Text("Press  \(model.shortcut.label)  anywhere to select a region").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.tertiary).padding(.top, 3)
-        }.frame(maxWidth: .infinity).padding(.vertical, 28)
-    }
-
-    private func eventForm(_ initial: EventDraft) -> some View {
-        VStack(alignment: .leading, spacing: 13) {
-            if let status = model.status {
-                Label(status, systemImage: "info.circle")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if model.analyzedWithOpenAI {
-                Label("Analyzed by OpenAI · selected image sent to the API", systemImage: "cloud")
-                    .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
-            }
-            HStack(alignment: .firstTextBaseline) {
-                Text("EVENT DETAILS").font(.system(size: 9, weight: .bold)).tracking(1).foregroundStyle(.secondary)
-                Spacer()
-                Text(initial.confidence > 0.75 ? "Looks clear" : "Needs a closer look").font(.system(size: 9, weight: .medium)).foregroundStyle(initial.confidence > 0.75 ? .green : .orange)
-            }
-            VStack(spacing: 0) {
-                editableRow(icon: "textformat", placeholder: "Event title", text: binding(initial, \.title))
-                Divider().padding(.leading, 39)
-                if initial.ambiguities.contains(.missingTime) { Label("No time detected — review as all-day or add a time.", systemImage: "exclamationmark.triangle.fill").font(.system(size: 10, weight: .medium)).foregroundStyle(.orange).padding(.leading, 39).padding(.vertical, 7) }
-                if initial.ambiguities.contains(.missingDate) {
-                    Label("No event date detected — choose one below.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
-                        .padding(.leading, 39).padding(.vertical, 7)
-                } else if initial.ambiguities.contains(.missingYear) || initial.ambiguities.contains(.ambiguousDate) {
-                    Label("Check the date — confirm the year and day.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
-                        .padding(.leading, 39).padding(.vertical, 7)
-                }
-                dateRow(initial)
-                if let start = model.draft?.startDate,
-                   let end = model.draft?.endDate, end <= start {
-                    Label("End must be later than start. Adjust the end date or time above.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
-                        .padding(.leading, 28).padding(.vertical, 5)
-                }
-                Divider().padding(.leading, 39)
-                editableRow(icon: "mappin.and.ellipse", placeholder: "Add location", text: optionalBinding(initial, \.location))
-                if initial.url != nil {
-                    Divider().padding(.leading, 39)
-                    editableRow(icon: "link", placeholder: "Event link", text: Binding(get: { model.draft?.url?.absoluteString ?? initial.url?.absoluteString ?? "" }, set: { model.draft?.url = URL(string: $0) }))
-                }
-                if initial.notes != nil {
-                    Divider().padding(.leading, 39)
-                    editableRow(icon: "note.text", placeholder: "Notes", text: optionalBinding(initial, \.notes))
-                }
-            }.padding(.horizontal, 11).background(.background.opacity(0.72), in: RoundedRectangle(cornerRadius: 13)).overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.primary.opacity(0.055)))
-            HStack {
-                Text("SAVE TO").font(.system(size: 9, weight: .bold)).tracking(1).foregroundStyle(.secondary)
-                Spacer()
-                if model.destinations.isEmpty {
-                    Button("Choose calendar…") { Task { await model.loadCalendars() } }.font(.system(size: 11))
-                } else {
-                    Picker("Calendar", selection: Binding(get: { model.selectedCalendarID ?? "" }, set: { model.selectedCalendarID = $0 })) {
-                        ForEach(model.destinations) { calendar in Text("\(calendar.title) · \(calendar.provider == .google ? "Google" : calendar.provider == .apple ? "Apple" : "Other")").tag(calendar.id) }
-                    }.labelsHidden().pickerStyle(.menu).font(.system(size: 11))
-                }
-            }.padding(.top, 2)
-            if let message = model.saveMessage { Text(message).font(.system(size: 10)).foregroundStyle(message.hasPrefix("Added") ? .green : .secondary).frame(maxWidth: .infinity, alignment: .leading) }
-            if model.destinations.contains(where: { $0.provider == .google }) { Text("Google calendars connected in macOS are available here. Add accounts in System Settings → Internet Accounts.").font(.system(size: 10)).foregroundStyle(.secondary) }
-            DisclosureGroup(isExpanded: $showSource) {
-                Text(initial.sourceText.isEmpty ? "No source text was found." : initial.sourceText).font(.system(size: 10)).foregroundStyle(.secondary).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 7)
-            } label: { Label("Source text", systemImage: "text.quote").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary) }
-        }
-    }
-
-    private func binding(_ d: EventDraft, _ keyPath: WritableKeyPath<EventDraft, String>) -> Binding<String> {
-        Binding(get: { model.draft?[keyPath: keyPath] ?? d[keyPath: keyPath] }, set: { model.draft?[keyPath: keyPath] = $0 })
-    }
-    private func optionalBinding(_ d: EventDraft, _ keyPath: WritableKeyPath<EventDraft, String?>) -> Binding<String> {
-        Binding(get: { model.draft?[keyPath: keyPath] ?? d[keyPath: keyPath] ?? "" }, set: { model.draft?[keyPath: keyPath] = $0.isEmpty ? nil : $0 })
-    }
-    private func editableRow(icon: String, placeholder: String, text: Binding<String>) -> some View {
-        HStack(spacing: 12) { Image(systemName: icon).font(.system(size: 12)).foregroundStyle(.secondary).frame(width: 16); TextField(placeholder, text: text).textFieldStyle(.plain).font(.system(size: 12)) }.padding(.vertical, 11)
-    }
-    private func dateRow(_ draft: EventDraft) -> some View {
-        VStack(spacing: 5) {
-            HStack(spacing: 12) {
-                Image(systemName: "calendar").font(.system(size: 12)).foregroundStyle(.secondary).frame(width: 16)
-                Text("Starts").font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 37, alignment: .leading)
-                DatePicker("Start", selection: Binding(get: { model.draft?.startDate ?? .now }, set: { value in
-                    let selected = model.draft?.isAllDay == true ? Calendar.current.startOfDay(for: value) : value
-                    model.draft?.startDate = selected
-                    model.draft?.ambiguities.removeAll { $0 == .missingDate || $0 == .missingYear || $0 == .ambiguousDate || $0 == .missingTime }
-                    if model.draft?.isAllDay == true { model.draft?.endDate = Calendar.current.date(byAdding: .day, value: 1, to: selected) }
-                    else if model.draft?.endDate == nil || (model.draft?.endDate ?? .distantPast) <= selected { model.draft?.endDate = selected.addingTimeInterval(3600) }
-                }), displayedComponents: draft.isAllDay ? [.date] : [.date, .hourAndMinute]).labelsHidden().datePickerStyle(.compact).font(.system(size: 11))
-                Spacer(minLength: 4)
-                Toggle("All day", isOn: Binding(get: { model.draft?.isAllDay ?? false }, set: { setAllDay($0) })).labelsHidden().toggleStyle(.switch).controlSize(.mini).accessibilityLabel("All day event")
-            }
-            if draft.isAllDay {
-                Label("Ends at midnight the following day", systemImage: "moon.zzz").font(.system(size: 10)).foregroundStyle(.secondary).padding(.leading, 28).padding(.top, 2)
-            } else { HStack(spacing: 12) {
-                Color.clear.frame(width: 16)
-                Text("Ends").font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 37, alignment: .leading)
-                DatePicker("End", selection: Binding(get: { model.draft?.endDate ?? (model.draft?.startDate ?? .now).addingTimeInterval(3600) }, set: { value in
-                    model.draft?.endDate = value
-                }), displayedComponents: draft.isAllDay ? [.date] : [.date, .hourAndMinute]).labelsHidden().datePickerStyle(.compact).font(.system(size: 11))
-                Spacer()
-            } }
-        }.padding(.vertical, 7)
-    }
-    private func setAllDay(_ enabled: Bool) {
-        guard var value = model.draft else { return }
-        value.isAllDay = enabled
-        if enabled, let start = value.startDate {
-            let calendar = Calendar.current
-            let dayStart = calendar.startOfDay(for: start)
-            value.startDate = dayStart
-            value.endDate = calendar.date(byAdding: .day, value: 1, to: dayStart)
-        }
-        model.draft = value
-    }
-
-    private var footer: some View {
-        HStack(spacing: 9) {
-            Button { model.cancelReview() } label: { Text("Cancel").font(.system(size: 12, weight: .medium)).frame(width: 86, height: 38) }.buttonStyle(.plain).background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 11)).disabled(model.isSaving)
-            Spacer()
-            if model.draft != nil {
-                Button { Task { await model.saveEvent() } } label: {
-                    HStack(spacing: 8) { if model.isSaving { ProgressView().controlSize(.small).tint(.white) } else { Image(systemName: model.saveMessage?.hasPrefix("Added") == true ? "checkmark" : "calendar.badge.plus") }; Text(model.isSaving ? "Adding…" : model.saveMessage?.hasPrefix("Added") == true ? "Added" : "Add to Calendar") }.font(.system(size: 12, weight: .semibold)).frame(width: 150, height: 38)
-                }.buttonStyle(.plain).foregroundStyle(.white).background(model.saveMessage?.hasPrefix("Added") == true ? Color.green : Color.accentColor, in: RoundedRectangle(cornerRadius: 11)).disabled(model.isSaving || model.saveMessage?.hasPrefix("Added") == true || !isDraftReadyToSave)
-            } else {
-                Button { Task { await model.capture() } } label: { Label("Select a region", systemImage: "camera.viewfinder").font(.system(size: 12, weight: .semibold)).frame(width: 150, height: 38) }.buttonStyle(.plain).foregroundStyle(.white).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 11))
-            }
-        }.padding(.horizontal, 19).padding(.vertical, 14).background(Color.black.opacity(0.24))
-    }
-
-    private var isDraftReadyToSave: Bool {
-        guard let draft = model.draft,
-              !draft.ambiguities.contains(where: { $0 == .missingDate || $0 == .missingYear || $0 == .ambiguousDate }),
-              let start = draft.startDate, let end = draft.endDate else { return false }
-        return end > start
     }
 }
 

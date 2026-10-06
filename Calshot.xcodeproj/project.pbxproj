@@ -23,6 +23,10 @@
 		A3000000000000000000000E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* SettingsView.swift */; };
 		A3000000000000000000000F /* MemoryStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* MemoryStoreTests.swift */; };
 		A30000000000000000000010 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* Assets.xcassets */; };
+		A30000000000000000000011 /* NotchExperience.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* NotchExperience.swift */; };
+		A30000000000000000000012 /* UnifiedWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* UnifiedWorkspace.swift */; };
+		A30000000000000000000013 /* ScreenshotExperience.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* ScreenshotExperience.swift */; };
+		A30000000000000000000014 /* WorkspaceWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* WorkspaceWindowController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -54,6 +58,10 @@
 		A20000000000000000000010 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A20000000000000000000011 /* MemoryStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryStoreTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000012 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A20000000000000000000013 /* NotchExperience.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchExperience.swift; sourceTree = "<group>"; };
+		A20000000000000000000014 /* UnifiedWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedWorkspace.swift; sourceTree = "<group>"; };
+		A20000000000000000000015 /* ScreenshotExperience.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotExperience.swift; sourceTree = "<group>"; };
+		A20000000000000000000016 /* WorkspaceWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWindowController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -92,6 +100,10 @@
 				A2000000000000000000000E /* RegionSelectionOverlay.swift */,
 				A2000000000000000000000F /* MemoryStore.swift */,
 				A20000000000000000000010 /* SettingsView.swift */,
+				A20000000000000000000013 /* NotchExperience.swift */,
+				A20000000000000000000014 /* UnifiedWorkspace.swift */,
+				A20000000000000000000015 /* ScreenshotExperience.swift */,
+				A20000000000000000000016 /* WorkspaceWindowController.swift */,
 				A20000000000000000000012 /* Assets.xcassets */,
 			);
 			path = .;
@@ -249,6 +261,10 @@
 				A3000000000000000000000C /* RegionSelectionOverlay.swift in Sources */,
 				A3000000000000000000000D /* MemoryStore.swift in Sources */,
 				A3000000000000000000000E /* SettingsView.swift in Sources */,
+				A30000000000000000000011 /* NotchExperience.swift in Sources */,
+				A30000000000000000000012 /* UnifiedWorkspace.swift in Sources */,
+				A30000000000000000000013 /* ScreenshotExperience.swift in Sources */,
+				A30000000000000000000014 /* WorkspaceWindowController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
