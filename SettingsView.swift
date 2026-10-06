@@ -33,9 +33,13 @@ struct SettingsView: View {
                     Text(section.subtitle)
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: 790, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
             sectionContent.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        .frame(maxWidth: 920, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, 28).padding(.top, 28).padding(.bottom, 20)
         .background(.clear)
         .frame(minWidth: 600, minHeight: 500)
@@ -94,7 +98,10 @@ struct SettingsView: View {
                     settingsDivider
                     settingLabel("OpenAI analysis", detail: "When enabled, only the selected region and its recognized text are sent to OpenAI. Delete captures any time from Memory.")
                 }
-            }.frame(maxWidth: 790, alignment: .leading).padding(.top, 6)
+            }
+            .frame(maxWidth: 790, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, 6)
         }.scrollIndicators(.visible)
     }
 
@@ -263,7 +270,10 @@ struct SettingsView: View {
                 }
                 Text("Only selected screenshots are sent for analysis. ChatGPT plan usage requires separate consent and follows your ChatGPT limits.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 4)
-            }.frame(maxWidth: 790, alignment: .leading).padding(.top, 6)
+            }
+            .frame(maxWidth: 790, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, 6)
         }
         .scrollIndicators(.visible)
         .task {
