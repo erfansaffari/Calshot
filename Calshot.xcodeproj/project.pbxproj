@@ -27,6 +27,8 @@
 		A30000000000000000000012 /* UnifiedWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* UnifiedWorkspace.swift */; };
 		A30000000000000000000013 /* ScreenshotExperience.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* ScreenshotExperience.swift */; };
 		A30000000000000000000014 /* WorkspaceWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* WorkspaceWindowController.swift */; };
+		A30000000000000000000015 /* ChatGPTConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* ChatGPTConnection.swift */; };
+		A30000000000000000000016 /* OpenAIStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* OpenAIStreamTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -62,6 +64,8 @@
 		A20000000000000000000014 /* UnifiedWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedWorkspace.swift; sourceTree = "<group>"; };
 		A20000000000000000000015 /* ScreenshotExperience.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotExperience.swift; sourceTree = "<group>"; };
 		A20000000000000000000016 /* WorkspaceWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWindowController.swift; sourceTree = "<group>"; };
+		A20000000000000000000017 /* ChatGPTConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTConnection.swift; sourceTree = "<group>"; };
+		A20000000000000000000018 /* OpenAIStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIStreamTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -118,6 +122,7 @@
 				A20000000000000000000005 /* ScreenTextRecognizer.swift */,
 				A2000000000000000000000C /* OpenAIEventAnalyzer.swift */,
 				A2000000000000000000000D /* GlobalShortcut.swift */,
+				A20000000000000000000017 /* ChatGPTConnection.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -137,6 +142,7 @@
 			children = (
 				A20000000000000000000009 /* EventDraftParserTests.swift */,
 				A20000000000000000000011 /* MemoryStoreTests.swift */,
+				A20000000000000000000018 /* OpenAIStreamTests.swift */,
 			);
 			path = CoreTests;
 			sourceTree = "<group>";
@@ -265,6 +271,7 @@
 				A30000000000000000000012 /* UnifiedWorkspace.swift in Sources */,
 				A30000000000000000000013 /* ScreenshotExperience.swift in Sources */,
 				A30000000000000000000014 /* WorkspaceWindowController.swift in Sources */,
+				A30000000000000000000015 /* ChatGPTConnection.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -274,6 +281,7 @@
 			files = (
 				A30000000000000000000009 /* EventDraftParserTests.swift in Sources */,
 				A3000000000000000000000F /* MemoryStoreTests.swift in Sources */,
+				A30000000000000000000016 /* OpenAIStreamTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

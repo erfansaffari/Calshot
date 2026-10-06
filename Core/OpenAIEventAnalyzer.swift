@@ -28,7 +28,7 @@ enum OpenAIEventAnalyzer {
         }
     }
 
-    private struct APIResponse: Decodable {
+    struct APIResponse: Decodable {
         struct OutputItem: Decodable {
             struct ContentItem: Decodable {
                 var type: String?
@@ -62,7 +62,8 @@ enum OpenAIEventAnalyzer {
         var confidence: Double?
     }
 
-    static func analyze(image: CGImage, apiKey: String, referenceDate: Date = .now,
+    static func analyze(image: CGImage, apiKey: String, model: String = modelName,
+                        stream: Bool = false, referenceDate: Date = .now,
                         timeZone: TimeZone = .current, locale: Locale = .current,
                         recognizedText: String = "") async throws -> [EventDraft] {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -71,7 +72,7 @@ enum OpenAIEventAnalyzer {
         }
         let dataURL = try makeImageDataURL(image)
         let payload: [String: Any] = [
-            "model": modelName,
+            "model": model,
             "store": false,
             "instructions": instructions,
             "input": [[
@@ -94,7 +95,9 @@ enum OpenAIEventAnalyzer {
         request.httpMethod = "POST"
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        var body = payload
+        if stream { body["stream"] = true }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw AnalyzerError.invalidResponse }
@@ -104,7 +107,7 @@ enum OpenAIEventAnalyzer {
                 ?? "The server returned no error details."
             throw AnalyzerError.apiError(statusCode: http.statusCode, message: message)
         }
-        let responseBody = try JSONDecoder().decode(APIResponse.self, from: data)
+        let responseBody = try (stream ? completedStreamResponse(data) : JSONDecoder().decode(APIResponse.self, from: data))
         let text = responseBody.output?.flatMap { $0.content ?? [] }
             .compactMap { $0.text }
             .joined(separator: "\n")
@@ -114,6 +117,39 @@ enum OpenAIEventAnalyzer {
             makeDraft($0, referenceDate: referenceDate, defaultTimeZone: timeZone,
                       sourceText: recognizedText)
         }
+    }
+
+    /// The ChatGPT plan route requires streaming. A result is usable only after
+    /// the terminal response.completed event, even if text arrived earlier.
+    static func completedStreamResponse(_ data: Data) throws -> APIResponse {
+        guard let stream = String(data: data, encoding: .utf8) else { throw AnalyzerError.invalidResponse }
+        var completedItems: [Int: APIResponse.OutputItem] = [:]
+        for line in stream.components(separatedBy: .newlines) where line.hasPrefix("data: ") {
+            let json = String(line.dropFirst(6))
+            guard let event = json.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: event) as? [String: Any],
+                  let type = object["type"] as? String else { continue }
+            if type == "response.output_item.done",
+               let index = object["output_index"] as? Int,
+               let item = object["item"], JSONSerialization.isValidJSONObject(item) {
+                let itemData = try JSONSerialization.data(withJSONObject: item)
+                completedItems[index] = try JSONDecoder().decode(APIResponse.OutputItem.self, from: itemData)
+            }
+            if type == "response.failed" || type == "response.incomplete" {
+                let response = object["response"] as? [String: Any]
+                let error = response?["error"] as? [String: Any]
+                throw AnalyzerError.apiError(statusCode: 0, message: error?["message"] as? String ?? "The response did not complete.")
+            }
+            if type == "response.completed", let response = object["response"],
+               JSONSerialization.isValidJSONObject(response) {
+                let completed = try JSONSerialization.data(withJSONObject: response)
+                let decoded = try JSONDecoder().decode(APIResponse.self, from: completed)
+                if let output = decoded.output, !output.isEmpty { return decoded }
+                guard !completedItems.isEmpty else { throw AnalyzerError.invalidResponse }
+                return APIResponse(output: completedItems.keys.sorted().compactMap { completedItems[$0] })
+            }
+        }
+        throw AnalyzerError.invalidResponse
     }
 
     /// Verifies both the API key and access to the configured vision model without

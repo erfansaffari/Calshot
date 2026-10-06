@@ -58,6 +58,7 @@ final class CalshotModel: ObservableObject {
     @Published var isSaving = false
     @Published var saveMessage: String?
     @Published var hasOpenAIAPIKey = false
+    @Published var chatGPTAccount: ChatGPTConnection.Account?
     @Published var openAIAnalysisEnabled = UserDefaults.standard.bool(forKey: "openAIAnalysisEnabled") {
         didSet { UserDefaults.standard.set(openAIAnalysisEnabled, forKey: "openAIAnalysisEnabled") }
     }
@@ -85,6 +86,14 @@ final class CalshotModel: ObservableObject {
 
     init() {
         hasOpenAIAPIKey = (try? OpenAIAPIKeyStore.load()) != nil
+        chatGPTAccount = ChatGPTConnection.savedAccount()
+        if chatGPTAccount?.canUsePlan == true {
+            Task { [weak self] in
+                guard let self,
+                      let account = try? await ChatGPTConnection.shared.refreshPreferredModel() else { return }
+                self.chatGPTAccount = account
+            }
+        }
     }
 
     func openPanel() {
@@ -288,7 +297,24 @@ final class CalshotModel: ObservableObject {
         guard currentCaptureSessionID == sessionID else { return }
         self.recognizedText = recognizedText
         let apiKey = try? OpenAIAPIKeyStore.load()
-        if openAIAnalysisEnabled, let apiKey {
+        if openAIAnalysisEnabled, chatGPTAccount?.canUsePlan == true {
+            analyzedWithOpenAI = true
+            status = "Analyzing screenshot with your ChatGPT plan…"
+            do {
+                let access = try await ChatGPTConnection.shared.access()
+                candidates = try await OpenAIEventAnalyzer.analyze(
+                    image: cgImage, apiKey: access.token, model: access.model, stream: true,
+                    referenceDate: .now, timeZone: .current, locale: .current,
+                    recognizedText: recognizedText
+                )
+                lastAnalysisProvider = "ChatGPT plan (\(access.model)) + Vision OCR"
+            } catch {
+                analyzedWithOpenAI = false
+                fallbackStatus = "ChatGPT analysis failed; used on-device analysis. \(error.localizedDescription)"
+                candidates = await EventDraftExtractionService.extract(recognizedText)
+                lastAnalysisProvider = "On-device fallback + Vision OCR"
+            }
+        } else if openAIAnalysisEnabled, let apiKey {
             analyzedWithOpenAI = true
             status = "Cross-checking screenshot and Vision OCR with OpenAI…"
             do {
@@ -305,8 +331,8 @@ final class CalshotModel: ObservableObject {
             }
         } else {
             analyzedWithOpenAI = false
-            if openAIAnalysisEnabled && !hasOpenAIAPIKey {
-                fallbackStatus = "Add an OpenAI API key in Settings. Used on-device analysis instead."
+            if openAIAnalysisEnabled && !hasOpenAIAPIKey && chatGPTAccount == nil {
+                fallbackStatus = "Connect ChatGPT or add an OpenAI API key in Settings. Used on-device analysis instead."
             }
             candidates = await EventDraftExtractionService.extract(recognizedText)
             lastAnalysisProvider = "On-device analysis + Vision OCR"
@@ -359,10 +385,27 @@ final class CalshotModel: ObservableObject {
         openAIAnalysisEnabled = true
     }
 
+    func connectChatGPT() async throws {
+        let account = try await ChatGPTConnection.shared.connect()
+        chatGPTAccount = account
+        openAIAnalysisEnabled = account.canUsePlan || hasOpenAIAPIKey
+    }
+
+    func disconnectChatGPT() async throws {
+        do { try await ChatGPTConnection.shared.disconnect() }
+        catch {
+            chatGPTAccount = nil
+            if !hasOpenAIAPIKey { openAIAnalysisEnabled = false }
+            throw error
+        }
+        chatGPTAccount = nil
+        if !hasOpenAIAPIKey { openAIAnalysisEnabled = false }
+    }
+
     func removeOpenAIAPIKey() throws {
         try OpenAIAPIKeyStore.delete()
         hasOpenAIAPIKey = false
-        openAIAnalysisEnabled = false
+        if chatGPTAccount?.canUsePlan != true { openAIAnalysisEnabled = false }
     }
 
     func openScreenCaptureSettings() {
@@ -452,9 +495,9 @@ struct MenuBarView: View {
             }
             .toggleStyle(.switch)
             .controlSize(.small)
-            .disabled(!model.hasOpenAIAPIKey)
-            if !model.hasOpenAIAPIKey {
-                Text("Add your API key to enable OpenAI analysis.")
+            .disabled(!model.hasOpenAIAPIKey && model.chatGPTAccount?.canUsePlan != true)
+            if !model.hasOpenAIAPIKey && model.chatGPTAccount?.canUsePlan != true {
+                Text("Connect ChatGPT or add an API key to enable OpenAI analysis.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                     .padding(.leading, 2)
             }

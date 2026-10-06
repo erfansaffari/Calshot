@@ -19,7 +19,13 @@ struct CalshotWorkspaceView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 620)
-        .background(Color(red: 0.055, green: 0.06, blue: 0.075))
+        .background {
+            ZStack {
+                Color(red: 0.055, green: 0.06, blue: 0.075)
+                RadialGradient(colors: [Color.indigo.opacity(0.16), .clear],
+                               center: .topTrailing, startRadius: 40, endRadius: 760)
+            }
+        }
         .preferredColorScheme(.dark)
         .ignoresSafeArea(.container, edges: .top)
         .onAppear { model.refreshMemory() }
@@ -52,7 +58,7 @@ struct CalshotWorkspaceView: View {
         .foregroundStyle(.white.opacity(0.75))
         .padding(.horizontal, 14)
         .frame(height: 46)
-        .background(Color(red: 0.07, green: 0.075, blue: 0.085))
+        .background(.ultraThinMaterial)
     }
 
     private var sidebar: some View {
@@ -110,7 +116,7 @@ struct CalshotWorkspaceView: View {
         .padding(.horizontal, sidebarExpanded ? 13 : 8).padding(.top, 18).padding(.bottom, 17)
         .frame(width: sidebarExpanded ? 204 : 60)
         .frame(maxHeight: .infinity, alignment: .topLeading)
-        .background(.ultraThinMaterial.opacity(0.45))
+        .background(.ultraThinMaterial)
     }
 
     private func navRow(_ item: WorkspaceSection) -> some View {
@@ -159,7 +165,7 @@ struct CalshotWorkspaceView: View {
                         .font(.system(size: 13, weight: .semibold))
                         .padding(.horizontal, 16).frame(height: 38)
                 }
-                .modifier(CaptureGlassButtonStyle())
+                .modifier(SystemCaptureButtonStyle())
                 .disabled(model.isCapturing || model.isRecognizing)
             }
             if model.isRecognizing {
@@ -281,26 +287,20 @@ private struct SidebarGlassSurface: ViewModifier {
     }
 }
 
-private struct CaptureGlassButtonStyle: ViewModifier {
+private struct SystemCaptureButtonStyle: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(macOS 26, *) {
             content.buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .padding(.horizontal, 6).padding(.vertical, 3)
-                .background(
-                    LinearGradient(colors: [Color(red: 0.34, green: 0.43, blue: 0.94).opacity(0.55),
-                                            Color(red: 0.23, green: 0.30, blue: 0.68).opacity(0.32),
-                                            .white.opacity(0.07)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                )
-                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .padding(.horizontal, 7).padding(.vertical, 4)
+                .glassEffect(.regular.tint(.indigo.opacity(0.22)).interactive(),
+                             in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .strokeBorder(.white.opacity(0.2), lineWidth: 1))
         } else {
-            content.buttonStyle(.bordered)
-                .tint(Color(red: 0.31, green: 0.39, blue: 0.89))
+            content.buttonStyle(.borderedProminent)
+                .tint(.indigo)
         }
     }
 }

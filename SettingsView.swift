@@ -10,6 +10,8 @@ struct SettingsView: View {
     @State private var apiKey = ""
     @State private var connectionMessage: String?
     @State private var isTestingConnection = false
+    @State private var isConnectingChatGPT = false
+    @State private var chatGPTSignInTask: Task<Void, Never>?
     @State private var isRecordingShortcut = false
     @State private var selectedRecord: MemoryCaptureRecord?
     @State private var showingDeleteAll = false
@@ -33,7 +35,7 @@ struct SettingsView: View {
             sectionContent.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .padding(.horizontal, 28).padding(.top, 28).padding(.bottom, 20)
-        .background(Color(red: 0.055, green: 0.06, blue: 0.075))
+        .background(.clear)
         .frame(minWidth: 600, minHeight: 500)
         .preferredColorScheme(.dark)
         .onAppear { model.refreshMemory() }
@@ -99,19 +101,79 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 19) {
                 settingsGroup("ANALYSIS") {
                     HStack(spacing: 16) {
-                        settingLabel("Analyze with OpenAI", detail: "Send selected screenshots to OpenAI for event suggestions.")
+                        settingLabel("Analyze screenshots", detail: "Suggest calendar events from the selected region.")
                         Spacer(minLength: 12)
-                        Toggle("Analyze with OpenAI", isOn: $model.openAIAnalysisEnabled)
+                        Toggle("Analyze screenshots", isOn: $model.openAIAnalysisEnabled)
                             .labelsHidden().toggleStyle(.switch).controlSize(.small).tint(.accentColor)
-                            .disabled(!model.hasOpenAIAPIKey)
+                            .disabled(!model.hasOpenAIAPIKey && model.chatGPTAccount?.canUsePlan != true)
                     }
                     settingsDivider
-                    settingsValueRow("Connection", value: model.hasOpenAIAPIKey ? "Key saved" : "Add a key below", color: model.hasOpenAIAPIKey ? .green : .secondary)
+                    settingsValueRow("Using", value: model.chatGPTAccount?.canUsePlan == true ? "ChatGPT plan" : model.hasOpenAIAPIKey ? "OpenAI API key" : "On-device only", color: model.chatGPTAccount?.canUsePlan == true ? .green : .secondary)
                     settingsDivider
-                    settingsValueRow("Model", value: OpenAIEventAnalyzer.modelName, color: .secondary)
+                    settingsValueRow("Model", value: model.chatGPTAccount?.canUsePlan == true ? (model.chatGPTAccount?.model ?? "") : OpenAIEventAnalyzer.modelName, color: .secondary)
+                }
+                settingsGroup("CHATGPT ACCOUNT") {
+                    if let account = model.chatGPTAccount {
+                        settingLabel("Connected as \(account.email)", detail: account.canUsePlan
+                                     ? "Eligible analysis uses your ChatGPT plan. Manage limits in ChatGPT Settings."
+                                     : "Plan usage was not approved. Reconnect to allow Calshot to analyze screenshots.")
+                        HStack(spacing: 9) {
+                            if !account.canUsePlan {
+                                Button("Enable plan usage") {
+                                    isConnectingChatGPT = true
+                                    chatGPTSignInTask = Task {
+                                        defer { isConnectingChatGPT = false }
+                                        do { try await model.connectChatGPT(); connectionMessage = "Connected. ChatGPT plan usage is enabled." }
+                                        catch { connectionMessage = error is CancellationError ? "Sign-in cancelled." : error.localizedDescription }
+                                    }
+                                }.buttonStyle(GlassActionButtonStyle()).disabled(isConnectingChatGPT)
+                            }
+                            Button("Manage usage") {
+                                NSWorkspace.shared.open(URL(string: "https://chatgpt.com/settings/usage")!)
+                            }.buttonStyle(GlassActionButtonStyle())
+                            Spacer(minLength: 0)
+                            Button("Disconnect", role: .destructive) {
+                                Task {
+                                    do { try await model.disconnectChatGPT(); connectionMessage = "ChatGPT disconnected." }
+                                    catch { connectionMessage = error.localizedDescription }
+                                }
+                            }.buttonStyle(GlassActionButtonStyle(destructive: true))
+                        }.padding(.bottom, 10)
+                    } else {
+                        settingLabel("Use your ChatGPT plan", detail: "Connect a Plus or Pro account to analyze screenshots without an API key.")
+                        Button {
+                            isConnectingChatGPT = true
+                            chatGPTSignInTask = Task {
+                                defer { isConnectingChatGPT = false }
+                                do {
+                                    try await model.connectChatGPT()
+                                    connectionMessage = model.chatGPTAccount?.canUsePlan == true
+                                        ? "Connected. ChatGPT plan usage is enabled."
+                                        : "Connected. Approve plan usage to enable analysis."
+                                }
+                                catch { connectionMessage = error is CancellationError ? "Sign-in cancelled." : error.localizedDescription }
+                            }
+                        } label: {
+                            if isConnectingChatGPT { ProgressView().controlSize(.small) }
+                            else { Text("Continue with ChatGPT") }
+                        }
+                        .buttonStyle(GlassActionButtonStyle())
+                        .disabled(isConnectingChatGPT)
+                        .padding(.bottom, 10)
+                        if isConnectingChatGPT {
+                            Button("Cancel sign-in") { chatGPTSignInTask?.cancel() }
+                                .buttonStyle(GlassActionButtonStyle())
+                                .padding(.bottom, 10)
+                        }
+                    }
+                    if let connectionMessage {
+                        Text(connectionMessage).font(.system(size: 11))
+                            .foregroundStyle(connectionMessage.hasPrefix("Connected") ? .green : .secondary)
+                            .textSelection(.enabled).padding(.bottom, 8)
+                    }
                 }
                 settingsGroup("OPENAI API KEY") {
-                    settingLabel("API key", detail: "Stored in macOS Keychain. Replace it here whenever you need to.")
+                    settingLabel("Use an API key instead", detail: "Optional alternative, stored in macOS Keychain. API usage is billed separately.")
                     SecureField(model.hasOpenAIAPIKey ? "Replace saved API key" : "Paste API key", text: $apiKey)
                         .textFieldStyle(.plain).font(.system(size: 12))
                         .padding(.horizontal, 12).padding(.vertical, 9)
@@ -141,11 +203,6 @@ struct SettingsView: View {
                             }.buttonStyle(GlassActionButtonStyle(destructive: true))
                         }
                     }.padding(.top, 12).padding(.bottom, 8)
-                    if let connectionMessage {
-                        Text(connectionMessage).font(.system(size: 11))
-                            .foregroundStyle(connectionMessage.hasPrefix("Connected") ? .green : .secondary)
-                            .textSelection(.enabled).padding(.bottom, 8)
-                    }
                 }
                 settingsGroup("RECENT ACTIVITY") {
                     settingsValueRow("Last analysis", value: model.lastCaptureSummary, color: .secondary)
@@ -153,7 +210,7 @@ struct SettingsView: View {
                     settingsDivider
                     settingsValueRow("Text recognition", value: model.lastOCRStatus, color: .secondary)
                 }
-                Text("Connection testing does not send a screenshot. Analysis may incur OpenAI API charges.")
+                Text("Only selected screenshots are sent for analysis. ChatGPT plan usage requires separate consent and follows your ChatGPT limits.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 4)
             }.frame(maxWidth: 790, alignment: .leading).padding(.top, 6)
         }.scrollIndicators(.visible)
@@ -163,10 +220,11 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.system(size: 10, weight: .bold)).tracking(1.3).foregroundStyle(.secondary).padding(.horizontal, 4)
             VStack(alignment: .leading, spacing: 0, content: content)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 15).padding(.vertical, 5)
-                .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.075), lineWidth: 1))
+                .modifier(SettingsGlassSurface())
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var settingsDivider: some View { Rectangle().fill(Color.white.opacity(0.075)).frame(height: 1) }
@@ -194,7 +252,8 @@ struct SettingsView: View {
                 configuration.label.font(.system(size: 11, weight: .medium))
                     .foregroundStyle(destructive ? Color.red : Color.primary)
                     .padding(.horizontal, 11).padding(.vertical, 7)
-                    .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 9))
+                    .glassEffect(.regular.tint(.white.opacity(0.08)).interactive(), in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.12), lineWidth: 1))
                     .opacity(configuration.isPressed ? 0.8 : 1)
             } else {
                 configuration.label.font(.system(size: 11, weight: .medium))
@@ -247,8 +306,7 @@ struct SettingsView: View {
                 }
             }
             .padding(14)
-            .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.075), lineWidth: 1))
+            .modifier(SettingsGlassSurface())
             if model.memoryRecords.isEmpty {
                 ContentUnavailableView("No captures yet", systemImage: "photo.on.rectangle.angled",
                                        description: Text("Captured regions will appear here with their analysis and save status."))
@@ -268,6 +326,17 @@ struct SettingsView: View {
             }
         }
         .padding(.top, 10)
+    }
+}
+
+private struct SettingsGlassSurface: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        } else {
+            content.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
     }
 }
 
