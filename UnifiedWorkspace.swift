@@ -10,8 +10,6 @@ struct CalshotWorkspaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            windowBar
-            Rectangle().fill(.white.opacity(0.07)).frame(height: 1)
             HStack(spacing: 0) {
                 sidebar
                 Rectangle().fill(.white.opacity(0.07)).frame(width: 1)
@@ -28,28 +26,6 @@ struct CalshotWorkspaceView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear { model.refreshMemory() }
-    }
-
-    private var windowBar: some View {
-        HStack(spacing: 12) {
-            Button {
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) { sidebarExpanded.toggle() }
-            } label: {
-                Image(systemName: "sidebar.left")
-                    .font(.system(size: 14, weight: .medium))
-                    .frame(width: 30, height: 30)
-            }
-            .help(sidebarExpanded ? "Collapse sidebar" : "Expand sidebar")
-            AnimatedCalshotLogo()
-            Text("Calshot").font(.system(size: 15, weight: .semibold))
-            Spacer()
-        }
-        .buttonStyle(ChromeButtonStyle())
-        .foregroundStyle(.white.opacity(0.75))
-        .padding(.leading, 78)
-        .padding(.trailing, 18)
-        .frame(height: 38)
-        .background(.ultraThinMaterial)
     }
 
     private var sidebar: some View {
@@ -247,6 +223,36 @@ struct CalshotWorkspaceView: View {
     }
 }
 
+/// Compact brand and sidebar control hosted beside the native traffic lights.
+struct WorkspaceTitlebarAccessory: View {
+    @AppStorage("sidebarExpanded") private var sidebarExpanded = true
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                    sidebarExpanded.toggle()
+                }
+            } label: {
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(ChromeButtonStyle())
+            .help(sidebarExpanded ? "Collapse sidebar" : "Expand sidebar")
+
+            AnimatedCalshotLogo()
+                .frame(width: 24, height: 24)
+            Text("Calshot")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.88))
+        }
+        .frame(width: 188, height: 40, alignment: .leading)
+        .padding(.leading, 6)
+        .contentShape(Rectangle())
+    }
+}
+
 enum WorkspaceSection: String { case capture, library, settings
     var title: String { switch self { case .capture: "Capture"; case .library: "Memory"; case .settings: "Settings" } }
     var symbol: String { switch self { case .capture: "viewfinder"; case .library: "square.stack.3d.up"; case .settings: "gearshape" } }
@@ -312,7 +318,6 @@ private struct AnimatedCalshotLogo: View {
         Image("CalshotMark")
             .resizable()
             .scaledToFit()
-            .frame(width: 34, height: 34)
             .rotation3DEffect(.degrees(isHovered ? 16 : 0), axis: (x: 0, y: 1, z: 0))
             .rotationEffect(.degrees(isHovered ? -9 : 0))
             .scaleEffect(isHovered ? 1.12 : 1)

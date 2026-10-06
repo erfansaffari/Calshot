@@ -17,14 +17,19 @@ final class WorkspaceWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        // Keep the real macOS traffic lights visible and interactive. The workspace
-        // header is content chrome, so it must leave room for the native controls.
+        // Keep the native titlebar controls in their standard position and put
+        // Calshot's compact brand/sidebar control in the titlebar accessory area.
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 920, height: 650)
         window.level = .normal
         window.collectionBehavior = [.moveToActiveSpace]
         window.appearance = NSAppearance(named: .darkAqua)
         window.delegate = self
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.layoutAttribute = .left
+        accessory.view = NSHostingView(rootView: WorkspaceTitlebarAccessory())
+        accessory.view.frame = NSRect(x: 0, y: 0, width: 200, height: 40)
+        window.addTitlebarAccessoryViewController(accessory)
         window.center()
         window.contentView = NSHostingView(rootView: CalshotWorkspaceView(model: model))
     }
