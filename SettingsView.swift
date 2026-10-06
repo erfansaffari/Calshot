@@ -179,13 +179,22 @@ struct SettingsView: View {
 
     private struct GlassActionButtonStyle: ButtonStyle {
         var destructive = false
+        @ViewBuilder
         func makeBody(configuration: Configuration) -> some View {
-            configuration.label.font(.system(size: 11, weight: .medium))
-                .foregroundStyle(destructive ? Color.red : Color.primary)
-                .padding(.horizontal, 11).padding(.vertical, 7)
-                .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.white.opacity(0.09), lineWidth: 1))
-                .opacity(configuration.isPressed ? 0.8 : 1)
+            if #available(macOS 26, *) {
+                configuration.label.font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(destructive ? Color.red : Color.primary)
+                    .padding(.horizontal, 11).padding(.vertical, 7)
+                    .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 9))
+                    .opacity(configuration.isPressed ? 0.8 : 1)
+            } else {
+                configuration.label.font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(destructive ? Color.red : Color.primary)
+                    .padding(.horizontal, 11).padding(.vertical, 7)
+                    .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.white.opacity(0.09), lineWidth: 1))
+                    .opacity(configuration.isPressed ? 0.8 : 1)
+            }
         }
     }
 
