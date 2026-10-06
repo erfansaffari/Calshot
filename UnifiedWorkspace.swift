@@ -156,10 +156,10 @@ struct CalshotWorkspaceView: View {
                 Spacer()
                 Button { Task { await model.capture() } } label: {
                     Label(model.isCapturing ? "Capturing…" : "New Capture", systemImage: "viewfinder")
-                        .font(.system(size: 12, weight: .semibold)).padding(.horizontal, 15).frame(height: 38)
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.horizontal, 16).frame(height: 38)
                 }
-                .modifier(AdaptiveGlassButtonStyle(prominent: true))
-                .tint(Color(red: 0.36, green: 0.37, blue: 0.95))
+                .modifier(CaptureGlassButtonStyle())
                 .disabled(model.isCapturing || model.isRecognizing)
             }
             if model.isRecognizing {
@@ -281,17 +281,26 @@ private struct SidebarGlassSurface: ViewModifier {
     }
 }
 
-private struct AdaptiveGlassButtonStyle: ViewModifier {
-    let prominent: Bool
-
+private struct CaptureGlassButtonStyle: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(macOS 26, *) {
-            if prominent { content.buttonStyle(.glassProminent) }
-            else { content.buttonStyle(.glass) }
+            content.buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(
+                    LinearGradient(colors: [Color(red: 0.34, green: 0.43, blue: 0.94).opacity(0.55),
+                                            Color(red: 0.23, green: 0.30, blue: 0.68).opacity(0.32),
+                                            .white.opacity(0.07)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                )
+                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(.white.opacity(0.2), lineWidth: 1))
         } else {
-            if prominent { content.buttonStyle(.borderedProminent) }
-            else { content.buttonStyle(.bordered) }
+            content.buttonStyle(.bordered)
+                .tint(Color(red: 0.31, green: 0.39, blue: 0.89))
         }
     }
 }

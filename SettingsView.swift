@@ -61,9 +61,12 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 settingsGroup("CAPTURE") {
-                    Toggle(isOn: $automaticallyCopyCapture) {
+                    HStack(spacing: 16) {
                         settingLabel("Copy captures automatically", detail: "Copy each selected screenshot to the clipboard when capture finishes.")
-                    }.toggleStyle(.switch).controlSize(.small).tint(.accentColor)
+                        Spacer(minLength: 12)
+                        Toggle("Copy captures automatically", isOn: $automaticallyCopyCapture)
+                            .labelsHidden().toggleStyle(.switch).controlSize(.small).tint(.accentColor)
+                    }
                     settingsDivider
                     HStack(spacing: 12) {
                         settingLabel("Global shortcut", detail: "Select a region, then press Return. Press Escape to cancel.")
@@ -87,33 +90,35 @@ struct SettingsView: View {
                     settingsDivider
                     settingLabel("OpenAI analysis", detail: "When enabled, only the selected region and its recognized text are sent to OpenAI. Delete captures any time from Memory.")
                 }
-            }.padding(.top, 10)
+            }.frame(maxWidth: 790, alignment: .leading).padding(.top, 6)
         }.scrollIndicators(.visible)
     }
 
     private var aiTab: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                settingsGroup("ANALYSIS PROVIDER") {
-                    Toggle(isOn: $model.openAIAnalysisEnabled) {
-                        settingLabel("Send selected image to OpenAI", detail: "Allow OpenAI to analyze the selected screenshot.")
-                    }.toggleStyle(.switch).controlSize(.small).tint(.accentColor).disabled(!model.hasOpenAIAPIKey)
+            VStack(alignment: .leading, spacing: 19) {
+                settingsGroup("ANALYSIS") {
+                    HStack(spacing: 16) {
+                        settingLabel("Analyze with OpenAI", detail: "Send selected screenshots to OpenAI for event suggestions.")
+                        Spacer(minLength: 12)
+                        Toggle("Analyze with OpenAI", isOn: $model.openAIAnalysisEnabled)
+                            .labelsHidden().toggleStyle(.switch).controlSize(.small).tint(.accentColor)
+                            .disabled(!model.hasOpenAIAPIKey)
+                    }
                     settingsDivider
-                    settingsValueRow("Connection", value: model.hasOpenAIAPIKey ? "API key saved in Keychain" : "Not configured", color: model.hasOpenAIAPIKey ? .green : .secondary)
+                    settingsValueRow("Connection", value: model.hasOpenAIAPIKey ? "Key saved" : "Add a key below", color: model.hasOpenAIAPIKey ? .green : .secondary)
                     settingsDivider
                     settingsValueRow("Model", value: OpenAIEventAnalyzer.modelName, color: .secondary)
-                    Text("GPT-6 Luna is the current cost-efficient OpenAI model for screenshot analysis.").font(.system(size: 12)).foregroundStyle(.secondary)
-                    if let connectionMessage {
-                        Text(connectionMessage).font(.system(size: 12)).foregroundStyle(connectionMessage.hasPrefix("Connected") ? .green : .secondary).textSelection(.enabled)
-                    }
                 }
-                settingsGroup("API KEY") {
+                settingsGroup("OPENAI API KEY") {
+                    settingLabel("API key", detail: "Stored in macOS Keychain. Replace it here whenever you need to.")
                     SecureField(model.hasOpenAIAPIKey ? "Replace saved API key" : "Paste API key", text: $apiKey)
-                        .textFieldStyle(.plain).padding(.horizontal, 12).padding(.vertical, 9)
+                        .textFieldStyle(.plain).font(.system(size: 12))
+                        .padding(.horizontal, 12).padding(.vertical, 9)
                         .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
                         .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.08), lineWidth: 1))
                     HStack(spacing: 9) {
-                        Button("Save in Keychain") {
+                        Button("Save key") {
                             do { try model.saveOpenAIAPIKey(apiKey); apiKey = ""; connectionMessage = "Key saved. Test the connection to check model access." }
                             catch { connectionMessage = error.localizedDescription }
                         }.buttonStyle(GlassActionButtonStyle()).disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -128,25 +133,29 @@ struct SettingsView: View {
                         } label: {
                             if isTestingConnection { ProgressView().controlSize(.small) } else { Text("Test connection") }
                         }.buttonStyle(GlassActionButtonStyle()).disabled(isTestingConnection || (apiKey.isEmpty && !model.hasOpenAIAPIKey))
+                        Spacer(minLength: 0)
                         if model.hasOpenAIAPIKey {
                             Button("Remove key", role: .destructive) {
                                 do { try model.removeOpenAIAPIKey(); connectionMessage = "Key removed from Keychain." }
                                 catch { connectionMessage = error.localizedDescription }
                             }.buttonStyle(GlassActionButtonStyle(destructive: true))
                         }
+                    }.padding(.top, 12).padding(.bottom, 8)
+                    if let connectionMessage {
+                        Text(connectionMessage).font(.system(size: 11))
+                            .foregroundStyle(connectionMessage.hasPrefix("Connected") ? .green : .secondary)
+                            .textSelection(.enabled).padding(.bottom, 8)
                     }
                 }
-                settingsGroup("ACCURACY") {
+                settingsGroup("RECENT ACTIVITY") {
                     settingsValueRow("Last analysis", value: model.lastCaptureSummary, color: .secondary)
                     if let provider = model.lastAnalysisProvider { settingsDivider; settingsValueRow("Provider", value: provider, color: .secondary) }
                     settingsDivider
-                    settingsValueRow("Vision OCR", value: model.lastOCRStatus, color: .secondary)
-                    Text("Calshot runs Vision OCR and includes recognized text with the screenshot for OpenAI to cross-check. Local analysis uses Apple’s on-device model when available, then the local parser.").font(.system(size: 12)).foregroundStyle(.secondary)
+                    settingsValueRow("Text recognition", value: model.lastOCRStatus, color: .secondary)
                 }
-                settingsGroup("DATA & COST") {
-                    settingLabel("Your key stays in macOS Keychain", detail: "Connection testing checks model access without sending a screenshot. Captures sent for analysis may incur OpenAI API charges.")
-                }
-            }.padding(.top, 10)
+                Text("Connection testing does not send a screenshot. Analysis may incur OpenAI API charges.")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 4)
+            }.frame(maxWidth: 790, alignment: .leading).padding(.top, 6)
         }.scrollIndicators(.visible)
     }
 
