@@ -44,7 +44,11 @@ struct SettingsView: View {
         .background(.clear)
         .frame(minWidth: 600, minHeight: 500)
         .preferredColorScheme(.dark)
-        .onAppear { model.refreshMemory() }
+        .onAppear {
+            model.refreshMemory()
+            presentRequestedMemoryRecord(model.memoryRecordToOpen)
+        }
+        .onChange(of: model.memoryRecordToOpen) { _, id in presentRequestedMemoryRecord(id) }
         .sheet(item: $selectedRecord) { record in
             MemoryRecordDetail(model: model, record: record)
                 .frame(minWidth: 900, minHeight: 700)
@@ -322,6 +326,14 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 11).padding(.vertical, 7)
+    }
+
+    private func presentRequestedMemoryRecord(_ id: UUID?) {
+        guard let id else { return }
+        if let record = model.memoryRecords.first(where: { $0.id == id }) {
+            selectedRecord = record
+            model.memoryRecordToOpen = nil
+        }
     }
 
     private struct GlassActionButtonStyle: ButtonStyle {

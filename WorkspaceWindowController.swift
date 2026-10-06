@@ -17,9 +17,8 @@ final class WorkspaceWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.standardWindowButton(.closeButton)?.isHidden = true
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
+        // Keep the real macOS traffic lights visible and interactive. The workspace
+        // header is content chrome, so it must leave room for the native controls.
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 920, height: 650)
         window.level = .normal
@@ -37,7 +36,4 @@ final class WorkspaceWindowController: NSObject, NSWindowDelegate {
 
     func hide() { window.orderOut(nil) }
 
-    func close() { window.performClose(nil) }
-    func minimize() { window.miniaturize(nil) }
-    func zoom() { window.zoom(nil) }
 }

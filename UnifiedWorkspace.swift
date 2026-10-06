@@ -27,7 +27,6 @@ struct CalshotWorkspaceView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .ignoresSafeArea(.container, edges: .top)
         .onAppear { model.refreshMemory() }
     }
 
@@ -44,20 +43,12 @@ struct CalshotWorkspaceView: View {
             AnimatedCalshotLogo()
             Text("Calshot").font(.system(size: 15, weight: .semibold))
             Spacer()
-            Button { model.workspaceWindowController?.minimize() } label: {
-                Image(systemName: "minus").font(.system(size: 12, weight: .medium)).frame(width: 30, height: 30)
-            }.help("Minimize")
-            Button { model.workspaceWindowController?.zoom() } label: {
-                Image(systemName: "square.on.square").font(.system(size: 12, weight: .medium)).frame(width: 30, height: 30)
-            }.help("Zoom")
-            Button { model.workspaceWindowController?.close() } label: {
-                Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).frame(width: 30, height: 30)
-            }.help("Close window")
         }
         .buttonStyle(ChromeButtonStyle())
         .foregroundStyle(.white.opacity(0.75))
-        .padding(.horizontal, 14)
-        .frame(height: 46)
+        .padding(.leading, 78)
+        .padding(.trailing, 18)
+        .frame(height: 38)
         .background(.ultraThinMaterial)
     }
 
@@ -160,13 +151,22 @@ struct CalshotWorkspaceView: View {
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { Task { await model.capture() } } label: {
-                    Label(model.isCapturing ? "Capturing…" : "New Capture", systemImage: "viewfinder")
-                        .font(.system(size: 13, weight: .semibold))
-                        .padding(.horizontal, 16).frame(height: 38)
+                HStack(spacing: 9) {
+                    Button { Task { await model.capture(quick: true) } } label: {
+                        Label("Screenshot Only", systemImage: "camera")
+                            .font(.system(size: 12, weight: .medium))
+                            .padding(.horizontal, 12).frame(height: 38)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.isCapturing || model.isRecognizing)
+                    Button { Task { await model.capture() } } label: {
+                        Label(model.isCapturing ? "Capturing…" : "New Capture", systemImage: "viewfinder")
+                            .font(.system(size: 13, weight: .semibold))
+                            .padding(.horizontal, 16).frame(height: 38)
+                    }
+                    .modifier(SystemCaptureButtonStyle())
+                    .disabled(model.isCapturing || model.isRecognizing)
                 }
-                .modifier(SystemCaptureButtonStyle())
-                .disabled(model.isCapturing || model.isRecognizing)
             }
             if model.isRecognizing {
                 HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Reading the selected region…").font(.system(size: 12)).foregroundStyle(.secondary) }

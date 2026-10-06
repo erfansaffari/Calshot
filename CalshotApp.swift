@@ -76,6 +76,7 @@ final class CalshotModel: ObservableObject {
     @Published var shortcutRegistrationStatus: OSStatus = -1
     @Published var isRecordingShortcut = false
     @Published var memoryRecords: [MemoryCaptureRecord] = []
+    @Published var memoryRecordToOpen: UUID?
     @Published var memoryLocationMessage: String?
     @Published var lastAnalysisProvider: String?
     @Published var lastOCRStatus = "No OCR run yet"
@@ -85,6 +86,7 @@ final class CalshotModel: ObservableObject {
     private var currentMemoryRecordID: UUID?
     private var currentCaptureSessionID: UUID?
     private var shortcutSuspendedForSelection = false
+    private var currentCaptureIsQuick = false
 
     init() {
         hasOpenAIAPIKey = (try? OpenAIAPIKeyStore.load()) != nil
@@ -192,16 +194,25 @@ final class CalshotModel: ObservableObject {
         catch { status = "Couldn’t clear capture history: \(error.localizedDescription)" }
     }
 
+    func openMemoryCapture(_ id: UUID) {
+        refreshMemory()
+        guard memoryRecords.contains(where: { $0.id == id }) else { return }
+        memoryRecordToOpen = id
+        workspaceSelection = .library
+        openPanel()
+    }
+
     private static func loadShortcut() -> GlobalShortcut {
         guard let data = UserDefaults.standard.data(forKey: "globalShortcut"),
               let shortcut = try? JSONDecoder().decode(GlobalShortcut.self, from: data) else { return .default }
         return shortcut
     }
 
-    func capture() async {
+    func capture(quick: Bool = false) async {
         guard selectionOverlay == nil, !isCapturing, !isRecognizing, !isSaving else { return }
         let captureSessionID = UUID()
         currentCaptureSessionID = captureSessionID
+        currentCaptureIsQuick = quick
         isCapturing = true
         status = nil
         analyzedWithOpenAI = false
@@ -226,11 +237,17 @@ final class CalshotModel: ObservableObject {
                 self.selectionOverlay = nil
                 switch result {
                 case .success(let selectedImage):
-                    self.isRecognizing = true
-                    Task { await self.analyze(selectedImage, sessionID: captureSessionID) }
+                    if self.currentCaptureIsQuick {
+                        self.isRecognizing = true
+                        Task { await self.finishQuickCapture(selectedImage, sessionID: captureSessionID) }
+                    } else {
+                        self.isRecognizing = true
+                        Task { await self.analyze(selectedImage, sessionID: captureSessionID) }
+                    }
                 case .failure(.cancelled):
                     self.resumeShortcutAfterSelection()
                     self.currentCaptureSessionID = nil
+                    self.currentCaptureIsQuick = false
                     self.image = nil
                     self.draft = nil
                     self.status = nil
@@ -238,6 +255,8 @@ final class CalshotModel: ObservableObject {
                     self.showNotchLauncher()
                 case .failure(let error):
                     self.resumeShortcutAfterSelection()
+                    self.currentCaptureSessionID = nil
+                    self.currentCaptureIsQuick = false
                     self.status = error.localizedDescription
                     self.openPanel()
                 }
@@ -248,6 +267,7 @@ final class CalshotModel: ObservableObject {
         } catch {
             isCapturing = false
             currentCaptureSessionID = nil
+            currentCaptureIsQuick = false
             if let captureError = error as? ScreenCaptureService.CaptureError,
                captureError == .permissionDenied {
                 screenCapturePermissionNeeded = true
@@ -384,7 +404,44 @@ final class CalshotModel: ObservableObject {
             }
         }
         isRecognizing = false
+        currentCaptureIsQuick = false
         resumeShortcutAfterSelection()
+    }
+
+    private func finishQuickCapture(_ cgImage: CGImage, sessionID: UUID) async {
+        guard currentCaptureSessionID == sessionID else { return }
+        let image = NSImage(cgImage: cgImage, size: .zero)
+        let copied = CaptureClipboard.automaticallyCopyCapture && CaptureClipboard.copy(image)
+        guard let png = NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:]) else {
+            isRecognizing = false
+            currentCaptureSessionID = nil
+            currentCaptureIsQuick = false
+            resumeShortcutAfterSelection()
+            status = "The screenshot was captured but could not be saved to Memory."
+            return
+        }
+        do {
+            let record = try memoryStore.recordCapture(imageData: png,
+                                                       analysisProvider: "Quick screenshot",
+                                                       createdAt: .now)
+            currentMemoryRecordID = record.id
+            refreshMemory()
+            lastCaptureSummary = "Quick screenshot saved"
+            isRecognizing = false
+            currentCaptureSessionID = nil
+            currentCaptureIsQuick = false
+            resumeShortcutAfterSelection()
+            showNotchLauncher()
+            notchLauncherController?.showQuickPreview(image: image, recordID: record.id,
+                                                       copiedToClipboard: copied)
+        } catch {
+            isRecognizing = false
+            currentCaptureSessionID = nil
+            currentCaptureIsQuick = false
+            resumeShortcutAfterSelection()
+            status = "Couldn’t save screenshot to Memory: \(error.localizedDescription)"
+            openPanel()
+        }
     }
 
     func saveOpenAIAPIKey(_ key: String) throws {
@@ -470,6 +527,7 @@ final class CalshotModel: ObservableObject {
 
     func cancelReview() {
         currentCaptureSessionID = nil
+        currentCaptureIsQuick = false
         selectionOverlay?.cancel()
         selectionOverlay = nil
         resumeShortcutAfterSelection()
@@ -524,6 +582,7 @@ final class CalshotModel: ObservableObject {
 
 struct MenuBarView: View {
     @ObservedObject var model: CalshotModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -535,10 +594,24 @@ struct MenuBarView: View {
                     Text("Capture, read, remember").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
-            Button { Task { await model.capture() } } label: {
+            Button {
+                dismiss()
+                Task { await model.capture() }
+            } label: {
                     HStack { Image(systemName: "camera.viewfinder"); Text("New Capture"); Spacer(); Text(model.shortcut.label).font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.65)) }
                     .padding(.horizontal, 12).padding(.vertical, 11).contentShape(Rectangle())
             }.buttonStyle(.plain).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 11)).foregroundStyle(.white)
+            Button {
+                dismiss()
+                Task { await model.capture(quick: true) }
+            } label: {
+                Label("Quick Screenshot", systemImage: "camera")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.vertical, 9)
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.isCapturing || model.isRecognizing)
             Toggle(isOn: $model.openAIAnalysisEnabled) {
                 Label("Send selected image to OpenAI", systemImage: "cloud")
                     .font(.system(size: 11, weight: .medium))

@@ -5,16 +5,25 @@ import SwiftUI
 /// A small, fixed notch launcher that grows into an action menu while the pointer is over it.
 @MainActor
 final class NotchExperienceController: ObservableObject {
+    struct QuickPreview {
+        let image: NSImage
+        let recordID: UUID
+        let copiedToClipboard: Bool
+    }
+
     private let panel: NSPanel
     private weak var model: CalshotModel?
     @Published private(set) var isExpanded = false
     @Published private(set) var launcherSize = NSSize(width: 184, height: 24)
+    @Published private(set) var quickPreview: QuickPreview?
     private var isPointerInside = false
     private var collapseWorkItem: DispatchWorkItem?
+    private var previewDismissWorkItem: DispatchWorkItem?
     private var screenChangeObserver: NSObjectProtocol?
 
     private var compactSize = NSSize(width: 184, height: 24)
-    private let expandedSize = NSSize(width: 340, height: 190)
+    private let expandedSize = NSSize(width: 340, height: 230)
+    private let previewSize = NSSize(width: 380, height: 290)
 
     init(model: CalshotModel) {
         self.model = model
@@ -38,7 +47,9 @@ final class NotchExperienceController: ObservableObject {
             model: model,
             pointerChanged: { [weak self] inside in self?.pointerChanged(inside) },
             expand: { [weak self] in self?.setExpanded(true) },
-            capture: { [weak self] in self?.capture() },
+            capture: { [weak self] in self?.capture(quick: false) },
+            quickCapture: { [weak self] in self?.capture(quick: true) },
+            openPreview: { [weak self] in self?.openQuickPreview() },
             openApp: { [weak self] in self?.openApp() },
             openSettings: { [weak self] in self?.openSettings() },
             close: { [weak self] in self?.hide() }
@@ -54,22 +65,44 @@ final class NotchExperienceController: ObservableObject {
     }
 
     func show() {
+        previewDismissWorkItem?.cancel()
+        previewDismissWorkItem = nil
+        quickPreview = nil
         position(on: screenUnderPointer() ?? NSScreen.main)
         panel.orderFrontRegardless()
+    }
+
+    func showQuickPreview(image: NSImage, recordID: UUID, copiedToClipboard: Bool) {
+        previewDismissWorkItem?.cancel()
+        quickPreview = QuickPreview(image: image, recordID: recordID,
+                                    copiedToClipboard: copiedToClipboard)
+        position(on: screenUnderPointer() ?? NSScreen.main)
+        panel.orderFrontRegardless()
+        setExpanded(true)
+        schedulePreviewDismiss(after: 4.5)
     }
 
     func hide() {
         collapseWorkItem?.cancel()
         collapseWorkItem = nil
+        previewDismissWorkItem?.cancel()
+        previewDismissWorkItem = nil
         isPointerInside = false
         setExpanded(false)
+        quickPreview = nil
         panel.orderOut(nil)
     }
 
-    private func capture() {
+    private func capture(quick: Bool) {
         hide()
         guard let model else { return }
-        Task { @MainActor in await model.capture() }
+        Task { @MainActor in await model.capture(quick: quick) }
+    }
+
+    private func openQuickPreview() {
+        guard let recordID = quickPreview?.recordID else { return }
+        hide()
+        model?.openMemoryCapture(recordID)
     }
 
     private func openApp() {
@@ -87,7 +120,11 @@ final class NotchExperienceController: ObservableObject {
         collapseWorkItem = nil
         isPointerInside = inside
         if inside {
+            previewDismissWorkItem?.cancel()
+            previewDismissWorkItem = nil
             setExpanded(true)
+        } else if quickPreview != nil {
+            schedulePreviewDismiss(after: 0.9)
         } else {
             // Give the pointer time to cross the edge while the panel is changing size.
             let work = DispatchWorkItem { [weak self] in
@@ -102,9 +139,21 @@ final class NotchExperienceController: ObservableObject {
     }
 
     private func setExpanded(_ expanded: Bool) {
-        guard isExpanded != expanded else { return }
+        guard isExpanded != expanded else {
+            if expanded {
+                let screen = screenForPanel() ?? NSScreen.main
+                let size = quickPreview == nil ? expandedSize : previewSize
+                let frame = NSRect(origin: origin(for: size, on: screen), size: size)
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.28
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    panel.animator().setFrame(frame, display: true)
+                }
+            }
+            return
+        }
         isExpanded = expanded
-        let size = expanded ? expandedSize : compactSize
+        let size = expanded ? (quickPreview == nil ? expandedSize : previewSize) : compactSize
         let screen = screenForPanel() ?? NSScreen.main
         let frame = NSRect(origin: origin(for: size, on: screen), size: size)
         NSAnimationContext.runAnimationGroup { context in
@@ -114,11 +163,27 @@ final class NotchExperienceController: ObservableObject {
         }
     }
 
+    private func schedulePreviewDismiss(after delay: TimeInterval) {
+        previewDismissWorkItem?.cancel()
+        let recordID = quickPreview?.recordID
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.quickPreview?.recordID == recordID else { return }
+            let pointerIsInside = self.panel.frame.contains(NSEvent.mouseLocation)
+            if !self.isPointerInside && !pointerIsInside {
+                self.hide()
+            } else {
+                self.schedulePreviewDismiss(after: 0.9)
+            }
+        }
+        previewDismissWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     private func position(on screen: NSScreen?) {
         guard let screen else { return }
         compactSize = closedSize(on: screen)
         launcherSize = compactSize
-        let size = isExpanded ? expandedSize : compactSize
+        let size = isExpanded ? (quickPreview == nil ? expandedSize : previewSize) : compactSize
         panel.setFrame(NSRect(origin: origin(for: size, on: screen), size: size), display: true, animate: false)
     }
 
@@ -162,6 +227,8 @@ private struct NotchExperienceView: View {
     let pointerChanged: (Bool) -> Void
     let expand: () -> Void
     let capture: () -> Void
+    let quickCapture: () -> Void
+    let openPreview: () -> Void
     let openApp: () -> Void
     let openSettings: () -> Void
     let close: () -> Void
@@ -170,7 +237,7 @@ private struct NotchExperienceView: View {
         VStack(spacing: 9) {
             if controller.isExpanded {
                 HStack(spacing: 8) {
-                    Text("Calshot")
+                    Text(controller.quickPreview == nil ? "Calshot" : "Screenshot ready")
                         .font(.system(size: 13, weight: .semibold))
                     Spacer(minLength: 2)
                     Text(model.shortcut.label)
@@ -190,15 +257,41 @@ private struct NotchExperienceView: View {
                 .contentShape(Rectangle())
                 .onTapGesture(perform: expand)
 
-                actionRow("Capture", symbol: "camera.viewfinder", action: capture, prominent: true)
-                actionRow("Open App", symbol: "macwindow", action: openApp)
-                actionRow("Settings", symbol: "gearshape", action: openSettings)
+                if let preview = controller.quickPreview {
+                    Button(action: openPreview) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Image(nsImage: preview.image)
+                                .resizable().aspectRatio(contentMode: .fit)
+                                .frame(maxWidth: .infinity, maxHeight: 178)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            HStack(spacing: 6) {
+                                Image(systemName: preview.copiedToClipboard ? "checkmark.circle.fill" : "internaldrive")
+                                    .foregroundStyle(preview.copiedToClipboard ? Color.green : Color.secondary)
+                                Text(preview.copiedToClipboard ? "Saved · copied to clipboard" : "Saved to Memory")
+                                    .foregroundStyle(.white.opacity(0.78))
+                                Spacer(minLength: 0)
+                                Text("Open")
+                                    .foregroundStyle(.white.opacity(0.55))
+                            }
+                            .font(.system(size: 10, weight: .medium))
+                        }
+                        .padding(8)
+                        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open this screenshot in Calshot")
+                } else {
+                    actionRow("Capture & Analyze", symbol: "viewfinder", action: capture, prominent: true)
+                    actionRow("Quick Screenshot", symbol: "camera", action: quickCapture)
+                    actionRow("Open App", symbol: "macwindow", action: openApp)
+                    actionRow("Settings", symbol: "gearshape", action: openSettings)
+                }
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, controller.isExpanded ? 12 : 0)
-        .frame(width: controller.isExpanded ? 340 : controller.launcherSize.width,
-               height: controller.isExpanded ? 190 : controller.launcherSize.height,
+        .frame(width: controller.isExpanded ? (controller.quickPreview == nil ? 340 : 380) : controller.launcherSize.width,
+               height: controller.isExpanded ? (controller.quickPreview == nil ? 230 : 290) : controller.launcherSize.height,
                alignment: .top)
         .background {
             if controller.isExpanded {
