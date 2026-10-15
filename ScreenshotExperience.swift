@@ -88,8 +88,8 @@ struct ScreenshotCanvasView: View {
             }
         }
         .padding(24)
-        .background(Color(red: 0.075, green: 0.08, blue: 0.10))
-        .preferredColorScheme(.dark)
+        .background(Color(nsColor: .windowBackgroundColor))
+
     }
 
     private func copyImage() {
@@ -135,7 +135,7 @@ private final class ScreenshotZoomWindowController: NSObject, NSWindowDelegate {
         window.title = "Screenshot Preview"
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 640, height: 460)
-        window.appearance = NSAppearance(named: .darkAqua)
+        window.appearance = nil
         window.delegate = self
         window.center()
         window.contentView = NSHostingView(rootView: ScreenshotZoomView(image: image))
@@ -177,7 +177,7 @@ private struct ScreenshotZoomView: View {
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
 
-            Divider().overlay(.white.opacity(0.08))
+            Divider()
 
             GeometryReader { geometry in
                 ScrollView([.horizontal, .vertical]) {
@@ -197,9 +197,9 @@ private struct ScreenshotZoomView: View {
                 .background(Color.black.opacity(0.45))
             }
         }
-        .background(Color(red: 0.075, green: 0.08, blue: 0.10))
-        .foregroundStyle(.white)
-        .preferredColorScheme(.dark)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle(.primary)
+
     }
 
     private var currentZoom: CGFloat { min(8, max(0.2, magnification * gestureMagnification)) }

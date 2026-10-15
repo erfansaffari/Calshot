@@ -11,6 +11,64 @@ enum EventDraftParser {
         }.filter { !$0.isEmpty }
         guard !lines.isEmpty else { return [] }
 
+        // Conservative row/block segmentation: each block must name an academic item
+        // and contain exactly one recognizable date (or explicitly say TBD).
+        let academic = #"(?i)\b(assignment|homework|quiz|test|exam|midterm|final|project|essay|lab|report|submission|deadline)\b"#
+        let explicitYears = matches(#"\b20\d{2}\b"#, cleaned).map { (cleaned as NSString).substring(with: $0.range) }
+        let contextYear = Set(explicitYears).count == 1 ? explicitYears.first : nil
+        var blocks: [String] = []
+        for (index, line) in lines.enumerated() where line.range(of: academic, options: .regularExpression) != nil {
+            let inlineDates = findDates(in: line, referenceDate: referenceDate, timeZone: timeZone, locale: locale)
+            if inlineDates.count == 1 || line.range(of: #"(?i)\bTBD\b"#, options: .regularExpression) != nil {
+                blocks.append(line)
+            } else if inlineDates.isEmpty, index + 1 < lines.count,
+                      lines[index + 1].range(of: academic, options: .regularExpression) == nil,
+                      findDates(in: lines[index + 1], referenceDate: referenceDate, timeZone: timeZone, locale: locale).count == 1 {
+                var block = line + "\n" + lines[index + 1]
+                if index + 2 < lines.count, lines[index + 2].range(of: academic, options: .regularExpression) == nil,
+                   !findTimes(in: lines[index + 2]).isEmpty,
+                   findDates(in: lines[index + 2], referenceDate: referenceDate, timeZone: timeZone, locale: locale).isEmpty {
+                    block += "\n" + lines[index + 2]
+                }
+                blocks.append(block)
+            }
+        }
+        if !blocks.isEmpty {
+            return blocks.compactMap { block in
+                var draft = parseSingle(block, referenceDate: referenceDate, timeZone: timeZone, locale: locale)
+                if draft.ambiguities.contains(.missingYear), let contextYear, let year = Int(contextYear), let start = draft.startDate {
+                    let calendar = calendar(timeZone)
+                    var parts = calendar.dateComponents([.month, .day, .hour, .minute], from: start)
+                    parts.year = year
+                    if let date = calendar.date(from: parts), calendar.component(.month, from: date) == parts.month,
+                       calendar.component(.day, from: date) == parts.day {
+                        let duration = draft.endDate?.timeIntervalSince(start)
+                        draft.startDate = date
+                        draft.endDate = draft.isAllDay ? calendar.date(byAdding: .day, value: 1, to: date) : duration.map { date.addingTimeInterval($0) }
+                        // Keep missingYear: header-derived years are explicitly confirmed in batch review.
+                    }
+                }
+                draft.title = academicTitle(block.components(separatedBy: .newlines).first ?? block)
+                if !draft.title.isEmpty { draft.ambiguities.removeAll { $0 == .missingTitle } }
+                draft.sourceText = block + (contextYear.map { "\nPage year context: " + $0 } ?? "")
+                return draft
+            }
+        }
+        return [parseSingle(cleaned, referenceDate: referenceDate, timeZone: timeZone, locale: locale)]
+    }
+
+    private static func academicTitle(_ line: String) -> String {
+        // Strip a trailing date/time column while keeping the assignment name.
+        let datePattern = #"(?i)\b(?:20\d{2}-\d{2}-\d{2}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}|\d{1,2}[/-]\d{1,2}|TBD)\b"#
+        if let range = line.range(of: datePattern, options: .regularExpression), range.lowerBound > line.startIndex {
+            let title = String(line[..<range.lowerBound]).trimmingCharacters(in: CharacterSet(charactersIn: " |–—-:,\t"))
+            if !title.isEmpty { return title }
+        }
+        return line
+    }
+
+    private static func parseSingle(_ cleaned: String, referenceDate: Date, timeZone: TimeZone, locale: Locale) -> EventDraft {
+        let lines = cleaned.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         let zone = findTimeZone(in: cleaned)
         let eventZone = zone.identifier.flatMap(TimeZone.init(identifier:)) ?? timeZone
         let dates = findDates(in: cleaned, referenceDate: referenceDate, timeZone: eventZone, locale: locale)
@@ -50,10 +108,10 @@ enum EventDraftParser {
         let confidence = max(0.05, min(0.99, 0.92 - Double(issues.count) * 0.11))
         let location = findLocation(lines)
         let notes: String? = nil
-        return [EventDraft(title: title, startDate: allDay ? eventDate.map { calendar(eventZone).startOfDay(for: $0) } : start, endDate: end, isAllDay: allDay,
+        return EventDraft(title: title, startDate: allDay ? eventDate.map { calendar(eventZone).startOfDay(for: $0) } : start, endDate: end, isAllDay: allDay,
                            timeZoneIdentifier: zone.identifier ?? timeZone.identifier,
                            location: location, url: urls.first, notes: notes,
-                           sourceText: cleaned, confidence: confidence, ambiguities: issues)]
+                           sourceText: cleaned, confidence: confidence, ambiguities: issues)
     }
 
     private struct ParsedDate { let date: Date; let yearWasAssumed: Bool; let ambiguous: Bool }

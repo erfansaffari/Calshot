@@ -42,7 +42,7 @@ The event draft is independent of UI and calendar provider. It includes title, s
 
 ## Current build status
 
-The native app shell, top review panel, configurable global shortcut, rectangular region selection, Vision OCR, optional on-device Foundation Models, OpenAI image/OCR analysis, editable review, EventKit saving, settings, and local screenshot/event history are implemented. Four parser fixtures pass in the Xcode test target. A manual run with macOS Screen Recording, OpenAI API, and Calendar permissions is still needed to verify the full capture-to-save flow on a real account. Direct Google OAuth, window capture, multi-event review, and deeper notch animation remain planned.
+The native app shell, top review panel, configurable global shortcut, rectangular region selection, Vision OCR, optional on-device Foundation Models, OpenAI image/OCR analysis, editable review, EventKit saving, settings, and local screenshot/event history are implemented. The Xcode test target covers parsing, streaming, history migration, batch validation, duplicate decisions, partial failures, cancellation, and save recovery. A manual run with macOS Screen Recording, OpenAI API, and Calendar permissions is still needed to verify the full capture-to-save flow on a real account. Batch extraction and editable multi-event review, explicit group confirmation, duplicate checks, serial saving with per-item receipts, interrupted-save reconciliation, and multi-screenshot batches are now implemented. Direct Google OAuth, window capture, existing-event update/delete actions, and deeper notch animation remain planned. See CALENDAR_ACTIONS_PLAN.md for implementation details.
 
 ## Acceptance checks
 
@@ -57,3 +57,7 @@ The native app shell, top review panel, configurable global shortcut, rectangula
 - Whether event creation should always require review or allow confidence-based automatic saving.
 - Whether the user wants direct Google sign-in in addition to Google calendars configured in macOS.
 - Cloud-assisted image understanding is available as an opt-in provider; on-device processing remains available.
+
+## Calendar agent
+
+Calshot now supports screenshot and typed-command sessions with a bounded Responses tool loop, selected-calendar search, user clarification, and approval for creation/update/removal. Saved transcripts and confirmed receipts inform later model calls through bounded local action memory. See [CALENDAR_AGENT_PLAN.md](CALENDAR_AGENT_PLAN.md) and README.md for behavior and verification.

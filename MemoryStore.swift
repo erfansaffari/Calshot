@@ -13,6 +13,30 @@ public struct MemoryCaptureRecord: Codable, Identifiable, Sendable {
     public var savedToCalendarAt: Date?
     public var savedCalendarName: String?
     public var calendarEventIdentifier: String?
+    public var schemaVersion: Int?
+    public var proposals: [CalendarActionProposal]?
+    public var agentTranscript: [AgentTurn]?
+    public var additionalScreenshots: [ScreenshotSource]?
+
+    public struct ScreenshotSource: Codable, Identifiable, Sendable {
+        public var id: UUID
+        public var fileName: String
+        public var imageFormat: ImageFormat
+        public var recognizedText: String
+    }
+
+    public var calendarProposals: [CalendarActionProposal] {
+        if let proposals { return proposals }
+        guard let event else { return [] }
+        var item = CalendarActionProposal(draft: event.draft)
+        if let savedAt = savedToCalendarAt {
+            item.state = .added
+            item.isSelected = false
+            item.receipt = CalendarActionReceipt(destinationID: "legacy", calendarName: savedCalendarName ?? "Calendar",
+                eventIdentifier: calendarEventIdentifier ?? "", savedAt: savedAt)
+        }
+        return [item]
+    }
 
     public enum ImageFormat: String, Codable, Sendable {
         case png
@@ -34,6 +58,13 @@ public struct MemoryCaptureRecord: Codable, Identifiable, Sendable {
         public var sourceText: String
         public var confidence: Double
         public var ambiguities: [String]
+
+        public var draft: EventDraft {
+            EventDraft(id: id, title: title, startDate: startDate, endDate: endDate, isAllDay: isAllDay,
+                       timeZoneIdentifier: timeZoneIdentifier, location: location, url: url, notes: notes,
+                       sourceText: sourceText, confidence: confidence,
+                       ambiguities: ambiguities.compactMap(EventAmbiguity.init(rawValue:)))
+        }
 
         public init(draft: EventDraft) {
             id = draft.id
@@ -133,6 +164,7 @@ public final class MemoryStore: @unchecked Sendable {
     public func recordCapture(
         imageData: Data,
         draft: EventDraft? = nil,
+        proposals: [CalendarActionProposal]? = nil,
         recognizedText: String? = nil,
         analysisProvider: String? = nil,
         createdAt: Date = Date()
@@ -150,7 +182,9 @@ public final class MemoryStore: @unchecked Sendable {
             analysisProvider: analysisProvider,
             savedToCalendarAt: nil,
             savedCalendarName: nil,
-            calendarEventIdentifier: nil
+            calendarEventIdentifier: nil,
+            schemaVersion: 3,
+            proposals: proposals
         )
 
         lock.lock()
@@ -168,6 +202,66 @@ public final class MemoryStore: @unchecked Sendable {
             throw error
         }
         return record
+    }
+
+    /// Typed-only sessions have metadata without a fabricated screenshot.
+    public func recordCommand(_ command: String, transcript: [AgentTurn] = []) throws -> MemoryCaptureRecord {
+        let record = MemoryCaptureRecord(id: UUID(), createdAt: .now, screenshotFileName: "", imageFormat: .png,
+            event: nil, recognizedText: nil, analysisProvider: "Calendar agent", savedToCalendarAt: nil,
+            savedCalendarName: nil, calendarEventIdentifier: nil, schemaVersion: 3, proposals: [], agentTranscript: transcript.isEmpty ? [AgentTurn(role: "user", content: String(command.prefix(8000)))] : transcript)
+        lock.lock()
+        defer { lock.unlock() }
+        try ensureDirectory()
+        try encoder.encode(record).write(to: metadataURL(for: record.id), options: .atomic)
+        return record
+    }
+
+    @discardableResult
+    public func updateScreenshotText(for id: UUID, sourceID: UUID, text: String) throws -> MemoryCaptureRecord? {
+        try updateRecord(id: id) { record in
+            guard let index = record.additionalScreenshots?.firstIndex(where: { $0.id == sourceID }) else { return }
+            record.additionalScreenshots?[index].recognizedText = text
+        }
+    }
+
+    @discardableResult
+    public func updateAgentContext(for id: UUID, transcript: [AgentTurn], recognizedText: String? = nil) throws -> MemoryCaptureRecord? {
+        try updateRecord(id: id) { record in
+            record.schemaVersion = 3
+            record.agentTranscript = Array(transcript.suffix(600))
+            if let recognizedText { record.recognizedText = recognizedText }
+        }
+    }
+
+    /// Real write receipts and recent user/tool context from local history. This
+    /// bounded context informs future requests; it never authorizes a new write.
+    public func agentMemory(excluding id: UUID? = nil) -> [AgentTurn] {
+        let formatter = ISO8601DateFormatter()
+        var result: [AgentTurn] = []
+        var characters = 0
+        for record in listRecords().filter({ $0.id != id }).prefix(12) {
+            let actions: [[String: String]] = record.calendarProposals.compactMap { proposal in
+                guard let receipt = proposal.receipt, proposal.isFinished else { return nil }
+                return ["operation": proposal.operation.rawValue, "status": proposal.state.rawValue,
+                    "title": String(proposal.draft.title.prefix(500)), "eventIdentifier": receipt.eventIdentifier,
+                    "calendar": receipt.calendarName, "destinationID": receipt.destinationID,
+                    "start": proposal.draft.startDate.map(formatter.string(from:)) ?? "",
+                    "end": proposal.draft.endDate.map(formatter.string(from:)) ?? "",
+                    "savedAt": formatter.string(from: receipt.savedAt)]
+            }
+            let context = (record.agentTranscript ?? []).filter { $0.role == "user" || $0.role == "tool" || ($0.role == "assistant" && $0.toolName == nil) }.suffix(8)
+            let contextual: [[String: String]] = context.map { turn in
+                ["role": turn.role, "tool": turn.toolName ?? "", "content": String((turn.result ?? turn.content ?? "").prefix(2000))]
+            }
+            guard !actions.isEmpty || !contextual.isEmpty else { continue }
+            let value: [String: Any] = ["captureID": record.id.uuidString, "date": formatter.string(from: record.createdAt),
+                                       "actions": Array(actions.prefix(40)), "conversation": contextual]
+            guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+                  let text = String(data: data, encoding: .utf8), characters + text.count <= 20_000 else { continue }
+            result.append(AgentTurn(role: "memory", content: text))
+            characters += text.count
+        }
+        return result.reversed()
     }
 
     /// Returns valid records newest first. A corrupt JSON file is skipped so it
@@ -194,13 +288,66 @@ public final class MemoryStore: @unchecked Sendable {
 
     /// Loads a record's screenshot. Returns nil if the record or image is missing,
     /// unreadable, or no longer contains a recognized PNG/JPEG payload.
-    public func imageData(for record: MemoryCaptureRecord) -> Data? {
+    public func imageData(for record: MemoryCaptureRecord, sourceID: UUID? = nil) -> Data? {
         lock.lock()
         defer { lock.unlock() }
-        guard Self.isSafeImageFileName(record.screenshotFileName),
-              let data = try? Data(contentsOf: directoryURL.appendingPathComponent(record.screenshotFileName)),
-              (try? Self.imageFormat(for: data)) == record.imageFormat else { return nil }
+        let source = sourceID.flatMap { id in record.additionalScreenshots?.first { $0.id == id } }
+        if sourceID != nil && source == nil { return nil }
+        let fileName = source?.fileName ?? record.screenshotFileName
+        let format = source?.imageFormat ?? record.imageFormat
+        guard Self.isSafeImageFileName(fileName),
+              let data = try? Data(contentsOf: directoryURL.appendingPathComponent(fileName)),
+              (try? Self.imageFormat(for: data)) == format else { return nil }
         return data
+    }
+
+    /// Adds another visible page to the same history record. The new image and
+    /// proposal collection are committed together, preserving each item's source.
+    @discardableResult
+    public func appendScreenshot(for id: UUID, imageData: Data, recognizedText: String,
+                                 proposals newItems: [CalendarActionProposal]) throws -> MemoryCaptureRecord? {
+        let format = try Self.imageFormat(for: imageData)
+        let sourceID = UUID()
+        let fileName = sourceID.uuidString + "." + format.rawValue
+        lock.lock()
+        defer { lock.unlock() }
+        let metadata = metadataURL(for: id)
+        guard let data = try? Data(contentsOf: metadata),
+              var record = try? decoder.decode(MemoryCaptureRecord.self, from: data) else { return nil }
+        var items = record.calendarProposals
+        for var item in newItems {
+            if items.contains(where: { CalendarDraftValidation.sameEvent($0.draft, item.draft) }) { continue }
+            item.sourceCaptureID = sourceID
+            items.append(item)
+        }
+        record.proposals = items
+        record.schemaVersion = 3
+        var sources = record.additionalScreenshots ?? []
+        sources.append(MemoryCaptureRecord.ScreenshotSource(id: sourceID, fileName: fileName,
+                                                           imageFormat: format, recognizedText: recognizedText))
+        record.additionalScreenshots = sources
+        let imageURL = directoryURL.appendingPathComponent(fileName)
+        do {
+            try imageData.write(to: imageURL, options: .atomic)
+            try encoder.encode(record).write(to: metadata, options: .atomic)
+        } catch {
+            try? fileManager.removeItem(at: imageURL)
+            throw error
+        }
+        return record
+    }
+
+    @discardableResult
+    public func updateProposals(for id: UUID, proposals: [CalendarActionProposal]) throws -> MemoryCaptureRecord? {
+        try updateRecord(id: id) { record in
+            record.schemaVersion = 3
+            record.proposals = proposals
+            record.event = proposals.first.map { MemoryCaptureRecord.EventDetails(draft: $0.draft) }
+            let receipt = proposals.compactMap(\.receipt).first
+            record.savedToCalendarAt = receipt?.savedAt
+            record.savedCalendarName = receipt?.calendarName
+            record.calendarEventIdentifier = receipt?.eventIdentifier
+        }
     }
 
     /// Replaces or clears the event snapshot after the user edits a proposal.
@@ -233,6 +380,9 @@ public final class MemoryStore: @unchecked Sendable {
            let record = try? decoder.decode(MemoryCaptureRecord.self, from: data),
            Self.isSafeImageFileName(record.screenshotFileName) {
             try? fileManager.removeItem(at: directoryURL.appendingPathComponent(record.screenshotFileName))
+            for source in record.additionalScreenshots ?? [] where Self.isSafeImageFileName(source.fileName) {
+                try? fileManager.removeItem(at: directoryURL.appendingPathComponent(source.fileName))
+            }
         }
         if fileManager.fileExists(atPath: metadata.path) {
             try fileManager.removeItem(at: metadata)

@@ -4,10 +4,11 @@ import SwiftUI
 @MainActor
 final class WorkspaceWindowController: NSObject, NSWindowDelegate {
     private let window: NSWindow
+    private var webWorkspace: WebWorkspaceController?
 
     init(model: CalshotModel) {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1050, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 1120, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -23,15 +24,20 @@ final class WorkspaceWindowController: NSObject, NSWindowDelegate {
         window.minSize = NSSize(width: 920, height: 650)
         window.level = .normal
         window.collectionBehavior = [.moveToActiveSpace]
-        window.appearance = NSAppearance(named: .darkAqua)
+        window.appearance = nil
         window.delegate = self
-        let accessory = NSTitlebarAccessoryViewController()
-        accessory.layoutAttribute = .left
-        accessory.view = NSHostingView(rootView: WorkspaceTitlebarAccessory())
-        accessory.view.frame = NSRect(x: 0, y: 0, width: 200, height: 40)
-        window.addTitlebarAccessoryViewController(accessory)
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--compact-workspace") { window.setContentSize(NSSize(width: 920, height: 650)) }
+#endif
         window.center()
-        window.contentView = NSHostingView(rootView: CalshotWorkspaceView(model: model))
+        if Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "WebUI") != nil {
+            let workspace = WebWorkspaceController(model: model)
+            webWorkspace = workspace
+            window.contentView = workspace.webView
+        } else {
+            // Native recovery surface remains available when frontend resources are absent.
+            window.contentView = NSHostingView(rootView: CalshotWorkspaceView(model: model))
+        }
     }
 
     func show() {

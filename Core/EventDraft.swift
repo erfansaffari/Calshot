@@ -2,7 +2,7 @@ import Foundation
 
 /// A provider-independent event proposal. Dates are optional until the review UI
 /// has enough information (or the user fills in a missing value).
-public struct EventDraft: Identifiable, Sendable {
+public struct EventDraft: Identifiable, Sendable, Codable {
     public var id: UUID
     public var title: String
     public var startDate: Date?
@@ -15,6 +15,9 @@ public struct EventDraft: Identifiable, Sendable {
     public var sourceText: String
     public var confidence: Double
     public var ambiguities: [EventAmbiguity]
+    public var sourceRegion: SourceRegion?
+    /// For updates only: fields explicitly changed by the tool or review editor.
+    public var changedFieldNames: [String]?
 
     public init(id: UUID = UUID(), title: String, startDate: Date?, endDate: Date?, isAllDay: Bool,
                 timeZoneIdentifier: String?, location: String?, url: URL?, notes: String?,
@@ -26,7 +29,8 @@ public struct EventDraft: Identifiable, Sendable {
     }
 }
 
-public enum EventAmbiguity: String, Sendable, Hashable {
+public enum EventAmbiguity: String, Sendable, Hashable, Codable {
+    case invalidURL
     case missingTitle
     case missingDate
     case missingYear

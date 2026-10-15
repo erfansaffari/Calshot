@@ -1,0 +1,144 @@
+:root {
+  font-family:
+    Inter,
+    Geist,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  font-synthesis: none;
+  --text: #272a30;
+  --muted: #737982;
+  --accent: #0760ed;
+  --accent-hover: #004fd0;
+  --accent-soft: #dce9ff;
+  --surface: rgba(255, 255, 255, 0.82);
+  --line: rgba(43, 58, 80, 0.11);
+  --danger: #a73832;
+  --danger-soft: #fff1ef;
+  --warning: #8a5916;
+  --warning-soft: #fff6e5;
+  --success: #28714b;
+  --success-soft: #ecf7ee;
+  --radius: 14px;
+  --radius-sm: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --shadow: 0 8px 28px rgba(42, 60, 90, 0.07);
+  --focus: 0 0 0 3px rgba(7, 96, 237, 0.25);
+}
+
+:root {
+  color-scheme: light;
+  --canvas: #f2f6fb;
+  --primary: #0760ed;
+  --workspace-background:
+    radial-gradient(ellipse at 95% 2%, #f7e7f5a3, transparent 55%),
+    radial-gradient(ellipse at 10% 0%, #d8eaffbd, transparent 65%),
+    radial-gradient(ellipse at 70% 100%, #d9f0eaa1, transparent 60%), #f7f9fc;
+  --sidebar-surface: #f3f7ff80;
+  --panel-border: #ffffffb0;
+  --nav-active: #cfe0fc;
+  --nav-active-text: #175ac1;
+  --nav-hover: #dce8f783;
+  --surface-solid: #fff;
+  --surface-subtle: #ffffff99;
+  --surface-raised: #fafcfe;
+  --surface-inset: #eef3fa;
+  --composer-fade: #edf4f5aa;
+  --badge-background: #eaf0f5;
+  --input-border: #b7c3d2;
+  --backdrop: #23344b45;
+  --primary-shadow: #003b8a26;
+  --soft-shadow: #23344a08;
+  --overlay-shadow: #20345040;
+}
+:root[data-appearance="dark"] {
+  color-scheme: dark;
+  --text: #e7edf6;
+  --muted: #a5b2c5;
+  --accent: #8ab9ff;
+  --accent-hover: #2672e3;
+  --accent-soft: #253b5b;
+  --primary: #1262db;
+  --canvas: #151b26;
+  --workspace-background:
+    radial-gradient(ellipse at 95% 2%, #34253e8c, transparent 55%),
+    radial-gradient(ellipse at 10% 0%, #2034519c, transparent 65%),
+    radial-gradient(ellipse at 70% 100%, #1c38344d, transparent 60%), #171d28;
+  --sidebar-surface: #1c2737b3;
+  --panel-border: #a6bddb20;
+  --line: #a6bddb29;
+  --nav-active: #2a4166;
+  --nav-active-text: #bbd6ff;
+  --nav-hover: #7395c51c;
+  --surface: #242e3ce8;
+  --surface-solid: #202a38;
+  --surface-subtle: #2835459c;
+  --surface-raised: #242e3c;
+  --surface-inset: #1c2635;
+  --composer-fade: #15242bb3;
+  --badge-background: #334258;
+  --input-border: #52627a;
+  --backdrop: #00000080;
+  --primary-shadow: #00000040;
+  --soft-shadow: #0000001a;
+  --overlay-shadow: #00000073;
+  --danger: #ffafa8;
+  --danger-soft: #452c30;
+  --warning: #f4ca88;
+  --warning-soft: #3c3223;
+  --success: #9bdbb6;
+  --success-soft: #253e32;
+  --shadow: 0 8px 28px #00000026;
+  --focus: 0 0 0 3px #77adff59;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-appearance="light"]):not([data-appearance="dark"]) {
+    color-scheme: dark;
+    --text: #e7edf6;
+    --muted: #a5b2c5;
+    --accent: #8ab9ff;
+    --accent-hover: #2672e3;
+    --accent-soft: #253b5b;
+    --primary: #1262db;
+    --canvas: #151b26;
+    --workspace-background:
+      radial-gradient(ellipse at 95% 2%, #34253e8c, transparent 55%),
+      radial-gradient(ellipse at 10% 0%, #2034519c, transparent 65%),
+      radial-gradient(ellipse at 70% 100%, #1c38344d, transparent 60%), #171d28;
+    --sidebar-surface: #1c2737b3;
+    --panel-border: #a6bddb20;
+    --line: #a6bddb29;
+    --nav-active: #2a4166;
+    --nav-active-text: #bbd6ff;
+    --nav-hover: #7395c51c;
+    --surface: #242e3ce8;
+    --surface-solid: #202a38;
+    --surface-subtle: #2835459c;
+    --surface-raised: #242e3c;
+    --surface-inset: #1c2635;
+    --composer-fade: #15242bb3;
+    --badge-background: #334258;
+    --input-border: #52627a;
+    --backdrop: #00000080;
+    --primary-shadow: #00000040;
+    --soft-shadow: #0000001a;
+    --overlay-shadow: #00000073;
+    --danger: #ffafa8;
+    --danger-soft: #452c30;
+    --warning: #f4ca88;
+    --warning-soft: #3c3223;
+    --success: #9bdbb6;
+    --success-soft: #253e32;
+    --shadow: 0 8px 28px #00000026;
+    --focus: 0 0 0 3px #77adff59;
+  }
+}

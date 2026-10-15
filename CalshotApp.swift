@@ -3,6 +3,7 @@ import Carbon.HIToolbox
 import Security
 import ScreenCaptureKit
 import SwiftUI
+import Combine
 
 @main
 struct CalshotApp: App {
@@ -13,22 +14,55 @@ struct CalshotApp: App {
             MenuBarView(model: appDelegate.model)
         }
         .menuBarExtraStyle(.window)
+        .commands {
+            CommandGroup(after: .appSettings) {
+                Button("Open Quick Menu") {
+                    appDelegate.model.showNotchLauncher()
+                    appDelegate.model.notchLauncherController?.openQuickMenu()
+                }.keyboardShortcut("k", modifiers: [.command, .shift])
+            }
+        }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let model = CalshotModel()
+    let model: CalshotModel = {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--calendar-agent-demo") {
+            return CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL:
+                FileManager.default.temporaryDirectory.appendingPathComponent("CalshotCalendarDemo")), loadsAIConnection: false,
+                agentClient: CalendarAgentDemoClient())
+        }
+        if ProcessInfo.processInfo.arguments.contains("--calendar-demo") {
+            return CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL:
+                FileManager.default.temporaryDirectory.appendingPathComponent("CalshotCalendarDemo")), loadsAIConnection: false)
+        }
+#endif
+        return CalshotModel()
+    }()
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        model.appearanceMode.apply()
         HotKeyController.shared.onPress = { [weak model = self.model] in
-            Task { @MainActor in await model?.capture() }
+            Task { @MainActor in
+                model?.taskUsesNotch = true
+                await model?.capture(quick: true, askAfterCapture: true)
+            }
         }
         model.registerShortcut()
 
         DispatchQueue.main.async { [weak self] in
             self?.model.showNotchLauncher()
             self?.model.openPanel()
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--calendar-demo") || ProcessInfo.processInfo.arguments.contains("--calendar-agent-demo") { self?.model.loadCalendarDemo() }
+            if ProcessInfo.processInfo.arguments.contains("--calendar-agent-demo") {
+                self?.model.calendarActions.replace(with: [])
+                self?.model.agentCommand = "Read this syllabus and add its deadlines and exams."
+                Task { await self?.model.startAgentCommand() }
+            }
+#endif
         }
     }
 
@@ -42,23 +76,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @MainActor
 final class CalshotModel: ObservableObject {
+    @Published var appearanceMode: AppAppearance = .saved {
+        didSet {
+            if persistsAISelection {
+                UserDefaults.standard.set(appearanceMode.rawValue, forKey: AppAppearance.defaultsKey)
+            }
+            appearanceMode.apply()
+        }
+    }
+    @Published var sidebarExpanded = UserDefaults.standard.object(forKey: "sidebarExpanded") as? Bool ?? true {
+        didSet { if persistsAISelection { UserDefaults.standard.set(sidebarExpanded, forKey: "sidebarExpanded") } }
+    }
+    var captureAsksForCommand = false
     @Published var image: NSImage?
     @Published var recognizedText = ""
-    @Published var draft: EventDraft?
+    @Published var agentStatus: String?
+    @Published var agentSummary: String?
+    @Published var agentMessages: [AgentTurn] = []
+    @Published var agentStreamingText = ""
+    @Published var agentError: String?
+    @Published var agentRetryPrompt: String?
+    @Published var agentUseAPIKey = false {
+        didSet { if persistsAISelection { UserDefaults.standard.set(agentUseAPIKey, forKey: "agentUseAPIKey") } }
+    }
+    private var persistsAISelection = true
+    @Published var agentIsRunning = false
+    @Published var agentIsWaitingForApproval = false
+    @Published var agentQuestion: AgentQuestion?
+    @Published var agentCommand = ""
+    var calendarAgent: CalendarAgent?
+    var agentToolExecutor: CalendarAgentToolExecutor?
+    var agentSubscriptions = Set<AnyCancellable>()
+    var activeAgentRunID: UUID?
+    var agentTranscriptPrefix: [AgentTurn] = []
+    var currentAgentPrompt = ""
+    var currentAgentSourceID: UUID?
+    var screenRecognition = ScreenTextRecognition(lines: [])
+    var ocrTask: Task<ScreenTextRecognition, Error>?
+    var ocrObserverTask: Task<Void, Never>?
+    let agentClient: (any CalendarAgentModelClient)?
+    let calendarActions: CalendarActionCoordinator
     @Published var isCapturing = false
     @Published var isRecognizing = false
     @Published var status: String?
     @Published var screenCapturePermissionNeeded = false
     var workspaceWindowController: WorkspaceWindowController?
+    var taskUsesNotch = false
     var notchLauncherController: NotchExperienceController?
     @Published var workspaceSelection: WorkspaceSection = .capture
     @Published var selectionOverlay: RegionSelectionOverlay?
     @Published var destinations: [CalendarDestinationInfo] = []
-    @Published var selectedCalendarID: String?
-    @Published var isSaving = false
+    @Published var readableCalendars: [CalendarDestinationInfo] = []
+    var persistsCalendarSelection = true
+    @Published var calendarAccountMessage: String?
+    @Published var calendarAccountIsConnecting = false
+    @Published var connectingCalendarProvider: CalendarAccountConnection.Provider?
+    @Published var calendarAccountError = false
+    var calendarConnectionTask: Task<Void, Never>?
+    @Published var calendarConnectionMessage: String?
+    @Published var selectedCalendarID: String? {
+        didSet { if persistsCalendarSelection { UserDefaults.standard.set(selectedCalendarID, forKey: "selectedCalendarID") } }
+    }
+    var isSaving: Bool { calendarActions.isExecuting }
     @Published var saveMessage: String?
     @Published var hasOpenAIAPIKey = false
     @Published var chatGPTAccount: ChatGPTConnection.Account?
+    @Published var chatGPTConnectionError: String?
     @Published var chatGPTModels: [ChatGPTConnection.ModelOption] = []
     @Published var chatGPTUsage: [ChatGPTConnection.UsageRecord] = CalshotModel.loadChatGPTUsage()
     @Published var openAIAnalysisEnabled = UserDefaults.standard.bool(forKey: "openAIAnalysisEnabled") {
@@ -81,21 +164,44 @@ final class CalshotModel: ObservableObject {
     @Published var lastAnalysisProvider: String?
     @Published var lastOCRStatus = "No OCR run yet"
     @Published var lastCaptureSummary = "No capture yet"
-    private let calendarService = EventKitCalendarService()
-    private let memoryStore = MemoryStore.shared
-    private var currentMemoryRecordID: UUID?
-    private var currentCaptureSessionID: UUID?
+    let calendarService: any CalendarDestinationService
+    let memoryStore: MemoryStore
+    private var calendarObservation: AnyCancellable?
+    var currentMemoryRecordID: UUID?
+    var currentCaptureSessionID: UUID?
     private var shortcutSuspendedForSelection = false
     private var currentCaptureIsQuick = false
+    var isAppendingCapture = false
+    var previousCaptureImage: NSImage?
+    var analysisTask: Task<Void, Never>?
 
-    init() {
+    init(calendarService: any CalendarDestinationService = ConnectedCalendarService(), memoryStore: MemoryStore = .shared, loadsAIConnection: Bool = true, agentClient: (any CalendarAgentModelClient)? = nil) {
+        persistsCalendarSelection = loadsAIConnection
+        persistsAISelection = loadsAIConnection
+        if loadsAIConnection { agentUseAPIKey = UserDefaults.standard.bool(forKey: "agentUseAPIKey") }
+        self.agentClient = agentClient
+        self.calendarService = calendarService
+        self.memoryStore = memoryStore
+        calendarActions = CalendarActionCoordinator(service: calendarService)
+        calendarActions.persist = { [weak self] items in
+            guard let self, let id = self.currentMemoryRecordID,
+                  try self.memoryStore.updateProposals(for: id, proposals: items) != nil else {
+                throw CalendarDestinationError.invalidDraft("capture history is unavailable; retake the screenshot before saving")
+            }
+            self.refreshMemory()
+        }
+        calendarObservation = calendarActions.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        if loadsAIConnection { selectedCalendarID = UserDefaults.standard.string(forKey: "selectedCalendarID") }
+        guard loadsAIConnection else { return }
         hasOpenAIAPIKey = (try? OpenAIAPIKeyStore.load()) != nil
         chatGPTAccount = ChatGPTConnection.savedAccount()
         if chatGPTAccount?.canUsePlan == true {
             Task { [weak self] in
-                guard let self,
-                      let account = try? await ChatGPTConnection.shared.refreshPreferredModel() else { return }
-                self.chatGPTAccount = account
+                guard let self else { return }
+                do {
+                    self.chatGPTAccount = try await ChatGPTConnection.shared.refreshPreferredModel()
+                    self.chatGPTConnectionError = nil
+                } catch { self.chatGPTConnectionError = error.localizedDescription }
             }
         }
     }
@@ -103,6 +209,14 @@ final class CalshotModel: ObservableObject {
     func openPanel() {
         if workspaceWindowController == nil { workspaceWindowController = WorkspaceWindowController(model: self) }
         workspaceWindowController?.show()
+    }
+
+    func presentTask(compact: Bool = false) {
+        if taskUsesNotch {
+            showNotchLauncher()
+            if compact { notchLauncherController?.collapse() } else { notchLauncherController?.openQuickMenu() }
+        }
+        else { openPanel() }
     }
 
     func showNotchLauncher() {
@@ -185,11 +299,13 @@ final class CalshotModel: ObservableObject {
     }
 
     func deleteMemoryRecord(_ id: UUID) {
+        guard !isSaving else { return }
         do { try memoryStore.deleteRecord(id: id); refreshMemory() }
         catch { status = "Couldn’t delete capture history: \(error.localizedDescription)" }
     }
 
     func deleteAllMemory() {
+        guard !isSaving else { return }
         do { try memoryStore.deleteAll(); refreshMemory() }
         catch { status = "Couldn’t clear capture history: \(error.localizedDescription)" }
     }
@@ -208,32 +324,50 @@ final class CalshotModel: ObservableObject {
         return shortcut
     }
 
-    func capture(quick: Bool = false) async {
-        guard selectionOverlay == nil, !isCapturing, !isRecognizing, !isSaving else { return }
+    func capture(quick: Bool = false, appendToBatch: Bool = false, visibleScreen: Bool = false, askAfterCapture: Bool = false) async {
+        guard selectionOverlay == nil, !isCapturing, !isSaving else { return }
+        stopAgent()
+        await Task.yield()
+        calendarAgent?.invalidateSession()
+        analysisTask?.cancel()
+        ocrTask?.cancel()
+        ocrObserverTask?.cancel()
+        isRecognizing = false
+        agentStatus = nil
+        agentSummary = nil
+        agentMessages = []; agentStreamingText = ""; agentError = nil; agentRetryPrompt = nil
+        isAppendingCapture = appendToBatch && currentMemoryRecordID != nil && !quick
+        previousCaptureImage = isAppendingCapture ? image : nil
         let captureSessionID = UUID()
         currentCaptureSessionID = captureSessionID
         currentCaptureIsQuick = quick
+        captureAsksForCommand = quick && askAfterCapture
         isCapturing = true
         status = nil
         analyzedWithOpenAI = false
         screenCapturePermissionNeeded = false
         saveMessage = nil
-        image = nil
-        recognizedText = ""
-        draft = nil
-        currentMemoryRecordID = nil
+        if !isAppendingCapture {
+            image = nil
+            recognizedText = ""
+            calendarActions.replace(with: [])
+            currentMemoryRecordID = nil
+        }
         workspaceWindowController?.hide()
         notchLauncherController?.hide()
         try? await Task.sleep(nanoseconds: 120_000_000)
         do {
             let capture = try await ScreenCaptureService.captureMainDisplayWithScreen()
+            guard currentCaptureSessionID == captureSessionID else { return }
             isCapturing = false
+            if visibleScreen {
+                isRecognizing = true
+                analysisTask = Task { await self.analyze(capture.image, sessionID: captureSessionID) }
+                return
+            }
             let overlay = RegionSelectionOverlay(image: capture.image, screen: capture.screen) { [weak self] result in
                 guard let self else { return }
-                guard self.currentCaptureSessionID == captureSessionID else {
-                    self.resumeShortcutAfterSelection()
-                    return
-                }
+                guard self.currentCaptureSessionID == captureSessionID else { return }
                 self.selectionOverlay = nil
                 switch result {
                 case .success(let selectedImage):
@@ -242,14 +376,18 @@ final class CalshotModel: ObservableObject {
                         Task { await self.finishQuickCapture(selectedImage, sessionID: captureSessionID) }
                     } else {
                         self.isRecognizing = true
-                        Task { await self.analyze(selectedImage, sessionID: captureSessionID) }
+                        self.analysisTask = Task { await self.analyze(selectedImage, sessionID: captureSessionID) }
                     }
                 case .failure(.cancelled):
                     self.resumeShortcutAfterSelection()
                     self.currentCaptureSessionID = nil
                     self.currentCaptureIsQuick = false
-                    self.image = nil
-                    self.draft = nil
+                    if self.isAppendingCapture {
+                        self.image = self.previousCaptureImage
+                        self.isAppendingCapture = false
+                        self.previousCaptureImage = nil
+                        self.presentTask()
+                    } else { self.image = nil; self.calendarActions.replace(with: []) }
                     self.status = nil
                     self.isCapturing = false
                     self.showNotchLauncher()
@@ -258,13 +396,15 @@ final class CalshotModel: ObservableObject {
                     self.currentCaptureSessionID = nil
                     self.currentCaptureIsQuick = false
                     self.status = error.localizedDescription
-                    self.openPanel()
+                    self.presentTask()
                 }
             }
             selectionOverlay = overlay
             suspendShortcutForSelection()
             overlay.show()
         } catch {
+            guard currentCaptureSessionID == captureSessionID else { return }
+            if isAppendingCapture { image = previousCaptureImage; isAppendingCapture = false; previousCaptureImage = nil }
             isCapturing = false
             currentCaptureSessionID = nil
             currentCaptureIsQuick = false
@@ -278,7 +418,7 @@ final class CalshotModel: ObservableObject {
             } else {
                 status = "Couldn’t capture the screen: \(error.localizedDescription)"
             }
-            openPanel()
+            presentTask()
         }
     }
 
@@ -288,124 +428,14 @@ final class CalshotModel: ObservableObject {
         HotKeyController.shared.unregister()
     }
 
-    private func resumeShortcutAfterSelection() {
+    func resumeShortcutAfterSelection() {
         guard shortcutSuspendedForSelection else { return }
         shortcutSuspendedForSelection = false
         if !isRecordingShortcut { registerShortcut() }
     }
 
     private func analyze(_ cgImage: CGImage, sessionID: UUID) async {
-        guard currentCaptureSessionID == sessionID else { return }
-        image = NSImage(cgImage: cgImage, size: .zero)
-        if CaptureClipboard.automaticallyCopyCapture, let image { CaptureClipboard.copy(image) }
-        isCapturing = false
-        workspaceSelection = .capture
-        openPanel()
-        showNotchLauncher()
-        isRecognizing = true
-        status = nil
-        saveMessage = nil
-        var candidates: [EventDraft]
-        var fallbackStatus: String?
-        let recognizedText: String
-        do {
-            recognizedText = try await ScreenTextRecognizer.recognize(in: cgImage)
-            let characterCount = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines).count
-            lastOCRStatus = characterCount == 0 ? "Vision ran, but found no readable text." : "Vision recognized \(characterCount) characters."
-        } catch {
-            recognizedText = ""
-            lastOCRStatus = "Vision OCR failed: \(error.localizedDescription)"
-        }
-        guard currentCaptureSessionID == sessionID else { return }
-        self.recognizedText = recognizedText
-        let apiKey = try? OpenAIAPIKeyStore.load()
-        if openAIAnalysisEnabled, chatGPTAccount?.canUsePlan == true {
-            analyzedWithOpenAI = true
-            status = "Analyzing screenshot with your ChatGPT plan…"
-            do {
-                let access = try await ChatGPTConnection.shared.access()
-                let result = try await OpenAIEventAnalyzer.analyze(
-                    image: cgImage, apiKey: access.token, model: access.model, stream: true,
-                    referenceDate: .now, timeZone: .current, locale: .current,
-                    recognizedText: recognizedText
-                )
-                candidates = result.drafts
-                if let usage = result.usage {
-                    recordChatGPTUsage(model: access.model, inputTokens: usage.inputTokens,
-                                       outputTokens: usage.outputTokens)
-                }
-                lastAnalysisProvider = "ChatGPT plan (\(access.model)) + Vision OCR"
-            } catch {
-                analyzedWithOpenAI = false
-                fallbackStatus = "ChatGPT analysis failed; used on-device analysis. \(error.localizedDescription)"
-                candidates = await EventDraftExtractionService.extract(recognizedText)
-                lastAnalysisProvider = "On-device fallback + Vision OCR"
-            }
-        } else if openAIAnalysisEnabled, let apiKey {
-            analyzedWithOpenAI = true
-            status = "Cross-checking screenshot and Vision OCR with OpenAI…"
-            do {
-                let result = try await OpenAIEventAnalyzer.analyze(
-                    image: cgImage, apiKey: apiKey, referenceDate: .now,
-                    timeZone: .current, locale: .current, recognizedText: recognizedText
-                )
-                candidates = result.drafts
-                lastAnalysisProvider = "OpenAI (\(OpenAIEventAnalyzer.modelName)) + Vision OCR"
-            } catch {
-                analyzedWithOpenAI = false
-                fallbackStatus = "OpenAI analysis failed; used on-device analysis. \(error.localizedDescription)"
-                candidates = await EventDraftExtractionService.extract(recognizedText)
-                lastAnalysisProvider = "On-device fallback + Vision OCR"
-            }
-        } else {
-            analyzedWithOpenAI = false
-            if openAIAnalysisEnabled && !hasOpenAIAPIKey && chatGPTAccount == nil {
-                fallbackStatus = "Connect ChatGPT or add an OpenAI API key in Settings. Used on-device analysis instead."
-            }
-            candidates = await EventDraftExtractionService.extract(recognizedText)
-            lastAnalysisProvider = "On-device analysis + Vision OCR"
-        }
-        guard currentCaptureSessionID == sessionID else { return }
-        draft = candidates.first
-        if var first = draft, let start = first.startDate,
-           first.endDate == nil || first.endDate! <= start {
-            if first.isAllDay {
-                var calendar = Calendar.current
-                if let zone = first.timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) {
-                    calendar.timeZone = zone
-                }
-                let dayStart = calendar.startOfDay(for: start)
-                first.startDate = dayStart
-                first.endDate = calendar.date(byAdding: .day, value: 1, to: dayStart)
-            } else {
-                first.endDate = start.addingTimeInterval(3600)
-                if !first.ambiguities.contains(.missingEndTime) { first.ambiguities.append(.missingEndTime) }
-            }
-            draft = first
-        }
-        if candidates.isEmpty {
-            status = fallbackStatus ?? (analyzedWithOpenAI
-                ? "OpenAI didn’t find a calendar event. Try selecting a tighter region around the event details."
-                : "No event date found. You can still add the details manually.")
-        } else { status = fallbackStatus }
-        let captureDate = Date()
-        lastCaptureSummary = "\(captureDate.formatted(date: .abbreviated, time: .shortened)) · \(draft?.title ?? "No event found")"
-        if let png = NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:]) {
-            do {
-                let record = try memoryStore.recordCapture(imageData: png, draft: draft,
-                                                           recognizedText: recognizedText,
-                                                           analysisProvider: lastAnalysisProvider,
-                                                           createdAt: captureDate)
-                currentMemoryRecordID = record.id
-                refreshMemory()
-            } catch {
-                status = [status, "Couldn’t save local capture history: \(error.localizedDescription)"]
-                    .compactMap { $0 }.joined(separator: " ")
-            }
-        }
-        isRecognizing = false
-        currentCaptureIsQuick = false
-        resumeShortcutAfterSelection()
+        await analyzeWithCalendarAgent(cgImage, sessionID: sessionID)
     }
 
     private func finishQuickCapture(_ cgImage: CGImage, sessionID: UUID) async {
@@ -431,6 +461,13 @@ final class CalshotModel: ObservableObject {
             currentCaptureSessionID = nil
             currentCaptureIsQuick = false
             resumeShortcutAfterSelection()
+            if captureAsksForCommand {
+                captureAsksForCommand = false
+                restoreCalendarReview(record)
+                workspaceSelection = .chat
+                agentStatus = "Screenshot ready. Tell Calshot what you want to do."
+                return
+            }
             showNotchLauncher()
             notchLauncherController?.showQuickPreview(image: image, recordID: record.id,
                                                        copiedToClipboard: copied)
@@ -440,7 +477,7 @@ final class CalshotModel: ObservableObject {
             currentCaptureIsQuick = false
             resumeShortcutAfterSelection()
             status = "Couldn’t save screenshot to Memory: \(error.localizedDescription)"
-            openPanel()
+            presentTask()
         }
     }
 
@@ -454,14 +491,19 @@ final class CalshotModel: ObservableObject {
         let account = try await ChatGPTConnection.shared.connect()
         chatGPTAccount = account
         openAIAnalysisEnabled = account.canUsePlan || hasOpenAIAPIKey
-        chatGPTModels = (try? await ChatGPTConnection.shared.availableModels()) ?? []
+        chatGPTConnectionError = await ChatGPTConnection.shared.modelAvailabilityError
+        if chatGPTConnectionError == nil { await refreshChatGPTModels() }
+        else { chatGPTModels = [] }
     }
 
     func refreshChatGPTModels() async {
         guard chatGPTAccount?.canUsePlan == true else { chatGPTModels = []; return }
+        chatGPTConnectionError = nil
         do {
             chatGPTModels = try await ChatGPTConnection.shared.availableModels()
         } catch {
+            chatGPTModels = []
+            chatGPTConnectionError = error.localizedDescription
             status = "Couldn’t load ChatGPT models: \(error.localizedDescription)"
         }
     }
@@ -525,7 +567,42 @@ final class CalshotModel: ObservableObject {
         showNotchLauncher()
     }
 
+    func cancelAnalysis() {
+        stopAgent()
+        ocrTask?.cancel()
+        ocrObserverTask?.cancel()
+        analysisTask?.cancel()
+        analysisTask = nil
+        currentCaptureSessionID = nil
+        isRecognizing = false
+        isCapturing = false
+        resumeShortcutAfterSelection()
+        if isAppendingCapture {
+            image = previousCaptureImage
+            previousCaptureImage = nil
+            isAppendingCapture = false
+            status = "Additional capture cancelled. Your previous batch is ready to review."
+        } else { cancelReview() }
+    }
+
+    func storedImage(for record: MemoryCaptureRecord) -> NSImage? {
+        memoryStore.imageData(for: record).flatMap(NSImage.init(data:))
+    }
+
+    func sourceImage(for item: CalendarActionProposal) -> NSImage? {
+        guard let id = currentMemoryRecordID,
+              let record = memoryRecords.first(where: { $0.id == id }),
+              let data = memoryStore.imageData(for: record, sourceID: item.sourceCaptureID) else { return nil }
+        return NSImage(data: data)
+    }
+
     func cancelReview() {
+        stopAgent()
+        guard !isSaving else { calendarActions.requestStop(); return }
+        analysisTask?.cancel()
+        analysisTask = nil
+        isAppendingCapture = false
+        previousCaptureImage = nil
         currentCaptureSessionID = nil
         currentCaptureIsQuick = false
         selectionOverlay?.cancel()
@@ -533,51 +610,70 @@ final class CalshotModel: ObservableObject {
         resumeShortcutAfterSelection()
         currentMemoryRecordID = nil
         image = nil
-        draft = nil
+        calendarActions.replace(with: [])
         isCapturing = false
         isRecognizing = false
-        isSaving = false
         status = nil
         saveMessage = nil
         dismiss()
     }
 
     func loadCalendars() async {
+        guard !isSaving else { return }
+        saveMessage = nil
+        calendarConnectionMessage = "Connecting to macOS calendars…"
         do {
-            destinations = try await calendarService.availableDestinations().filter { !$0.isReadOnly }
-            if selectedCalendarID == nil { selectedCalendarID = destinations.first?.id }
-            if destinations.isEmpty { saveMessage = "No writable calendars found. Add an account in System Settings → Internet Accounts." }
-        } catch { saveMessage = error.localizedDescription }
+            readableCalendars = try await calendarService.availableDestinations()
+            destinations = readableCalendars.filter { !$0.isReadOnly }
+            if !destinations.contains(where: { $0.id == selectedCalendarID }) { selectedCalendarID = destinations.first?.id }
+            calendarConnectionMessage = destinations.isEmpty ? (readableCalendars.isEmpty ? "No calendars connected. Connect an account in Calendars." : "Connected calendars are read-only or unavailable. Search can use readable calendars; adding events needs a writable destination.") : nil
+            if destinations.isEmpty { saveMessage = calendarConnectionMessage }
+        } catch {
+            destinations = []; readableCalendars = []
+            calendarConnectionMessage = error.localizedDescription
+            saveMessage = error.localizedDescription
+        }
     }
 
-    func saveEvent() async {
-        guard let draft,
-              !draft.ambiguities.contains(where: { $0 == .missingDate || $0 == .missingYear || $0 == .ambiguousDate }),
-              let startDate = draft.startDate,
-              let endDate = draft.endDate,
-              endDate > startDate else {
-            saveMessage = "Choose a valid event date and time before adding it."
+    func saveEvents() async {
+        guard let selectedCalendarID,
+              let destination = destinations.first(where: { $0.id == selectedCalendarID }) else {
+            calendarActions.message = "Choose a writable calendar to continue."
             return
         }
-        guard let selectedCalendarID,
-              destinations.contains(where: { $0.id == selectedCalendarID }) else {
-            saveMessage = "Choose a writable calendar to continue."; return
+        if agentIsWaitingForApproval && !calendarActions.needsDuplicateCheck(destinationID: selectedCalendarID) {
+            let selected = calendarActions.proposals.filter { $0.isSelected && !$0.isFinished && calendarActions.isInApprovalScope($0.id) }
+            agentStatus = selected.count == 1 && selected.first?.operation == .update ? "Updating 1 event" : "Saving approved calendar actions"
         }
-        isSaving = true; saveMessage = nil
-        do {
-            let eventIdentifier = try await calendarService.save(draft, to: .eventKit(calendarIdentifier: selectedCalendarID))
-            let calendarName = destinations.first(where: { $0.id == selectedCalendarID })?.title ?? "your calendar"
-            saveMessage = "Added ‘\(draft.title)’ to \(calendarName)."
-            if let currentMemoryRecordID {
-                _ = try? memoryStore.updateEventDetails(for: currentMemoryRecordID, draft: draft)
-                _ = try? memoryStore.markSavedToCalendar(for: currentMemoryRecordID,
-                                                         calendarName: calendarName,
-                                                         eventIdentifier: eventIdentifier)
-                refreshMemory()
-            }
-        } catch { saveMessage = error.localizedDescription }
-        isSaving = false
+        await calendarActions.execute(destinationID: selectedCalendarID, calendarName: destination.title)
     }
+
+    func restoreCalendarReview(_ record: MemoryCaptureRecord) {
+        guard !isSaving, !isRecognizing, !isCapturing,
+              !agentIsRunning else { return }
+        stopAgent()
+        let sourceID = record.additionalScreenshots?.last?.id
+        let restoredImage = memoryStore.imageData(for: record, sourceID: sourceID).flatMap(NSImage.init(data:))
+        ocrTask?.cancel(); ocrTask = nil
+        screenRecognition = ScreenTextRecognition(lines: [])
+        refreshMemory()
+        currentCaptureSessionID = UUID()
+        currentMemoryRecordID = record.id
+        image = restoredImage
+        recognizedText = record.additionalScreenshots?.last?.recognizedText ?? record.recognizedText ?? ""
+        lastAnalysisProvider = record.analysisProvider
+        calendarActions.replace(with: record.calendarProposals)
+        agentTranscriptPrefix = record.agentTranscript ?? []
+        agentMessages = agentTranscriptPrefix; agentStreamingText = ""; agentError = nil; agentRetryPrompt = nil
+        agentSummary = agentTranscriptPrefix.last(where: { $0.role == "assistant" && $0.toolName == nil })?.content
+        agentStatus = record.agentTranscript == nil ? nil : "Conversation restored. Send a command to continue; pending writes still require approval."
+        currentAgentSourceID = sourceID
+        status = nil
+        saveMessage = nil
+        workspaceSelection = restoredImage == nil && record.agentTranscript != nil ? .chat : .capture
+        presentTask()
+    }
+
 }
 
 struct MenuBarView: View {
@@ -613,7 +709,7 @@ struct MenuBarView: View {
             .buttonStyle(.bordered)
             .disabled(model.isCapturing || model.isRecognizing)
             Toggle(isOn: $model.openAIAnalysisEnabled) {
-                Label("Send selected image to OpenAI", systemImage: "cloud")
+                Label("Send captured image to OpenAI", systemImage: "cloud")
                     .font(.system(size: 11, weight: .medium))
             }
             .toggleStyle(.switch)
@@ -644,14 +740,14 @@ struct MenuBarView: View {
             .buttonStyle(.plain)
             HStack(spacing: 7) {
                 Circle().fill(model.openAIAnalysisEnabled ? .orange : .green).frame(width: 6, height: 6)
-                Text(model.openAIAnalysisEnabled ? "OpenAI analysis · selected region sent online" : "Private by design · processed on your Mac")
+                Text(model.openAIAnalysisEnabled ? "OpenAI analysis · captured image sent online" : "Private by design · processed on your Mac")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }.padding(14).frame(width: 310)
     }
 }
 
-private enum OpenAIAPIKeyStore {
+enum OpenAIAPIKeyStore {
     private static let service = "com.calshot.openai"
     private static let account = "api-key"
 

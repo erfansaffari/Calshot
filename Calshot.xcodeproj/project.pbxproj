@@ -29,6 +29,33 @@
 		A30000000000000000000014 /* WorkspaceWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* WorkspaceWindowController.swift */; };
 		A30000000000000000000015 /* ChatGPTConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* ChatGPTConnection.swift */; };
 		A30000000000000000000016 /* OpenAIStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* OpenAIStreamTests.swift */; };
+		A30000000000000000000019 /* CalendarActionProposal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019; };
+		A3000000000000000000001A /* CalendarActionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001A; };
+		A3000000000000000000001B /* CalendarBatchReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001B; };
+		A3000000000000000000001C /* CalendarActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001C; };
+		A3000000000000000000001D /* CalendarReviewDemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001D; };
+		A3000000000000000000001E /* CalendarAgentTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001E; };
+		A3000000000000000000001F /* CalendarAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001F; };
+		A30000000000000000000020 /* ResponsesCalendarAgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000020; };
+		A30000000000000000000021 /* CalendarAgentToolExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000021; };
+		A30000000000000000000022 /* CalendarToolDraftMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000022; };
+		A30000000000000000000023 /* CalshotModel+CalendarAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000023; };
+		A30000000000000000000024 /* CalendarAgentDemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000024; };
+		A30000000000000000000025 /* CalendarAgentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000025; };
+		A30000000000000000000026 /* CalendarOperationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000026; };
+		A30000000000000000000027 /* CalendarAgentToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000027; };
+		A30000000000000000000028 /* AgentMemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000028; };
+		A30000000000000000000029 /* CalendarAccountConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000029; };
+		A3000000000000000000002A /* RemoteCalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002A; };
+		A3000000000000000000002B /* ConnectedCalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002B; };
+		A3000000000000000000002C /* CalendarConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002C; };
+		A3000000000000000000002D /* ICloudCalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002D; };
+		A3000000000000000000002E /* CalendarConnectionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002E; };
+		B30000000000000000000001 /* WebWorkspaceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001; };
+		B30000000000000000000002 /* WebWorkspaceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002; };
+		B30000000000000000000003 /* WebWorkspaceAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003; };
+		B30000000000000000000004 /* WebWorkspaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004; };
+		B30000000000000000000005 /* AppAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -66,6 +93,33 @@
 		A20000000000000000000016 /* WorkspaceWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWindowController.swift; sourceTree = "<group>"; };
 		A20000000000000000000017 /* ChatGPTConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTConnection.swift; sourceTree = "<group>"; };
 		A20000000000000000000018 /* OpenAIStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIStreamTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000019 /* CalendarActionProposal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Core/CalendarActionProposal.swift; sourceTree = "<group>"; };
+		A2000000000000000000001A /* CalendarActionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Calendar/CalendarActionCoordinator.swift; sourceTree = "<group>"; };
+		A2000000000000000000001B /* CalendarBatchReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarBatchReviewView.swift; sourceTree = "<group>"; };
+		A2000000000000000000001C /* CalendarActionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTests/CalendarActionTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000001D /* CalendarReviewDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarReviewDemo.swift; sourceTree = "<group>"; };
+		A2000000000000000000001E /* CalendarAgentTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/CalendarAgentTypes.swift"; sourceTree = "<group>"; };
+		A2000000000000000000001F /* CalendarAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/CalendarAgent.swift"; sourceTree = "<group>"; };
+		A20000000000000000000020 /* ResponsesCalendarAgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/ResponsesCalendarAgentClient.swift"; sourceTree = "<group>"; };
+		A20000000000000000000021 /* CalendarAgentToolExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/CalendarAgentToolExecutor.swift"; sourceTree = "<group>"; };
+		A20000000000000000000022 /* CalendarToolDraftMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/CalendarToolDraftMapper.swift"; sourceTree = "<group>"; };
+		A20000000000000000000023 /* CalshotModel+CalendarAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CalshotModel+CalendarAgent.swift"; sourceTree = "<group>"; };
+		A20000000000000000000024 /* CalendarAgentDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CalendarAgentDemo.swift"; sourceTree = "<group>"; };
+		A20000000000000000000025 /* CalendarAgentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoreTests/CalendarAgentTests.swift"; sourceTree = "<group>"; };
+		A20000000000000000000026 /* CalendarOperationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoreTests/CalendarOperationTests.swift"; sourceTree = "<group>"; };
+		A20000000000000000000027 /* CalendarAgentToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoreTests/CalendarAgentToolTests.swift"; sourceTree = "<group>"; };
+		A20000000000000000000028 /* AgentMemoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoreTests/AgentMemoryTests.swift"; sourceTree = "<group>"; };
+		A20000000000000000000029 /* CalendarAccountConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Calendar/CalendarAccountConnection.swift"; sourceTree = "<group>"; };
+		A2000000000000000000002A /* RemoteCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Calendar/RemoteCalendarService.swift"; sourceTree = "<group>"; };
+		A2000000000000000000002B /* ConnectedCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Calendar/ConnectedCalendarService.swift"; sourceTree = "<group>"; };
+		A2000000000000000000002C /* CalendarConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoreTests/CalendarConnectionTests.swift"; sourceTree = "<group>"; };
+		A2000000000000000000002D /* ICloudCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Calendar/ICloudCalendarService.swift"; sourceTree = "<group>"; };
+		A2000000000000000000002E /* CalendarConnectionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarConnectionsView.swift; sourceTree = "<group>"; };
+		B20000000000000000000001 /* WebWorkspaceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebWorkspaceController.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* WebWorkspaceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebWorkspaceState.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* WebWorkspaceAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebWorkspaceAssets.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* WebWorkspaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebWorkspaceTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000005 /* AppAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Core/AppAppearance.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -100,12 +154,38 @@
 		A10000000000000000000004 /* . */ = {
 			isa = PBXGroup;
 			children = (
+				A20000000000000000000029 /* CalendarAccountConnection.swift */,
+				A2000000000000000000002A /* RemoteCalendarService.swift */,
+				A2000000000000000000002B /* ConnectedCalendarService.swift */,
+				A2000000000000000000002C /* CalendarConnectionTests.swift */,
+				A2000000000000000000002D /* ICloudCalendarService.swift */,
+				A20000000000000000000028 /* AgentMemoryTests.swift */,
+				A20000000000000000000027 /* CalendarAgentToolTests.swift */,
+				A20000000000000000000026 /* CalendarOperationTests.swift */,
+				A20000000000000000000025 /* CalendarAgentTests.swift */,
+				A20000000000000000000024 /* CalendarAgentDemo.swift */,
+				A20000000000000000000023 /* CalshotModel+CalendarAgent.swift */,
+				A20000000000000000000022 /* CalendarToolDraftMapper.swift */,
+				A20000000000000000000021 /* CalendarAgentToolExecutor.swift */,
+				A20000000000000000000020 /* ResponsesCalendarAgentClient.swift */,
+				A2000000000000000000001F /* CalendarAgent.swift */,
+				A2000000000000000000001E /* CalendarAgentTypes.swift */,
+				A2000000000000000000001D /* CalendarReviewDemo.swift */,
+				A2000000000000000000001C /* CalendarActionTests.swift */,
+				A2000000000000000000001B /* CalendarBatchReviewView.swift */,
+				A2000000000000000000001A /* CalendarActionCoordinator.swift */,
+				A20000000000000000000019 /* CalendarActionProposal.swift */,
 				A20000000000000000000001 /* CalshotApp.swift */,
+				B20000000000000000000005 /* AppAppearance.swift */,
+				B20000000000000000000003 /* WebWorkspaceAssets.swift */,
+				B20000000000000000000002 /* WebWorkspaceState.swift */,
+				B20000000000000000000001 /* WebWorkspaceController.swift */,
 				A2000000000000000000000E /* RegionSelectionOverlay.swift */,
 				A2000000000000000000000F /* MemoryStore.swift */,
 				A20000000000000000000010 /* SettingsView.swift */,
 				A20000000000000000000013 /* NotchExperience.swift */,
 				A20000000000000000000014 /* UnifiedWorkspace.swift */,
+				A2000000000000000000002E /* CalendarConnectionsView.swift */,
 				A20000000000000000000015 /* ScreenshotExperience.swift */,
 				A20000000000000000000016 /* WorkspaceWindowController.swift */,
 				A20000000000000000000012 /* Assets.xcassets */,
@@ -141,6 +221,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000009 /* EventDraftParserTests.swift */,
+				B20000000000000000000004 /* WebWorkspaceTests.swift */,
 				A20000000000000000000011 /* MemoryStoreTests.swift */,
 				A20000000000000000000018 /* OpenAIStreamTests.swift */,
 			);
@@ -166,6 +247,7 @@
 				A60000000000000000000001 /* Sources */,
 				A50000000000000000000001 /* Frameworks */,
 				A70000000000000000000001 /* Resources */,
+				B80000000000000000000001 /* Build React workspace */,
 			);
 			buildRules = (
 			);
@@ -249,12 +331,45 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+        B80000000000000000000001 /* Build React workspace */ = {
+            isa = PBXShellScriptBuildPhase;
+            alwaysOutOfDate = 1;
+            buildActionMask = 2147483647;
+            files = ();
+            inputPaths = ();
+            outputPaths = ();
+            runOnlyForDeploymentPostprocessing = 0;
+            shellPath = /bin/bash;
+            shellScript = "bash \"$SRCROOT/script/build_web_ui.sh\"";
+        };
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		A60000000000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A30000000000000000000029 /* CalendarAccountConnection.swift in Sources */,
+				A3000000000000000000002A /* RemoteCalendarService.swift in Sources */,
+				A3000000000000000000002B /* ConnectedCalendarService.swift in Sources */,
+				A3000000000000000000002D /* ICloudCalendarService.swift in Sources */,
+				A30000000000000000000024 /* CalendarAgentDemo.swift in Sources */,
+				A30000000000000000000023 /* CalshotModel+CalendarAgent.swift in Sources */,
+				A30000000000000000000022 /* CalendarToolDraftMapper.swift in Sources */,
+				A30000000000000000000021 /* CalendarAgentToolExecutor.swift in Sources */,
+				A30000000000000000000020 /* ResponsesCalendarAgentClient.swift in Sources */,
+				A3000000000000000000001F /* CalendarAgent.swift in Sources */,
+				A3000000000000000000001E /* CalendarAgentTypes.swift in Sources */,
+				A3000000000000000000001D /* CalendarReviewDemo.swift in Sources */,
+				A3000000000000000000001B /* CalendarBatchReviewView.swift in Sources */,
+				A3000000000000000000001A /* CalendarActionCoordinator.swift in Sources */,
+				A30000000000000000000019 /* CalendarActionProposal.swift in Sources */,
 				A30000000000000000000001 /* CalshotApp.swift in Sources */,
+				B30000000000000000000005 /* AppAppearance.swift in Sources */,
+				B30000000000000000000003 /* WebWorkspaceAssets.swift in Sources */,
+				B30000000000000000000002 /* WebWorkspaceState.swift in Sources */,
+				B30000000000000000000001 /* WebWorkspaceController.swift in Sources */,
 				A30000000000000000000002 /* EventDraft.swift in Sources */,
 				A30000000000000000000003 /* EventDraftParser.swift in Sources */,
 				A30000000000000000000004 /* EventDraftExtractionService.swift in Sources */,
@@ -269,6 +384,7 @@
 				A3000000000000000000000E /* SettingsView.swift in Sources */,
 				A30000000000000000000011 /* NotchExperience.swift in Sources */,
 				A30000000000000000000012 /* UnifiedWorkspace.swift in Sources */,
+				A3000000000000000000002E /* CalendarConnectionsView.swift in Sources */,
 				A30000000000000000000013 /* ScreenshotExperience.swift in Sources */,
 				A30000000000000000000014 /* WorkspaceWindowController.swift in Sources */,
 				A30000000000000000000015 /* ChatGPTConnection.swift in Sources */,
@@ -279,7 +395,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A3000000000000000000002C /* CalendarConnectionTests.swift in Sources */,
+				A30000000000000000000028 /* AgentMemoryTests.swift in Sources */,
+				A30000000000000000000027 /* CalendarAgentToolTests.swift in Sources */,
+				A30000000000000000000026 /* CalendarOperationTests.swift in Sources */,
+				A30000000000000000000025 /* CalendarAgentTests.swift in Sources */,
+				A3000000000000000000001C /* CalendarActionTests.swift in Sources */,
 				A30000000000000000000009 /* EventDraftParserTests.swift in Sources */,
+				B30000000000000000000004 /* WebWorkspaceTests.swift in Sources */,
 				A3000000000000000000000F /* MemoryStoreTests.swift in Sources */,
 				A30000000000000000000016 /* OpenAIStreamTests.swift in Sources */,
 			);
@@ -367,6 +490,8 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.0;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
 		};

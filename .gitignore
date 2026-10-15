@@ -5,3 +5,6 @@ build/
 xcuserdata/
 *.xcresult
 *.profraw
+
+WebUI/node_modules/
+WebUI/dist/

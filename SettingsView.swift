@@ -43,7 +43,7 @@ struct SettingsView: View {
         .padding(.horizontal, 28).padding(.top, 28).padding(.bottom, 20)
         .background(.clear)
         .frame(minWidth: 600, minHeight: 500)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(model.appearanceMode.colorScheme)
         .onAppear {
             model.refreshMemory()
             presentRequestedMemoryRecord(model.memoryRecordToOpen)
@@ -72,6 +72,11 @@ struct SettingsView: View {
     private var generalTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                settingsGroup("APPEARANCE") {
+                    Picker("Appearance", selection: $model.appearanceMode) {
+                        ForEach(AppAppearance.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
+                    }.pickerStyle(.segmented)
+                }
                 settingsGroup("CAPTURE") {
                     HStack(spacing: 16) {
                         settingLabel("Copy captures automatically", detail: "Copy each selected screenshot to the clipboard when capture finishes.")
@@ -100,7 +105,7 @@ struct SettingsView: View {
                 settingsGroup("PRIVACY") {
                     settingLabel("Capture storage", detail: "Screenshots and recognized text are saved in the folder shown in Memory settings. Cloud-synced folders may sync these files.")
                     settingsDivider
-                    settingLabel("OpenAI analysis", detail: "When enabled, only the selected region and its recognized text are sent to OpenAI. Delete captures any time from Memory.")
+                    settingLabel("OpenAI analysis", detail: "When enabled, screenshots, requested OCR, calendar search results, commands, and recent action memory are sent to OpenAI. Visible-screen capture includes the whole screen. Delete local context from Memory.")
                 }
             }
             .frame(maxWidth: 790, alignment: .leading)
@@ -114,16 +119,27 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 19) {
                 settingsGroup("ANALYSIS") {
                     HStack(spacing: 16) {
-                        settingLabel("Analyze screenshots", detail: "Suggest calendar events from the selected region.")
+                        settingLabel("Calendar agent", detail: "Use screenshots and typed commands with approval for calendar writes.")
                         Spacer(minLength: 12)
-                        Toggle("Analyze screenshots", isOn: $model.openAIAnalysisEnabled)
+                        Toggle("Calendar agent", isOn: $model.openAIAnalysisEnabled)
                             .labelsHidden().toggleStyle(.switch).controlSize(.small).tint(.accentColor)
                             .disabled(!model.hasOpenAIAPIKey && model.chatGPTAccount?.canUsePlan != true)
                     }
                     settingsDivider
-                    settingsValueRow("Using", value: model.chatGPTAccount?.canUsePlan == true ? "ChatGPT plan" : model.hasOpenAIAPIKey ? "OpenAI API key" : "On-device only", color: model.chatGPTAccount?.canUsePlan == true ? .green : .secondary)
+                    if model.hasOpenAIAPIKey && model.chatGPTAccount?.canUsePlan == true {
+                        HStack {
+                            settingLabel("Use for new requests", detail: "API key usage is billed separately. Calshot remembers your choice.")
+                            Spacer()
+                            Picker("Use for new requests", selection: $model.agentUseAPIKey) {
+                                Text("ChatGPT plan").tag(false)
+                                Text("API key").tag(true)
+                            }.labelsHidden().pickerStyle(.menu)
+                        }
+                    } else {
+                        settingsValueRow("Using", value: model.chatGPTAccount?.canUsePlan == true && !model.agentUseAPIKey ? "ChatGPT plan" : model.hasOpenAIAPIKey ? "OpenAI API key" : "On-device only", color: .secondary)
+                    }
                     settingsDivider
-                    if model.chatGPTAccount?.canUsePlan == true {
+                    if model.chatGPTAccount?.canUsePlan == true && !model.agentUseAPIKey {
                         HStack(spacing: 16) {
                             settingLabel("Analysis model", detail: "Choose from models available to your ChatGPT account.")
                             Spacer(minLength: 8)
@@ -155,15 +171,20 @@ struct SettingsView: View {
                 settingsGroup("CHATGPT ACCOUNT") {
                     if let account = model.chatGPTAccount {
                         settingLabel("Connected as \(account.email)", detail: account.canUsePlan
-                                     ? "Eligible analysis uses your ChatGPT plan. Manage limits in ChatGPT Settings."
+                                     ? (account.model.isEmpty ? "Sign-in completed. Plan inference is unavailable until models load; your credentials are retained." : "Plan access is authorized. Choose which connection to use above.")
                                      : "Plan usage was not approved. Reconnect to allow Calshot to analyze screenshots.")
+                        if let error = model.chatGPTConnectionError {
+                            Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled).padding(.bottom, 8)
+                        }
                         HStack(spacing: 9) {
+                            Button("Check plan connection") { Task { await model.refreshChatGPTModels() } }
+                                .buttonStyle(GlassActionButtonStyle())
                             if !account.canUsePlan {
                                 Button("Enable plan usage") {
                                     isConnectingChatGPT = true
                                     chatGPTSignInTask = Task {
                                         defer { isConnectingChatGPT = false }
-                                        do { try await model.connectChatGPT(); connectionMessage = "Connected. ChatGPT plan usage is enabled." }
+                                        do { try await model.connectChatGPT(); connectionMessage = model.chatGPTConnectionError ?? "Connected. ChatGPT plan usage is enabled." }
                                         catch { connectionMessage = error is CancellationError ? "Sign-in cancelled." : error.localizedDescription }
                                     }
                                 }.buttonStyle(GlassActionButtonStyle()).disabled(isConnectingChatGPT)
@@ -184,9 +205,9 @@ struct SettingsView: View {
                                 defer { isConnectingChatGPT = false }
                                 do {
                                     try await model.connectChatGPT()
-                                    connectionMessage = model.chatGPTAccount?.canUsePlan == true
+                                    connectionMessage = model.chatGPTConnectionError ?? (model.chatGPTAccount?.canUsePlan == true
                                         ? "Connected. ChatGPT plan usage is enabled."
-                                        : "Connected. Approve plan usage to enable analysis."
+                                        : "Connected. Approve plan usage to enable analysis.")
                                 }
                                 catch { connectionMessage = error is CancellationError ? "Sign-in cancelled." : error.localizedDescription }
                             }
@@ -214,8 +235,8 @@ struct SettingsView: View {
                     SecureField(model.hasOpenAIAPIKey ? "Replace saved API key" : "Paste API key", text: $apiKey)
                         .textFieldStyle(.plain).font(.system(size: 12))
                         .padding(.horizontal, 12).padding(.vertical, 9)
-                        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
-                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.primary.opacity(0.08), lineWidth: 1))
                     HStack(spacing: 9) {
                         Button("Save key") {
                             do { try model.saveOpenAIAPIKey(apiKey); apiKey = ""; connectionMessage = "Key saved. Test the connection to check model access." }
@@ -272,7 +293,7 @@ struct SettingsView: View {
                     settingsDivider
                     settingsValueRow("Text recognition", value: model.lastOCRStatus, color: .secondary)
                 }
-                Text("Only selected screenshots are sent for analysis. ChatGPT plan usage requires separate consent and follows your ChatGPT limits.")
+                Text("Only screenshots you capture for analysis are sent; visible-screen capture includes the whole screen. ChatGPT plan usage requires separate consent and follows your ChatGPT limits.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 4)
             }
             .frame(maxWidth: 790, alignment: .leading)
@@ -299,7 +320,7 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var settingsDivider: some View { Rectangle().fill(Color.white.opacity(0.075)).frame(height: 1) }
+    private var settingsDivider: some View { Rectangle().fill(Color.primary.opacity(0.075)).frame(height: 1) }
 
     private func settingLabel(_ title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -351,8 +372,8 @@ struct SettingsView: View {
                 configuration.label.font(.system(size: 11, weight: .medium))
                     .foregroundStyle(destructive ? Color.red : Color.primary)
                     .padding(.horizontal, 11).padding(.vertical, 7)
-                    .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.white.opacity(0.09), lineWidth: 1))
+                    .background(Color.primary.opacity(configuration.isPressed ? 0.12 : 0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.primary.opacity(0.09), lineWidth: 1))
                     .opacity(configuration.isPressed ? 0.8 : 1)
             }
         }
@@ -406,7 +427,7 @@ struct SettingsView: View {
             } else {
                 List {
                     ForEach(model.memoryRecords) { record in
-                        Button { selectedRecord = record } label: { MemoryRecordRow(record: record) }
+                        Button { selectedRecord = record } label: { MemoryRecordRow(model: model, record: record) }
                             .buttonStyle(.plain)
                             .contextMenu {
                                 Button("Show Details") { selectedRecord = record }
@@ -462,11 +483,12 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 }
 
 private struct MemoryRecordRow: View {
+    @ObservedObject var model: CalshotModel
     let record: MemoryCaptureRecord
     var body: some View {
         HStack(spacing: 12) {
             Group {
-                if let data = MemoryStore.shared.imageData(for: record), let image = NSImage(data: data) {
+                if let image = model.storedImage(for: record) {
                     Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
                 } else {
                     Image(systemName: "photo").resizable().scaledToFit().padding(14).foregroundStyle(.tertiary)
@@ -474,12 +496,12 @@ private struct MemoryRecordRow: View {
             }
             .frame(width: 84, height: 56).clipped().clipShape(RoundedRectangle(cornerRadius: 8))
             VStack(alignment: .leading, spacing: 4) {
-                Text(record.event?.title ?? "Screenshot").font(.headline).lineLimit(1)
+                Text(record.calendarProposals.count > 1 ? "\(record.calendarProposals.count) calendar items" : record.event?.title ?? record.agentTranscript?.first(where: { $0.role == "user" })?.content ?? "Screenshot").font(.headline).lineLimit(1)
                 Text(record.event?.startDate?.formatted(date: .abbreviated, time: .shortened) ?? record.createdAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.callout).foregroundStyle(.secondary)
                 HStack {
                     Text(record.analysisProvider ?? "Not analyzed")
-                    if let calendar = record.savedCalendarName { Text("· Added to \(calendar)") }
+                    if !record.calendarProposals.isEmpty { Text("· \(record.calendarProposals.filter { $0.isFinished }.count) completed") }
                 }.font(.caption).foregroundStyle(record.savedToCalendarAt == nil ? Color.secondary : Color.green).lineLimit(1)
             }
             Spacer()
@@ -500,32 +522,55 @@ private struct MemoryRecordDetail: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(record.event?.title ?? "Capture details").font(.title2.weight(.semibold))
+                    Text(record.event?.title ?? "Calendar conversation").font(.title2.weight(.semibold))
                     Text(record.createdAt.formatted(date: .complete, time: .shortened)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Delete Capture…", role: .destructive) { showingDelete = true }
+                Button("Delete Capture…", role: .destructive) { showingDelete = true }.disabled(model.isSaving)
             }
-            if let data = MemoryStore.shared.imageData(for: record), let image = NSImage(data: data) {
+            if let image = model.storedImage(for: record) {
                 ScreenshotCanvasView(image: image, onRetake: {
                     dismiss()
                     Task { await model.capture() }
                 })
                     .frame(height: 420)
             }
-            if let event = record.event {
-                GroupBox("Event") {
-                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-                        if let start = event.startDate { GridRow { Text("Starts").foregroundStyle(.secondary); Text(start.formatted(date: .complete, time: .shortened)) } }
-                        if let end = event.endDate { GridRow { Text("Ends").foregroundStyle(.secondary); Text(end.formatted(date: .complete, time: .shortened)) } }
-                        if let location = event.location { GridRow { Text("Location").foregroundStyle(.secondary); Text(location) } }
-                        GridRow { Text("Confidence").foregroundStyle(.secondary); Text("\(Int(event.confidence * 100))%") }
-                        if let saved = record.savedCalendarName { GridRow { Text("Saved to").foregroundStyle(.secondary); Text(saved) } }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+            if !record.calendarProposals.isEmpty {
+                GroupBox("Calendar items") {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(record.calendarProposals) { item in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.draft.title.isEmpty ? "Untitled" : item.draft.title).font(.callout)
+                                        Text(item.draft.startDate?.formatted(date: .abbreviated, time: .shortened) ?? "Date needed").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(item.status).font(.caption).foregroundStyle(item.isFinished ? Color.green : Color.secondary)
+                                }
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxHeight: 140)
                 }
             }
+            if let turns = record.agentTranscript, !turns.isEmpty {
+                DisclosureGroup("Agent conversation and action memory") {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(Array(turns.enumerated()), id: \.offset) { _, turn in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(turn.toolName.map { "\(turn.role.capitalized) · \($0)" } ?? turn.role.capitalized).font(.caption.weight(.semibold))
+                                    if let content = turn.content { Text(content).font(.caption).textSelection(.enabled) }
+                                    if let arguments = turn.arguments { Text(arguments).font(.caption.monospaced()).textSelection(.enabled) }
+                                    if let result = turn.result { Text(result).font(.caption.monospaced()).textSelection(.enabled) }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }.frame(maxHeight: 170)
+                }.font(.caption)
+            }
             Spacer(minLength: 0)
-            HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
+            HStack { Button("Review calendar actions") { dismiss(); model.restoreCalendarReview(record) }.disabled(model.isSaving || model.isRecognizing || model.isCapturing || model.agentIsRunning); Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
         }
         .padding(20)
         .alert("Delete this capture?", isPresented: $showingDelete) {

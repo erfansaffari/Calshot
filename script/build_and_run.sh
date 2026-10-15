@@ -9,6 +9,7 @@ pkill -x Calshot >/dev/null 2>&1 || true
 xcodebuild build -quiet \
   -project "$ROOT_DIR/Calshot.xcodeproj" \
   -scheme Calshot \
+  -configuration Debug \
   -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath "$ROOT_DIR/build/DerivedData" \
   CODE_SIGNING_ALLOWED=YES

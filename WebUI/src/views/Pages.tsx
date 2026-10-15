@@ -1,0 +1,817 @@
+import { useState } from "react";
+import {
+  CalendarDays,
+  RefreshCw,
+  ShieldCheck,
+  Search,
+  History as HistoryIcon,
+  ArrowRight,
+  KeyRound,
+  Check,
+  Image as ImageIcon,
+  ExternalLink,
+  Trash2,
+} from "lucide-react";
+import type { AppState } from "../types";
+import { command } from "../bridge";
+import {
+  Badge,
+  Empty,
+  InlineError,
+  Modal,
+  Select,
+  Spinner,
+  formatDate,
+} from "../components/ui";
+function useAction() {
+  const [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [notice, setNotice] = useState("");
+  return {
+    error,
+    busy,
+    notice,
+    run: async (action: string, extra: Record<string, unknown> = {}) => {
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        await command({ action, ...extra });
+        return true;
+      } catch (e) {
+        setError((e as Error).message);
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    setNotice,
+  };
+}
+export function Calendars({ state }: { state: AppState }) {
+  const a = useAction(),
+    [disconnect, setDisconnect] = useState<string>();
+  const available = state.calendars.filter((c) => !c.unavailable),
+    writable = available.filter((c) => !c.isReadOnly);
+  const groups = available.reduce<Record<string, typeof available>>(
+    (groups, c) => {
+      (groups[c.sourceName || c.provider] ??= []).push(c);
+      return groups;
+    },
+    {},
+  );
+  return (
+    <div className="page-scroll">
+      <div className="page-inner">
+        <header className="page-title">
+          <h1>Calendars & Accounts</h1>
+          <button
+            className="button secondary"
+            disabled={a.busy || state.running || state.saving}
+            onClick={() => void a.run("refreshCalendars")}
+          >
+            <RefreshCw size={14} />
+            Refresh
+          </button>
+        </header>
+        <InlineError message={a.error} />
+        <div className="card connection-summary">
+          <ShieldCheck size={22} color="var(--success)" />
+          <div>
+            <h3>
+              {available.length} calendars ready · {writable.length} you can add
+              to
+            </h3>
+            <small>
+              Existing macOS calendars are reused. Each calendar appears once.
+            </small>
+          </div>
+        </div>
+        {state.calendarMessage && (
+          <div className="notice" style={{ margin: 0 }}>
+            <p>{state.calendarMessage}</p>
+            <button
+              className="button secondary"
+              onClick={() => void a.run("calendarSettings")}
+            >
+              Calendar access
+            </button>
+          </div>
+        )}
+        <section>
+          <h2 className="section-label">New events go to</h2>
+          <Select
+            label="Default destination for new events"
+            value={state.selectedCalendarID}
+            disabled={a.busy || state.saving}
+            onChange={(calendarID) =>
+              void a.run("selectCalendar", { calendarID })
+            }
+          >
+            {!writable.length && (
+              <option value="">Connect a writable calendar</option>
+            )}
+            {writable.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.title} · {c.sourceName}
+              </option>
+            ))}
+          </Select>
+          <p className="fine-print" style={{ marginTop: 7 }}>
+            You can choose a different calendar in each task.
+          </p>
+        </section>
+        <section>
+          <h2 className="section-label">Available calendars</h2>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {Object.entries(groups).map(([name, calendars]) => (
+              <article className="card" key={name}>
+                <header className="account-header">
+                  <span className="provider-icon">
+                    <CalendarDays size={17} />
+                  </span>
+                  <div className="account-identity">
+                    <h3>{name}</h3>
+                    <small>
+                      {calendars?.some((c) => c.direct)
+                        ? "Direct calendar access"
+                        : "Through macOS Calendar"}
+                    </small>
+                  </div>
+                  <Badge tone="success">Ready</Badge>
+                </header>
+                {calendars?.map((c) => (
+                  <div className="calendar-row" key={c.id}>
+                    <span className="dot" />
+                    <span>
+                      {c.title}{" "}
+                      {c.id === state.selectedCalendarID && (
+                        <Badge>Default</Badge>
+                      )}
+                    </span>
+                    <small>
+                      {c.isReadOnly ? "Read-only · search only" : "Can edit"}
+                    </small>
+                  </div>
+                ))}
+              </article>
+            ))}
+            {!available.length && (
+              <Empty
+                icon={<CalendarDays size={28} />}
+                title="Connect your calendars"
+              >
+                Allow macOS Calendar access or connect Google below. Calshot
+                asks before making changes.
+              </Empty>
+            )}
+          </div>
+        </section>
+        {!!state.accounts.length && (
+          <section>
+            <h2 className="section-label">Direct sign-ins</h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {state.accounts.map((account) => (
+                <article className="card" key={account.id}>
+                  <header className="account-header">
+                    <span className="provider-icon">
+                      {account.provider === "google"
+                        ? "G"
+                        : account.provider === "outlook"
+                          ? "O"
+                          : "i"}
+                    </span>
+                    <div className="account-identity">
+                      <h3>{account.email}</h3>
+                      <small>
+                        {account.provider === "google"
+                          ? "Google"
+                          : account.provider === "icloud"
+                            ? "iCloud"
+                            : "Outlook"}{" "}
+                        · direct sign-in
+                      </small>
+                    </div>
+                    <Badge tone={account.unavailable ? "warning" : "neutral"}>
+                      {account.unavailable ? "Needs attention" : "Signed in"}
+                    </Badge>
+                  </header>
+                  {account.unavailable && (
+                    <div className="account-error">
+                      <InlineError message="Sign-in is saved, but this connection couldn't load its calendars. An existing macOS connection may still work.">
+                        <button
+                          className="button secondary"
+                          disabled={a.busy || state.connecting}
+                          onClick={() =>
+                            void a.run(
+                              account.provider === "google"
+                                ? "connectGoogle"
+                                : "advancedSettings",
+                            )
+                          }
+                        >
+                          Reconnect
+                        </button>
+                      </InlineError>
+                    </div>
+                  )}
+                  <div className="account-note">
+                    <button
+                      className="text-button danger"
+                      disabled={state.running || state.saving}
+                      onClick={() => setDisconnect(account.id)}
+                    >
+                      Disconnect direct sign-in
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+        {state.accountMessage && (
+          <div
+            className="notice"
+            style={{ margin: 0 }}
+            role={state.accountError ? "alert" : "status"}
+          >
+            <p>{state.accountMessage}</p>
+          </div>
+        )}
+        <section>
+          <h2 className="section-label">Add an account</h2>
+          <div className="card settings-card">
+            <div className="settings-row">
+              <div>
+                <h3>Google</h3>
+                <p>
+                  Sign in in your browser, then return here. Existing calendars
+                  are reused.
+                </p>
+              </div>
+              <button
+                className="button secondary"
+                disabled={a.busy || state.connecting}
+                onClick={() =>
+                  void a.run(
+                    state.googleReady ? "connectGoogle" : "advancedSettings",
+                  )
+                }
+              >
+                {state.connecting && state.connectingProvider === "google" ? (
+                  <Spinner />
+                ) : null}
+                {state.connecting
+                  ? "Connecting…"
+                  : state.googleReady
+                    ? "Connect"
+                    : "Complete setup"}
+              </button>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h3>Outlook / Microsoft 365</h3>
+                <p>
+                  Direct sign-in is pending registration. Outlook calendars
+                  already added to macOS can be used.
+                </p>
+              </div>
+              <Badge>Coming later</Badge>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h3>iCloud, direct</h3>
+                <p>
+                  Uses an app-specific password. This route is not
+                  live-verified; macOS access is recommended.
+                </p>
+              </div>
+              <button
+                className="button secondary"
+                onClick={() => void a.run("advancedSettings")}
+              >
+                Beta setup
+              </button>
+            </div>
+            {state.connecting && (
+              <button
+                className="text-button"
+                onClick={() => void a.run("cancelConnection")}
+              >
+                Cancel sign-in
+              </button>
+            )}
+          </div>
+          <p className="fine-print" style={{ marginTop: 12 }}>
+            Using Notion Calendar? Connect its underlying supported calendar
+            account. Calshot doesn't connect to Notion database dates.
+          </p>
+        </section>
+        {disconnect && (
+          <Modal
+            title="Disconnect this sign-in?"
+            onClose={() => setDisconnect(undefined)}
+          >
+            <p>
+              This removes Calshot's direct access for this account. Calendar
+              events are not deleted. A connection through macOS can remain
+              available.
+            </p>
+            <footer>
+              <button
+                className="button secondary"
+                onClick={() => setDisconnect(undefined)}
+              >
+                Keep connected
+              </button>
+              <button
+                className="button secondary danger"
+                disabled={a.busy}
+                onClick={async () => {
+                  if (
+                    await a.run("disconnectAccount", { accountID: disconnect })
+                  )
+                    setDisconnect(undefined);
+                }}
+              >
+                Disconnect
+              </button>
+            </footer>
+            <InlineError message={a.error} />
+          </Modal>
+        )}
+      </div>
+    </div>
+  );
+}
+export function HistoryPage({ state }: { state: AppState }) {
+  const a = useAction(),
+    [query, setQuery] = useState(""),
+    [selected, setSelected] = useState<string>(),
+    [deleting, setDeleting] = useState(false);
+  const rows = state.memory.filter((r) =>
+      r.title.toLowerCase().includes(query.toLowerCase()),
+    ),
+    record = rows.find((r) => r.id === selected) || rows[0];
+  return (
+    <div className="page-scroll">
+      <div className="page-inner">
+        <header className="page-title">
+          <h1>History</h1>
+        </header>
+        <input
+          className="search-input"
+          type="search"
+          aria-label="Search history"
+          placeholder="Search your tasks…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <InlineError message={a.error} />
+        {!rows.length ? (
+          <Empty
+            icon={<HistoryIcon size={28} />}
+            title={query ? "No matching tasks" : "Your tasks will live here"}
+          >
+            {query
+              ? "Try another search."
+              : "Capture a screenshot or start a conversation. You can return to it here."}
+          </Empty>
+        ) : (
+          <div className="history-layout">
+            <div className="history-list">
+              {rows.map((r) => (
+                <button
+                  className={
+                    "history-item " + (record?.id === r.id ? "selected" : "")
+                  }
+                  key={r.id}
+                  onClick={() => setSelected(r.id)}
+                >
+                  {r.imageURL ? (
+                    <img src={r.imageURL} alt="" />
+                  ) : (
+                    <HistoryIcon size={24} />
+                  )}
+                  <div>
+                    <h3 className="truncate">{r.title}</h3>
+                    <small>
+                      {r.completed} confirmed · {r.count - r.completed} other
+                      items
+                      <br />
+                      {formatDate(r.createdAt, undefined, { year: "numeric" })}
+                    </small>
+                  </div>
+                </button>
+              ))}
+            </div>
+            {record && (
+              <article className="card history-detail">
+                <h2>{record.title}</h2>
+                <small>
+                  {formatDate(record.createdAt, undefined, {
+                    year: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                </small>
+                {record.imageURL && (
+                  <img src={record.imageURL} alt="Task screenshot" />
+                )}
+                <div>
+                  <Badge tone="success">{record.completed} confirmed</Badge>{" "}
+                  <Badge>{record.count - record.completed} other items</Badge>
+                </div>
+                <button
+                  className="button primary"
+                  disabled={
+                    a.busy ||
+                    state.running ||
+                    state.saving ||
+                    state.isRecognizing
+                  }
+                  onClick={() =>
+                    void a.run("restoreMemory", { recordID: record.id })
+                  }
+                >
+                  Continue this task
+                  <ArrowRight size={14} />
+                </button>
+                <p className="fine-print">
+                  Continue with the conversation and source. Completed changes
+                  stay completed; nothing is redone automatically.
+                </p>
+                <hr
+                  style={{
+                    border: 0,
+                    borderTop: "1px solid var(--line)",
+                    width: "100%",
+                  }}
+                />
+                <p className="fine-print">
+                  Deleting removes this task's local history and screenshot. It
+                  does not delete calendar events.
+                </p>
+                <button
+                  className="text-button danger"
+                  disabled={state.running || state.saving}
+                  onClick={() => setDeleting(true)}
+                >
+                  Delete from history…
+                </button>
+              </article>
+            )}
+          </div>
+        )}
+        {deleting && record && (
+          <Modal
+            title="Delete this task from History?"
+            onClose={() => setDeleting(false)}
+          >
+            <p>
+              Its screenshot and conversation will be removed from this Mac.
+              Calendar events stay unchanged.
+            </p>
+            <footer>
+              <button
+                className="button secondary"
+                onClick={() => setDeleting(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="button secondary danger"
+                disabled={a.busy}
+                onClick={async () => {
+                  if (await a.run("deleteMemory", { recordID: record.id }))
+                    setDeleting(false);
+                }}
+              >
+                Delete local history
+              </button>
+            </footer>
+            <InlineError message={a.error} />
+          </Modal>
+        )}
+      </div>
+    </div>
+  );
+}
+export function SettingsPage({ state }: { state: AppState }) {
+  const a = useAction(),
+    [editingKey, setEditingKey] = useState(false),
+    [key, setKey] = useState("");
+  const s = state.settings,
+    locked = state.running || state.saving || a.busy;
+  return (
+    <div className="page-scroll">
+      <div className="page-inner">
+        <header className="page-title">
+          <h1>Settings</h1>
+        </header>
+        <InlineError message={a.error} />
+        {state.notice && (
+          <div className="notice" style={{ margin: 0 }}>
+            <p>{state.notice}</p>
+          </div>
+        )}
+        <section>
+          <h2 className="section-label">Appearance</h2>
+          <div className="card settings-card">
+            <div className="settings-row">
+              <div>
+                <h3>Choose your look</h3>
+                <p>
+                  System follows your Mac. Applies to the workspace and native
+                  Calshot windows.
+                </p>
+              </div>
+              <Select
+                label="Appearance"
+                value={s.appearance || "system"}
+                disabled={a.busy}
+                onChange={(mode) => void a.run("appearance", { mode })}
+              >
+                <option value="system">System</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </Select>
+            </div>
+          </div>
+        </section>
+        <section>
+          <h2 className="section-label">AI service</h2>
+          <div className="card settings-card">
+            <div className="settings-row">
+              <div>
+                <h3>Use for new requests</h3>
+                <p>
+                  API usage is billed separately from your ChatGPT plan. Your
+                  choice is saved.
+                </p>
+              </div>
+              <Select
+                label="AI service"
+                value={s.useAPIKey ? "api" : "plan"}
+                disabled={locked}
+                onChange={(value) =>
+                  void a.run("provider", { useAPIKey: value === "api" })
+                }
+              >
+                <option value="api">OpenAI API key</option>
+                <option value="plan">ChatGPT plan</option>
+              </Select>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h3>
+                  OpenAI API key{" "}
+                  {s.useAPIKey && <Badge tone="success">In use</Badge>}
+                </h3>
+                <p>
+                  {s.apiKeySaved
+                    ? "Key saved in your macOS Keychain."
+                    : "Add an API key to use this service."}{" "}
+                  Usage is billed by OpenAI.
+                </p>
+              </div>
+              <div className="settings-actions">
+                <button
+                  className="button secondary"
+                  disabled={locked}
+                  onClick={() => setEditingKey(true)}
+                >
+                  {s.apiKeySaved ? "Replace key" : "Add key"}
+                </button>
+                <button
+                  className="button secondary"
+                  disabled={locked || !s.apiKeySaved}
+                  onClick={() => void a.run("testAI")}
+                >
+                  Test connection
+                </button>
+              </div>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h3>
+                  ChatGPT plan{" "}
+                  {s.chatGPTPlan && (
+                    <Badge tone={s.chatGPTError ? "warning" : "success"}>
+                      {s.chatGPTError ? "Service issue" : "Signed in"}
+                    </Badge>
+                  )}
+                </h3>
+                <p>
+                  {s.chatGPTEmail
+                    ? "Signed in as " + s.chatGPTEmail + "."
+                    : "Connect a supported ChatGPT account."}{" "}
+                  {s.chatGPTError
+                    ? "Your sign-in is kept while the service is unavailable."
+                    : ""}
+                </p>
+                {s.chatGPTError && (
+                  <details>
+                    <summary>Service details</summary>
+                    <p>{s.chatGPTError}</p>
+                  </details>
+                )}
+              </div>
+              <button
+                className="button secondary"
+                disabled={locked}
+                onClick={() =>
+                  void a.run(
+                    s.chatGPTPlan ? "refreshChatGPT" : "connectChatGPT",
+                  )
+                }
+              >
+                {s.chatGPTPlan ? "Check again" : "Connect"}
+              </button>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h3>Calendar agent</h3>
+                <p>
+                  Use the chosen AI service for screenshots and conversation.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                aria-label="Enable calendar agent"
+                checked={s.agentEnabled}
+                disabled={locked}
+                onChange={(e) =>
+                  void a.run("agentEnabled", { enabled: e.target.checked })
+                }
+              />
+            </div>
+          </div>
+        </section>
+        <section>
+          <h2 className="section-label">Permissions</h2>
+          <div className="card settings-card">
+            <div className="settings-row">
+              <div>
+                <h3>Screen Recording</h3>
+                <p>
+                  Only captures when you ask. macOS may require you to restart
+                  Calshot after changing access.
+                </p>
+              </div>
+              <button
+                className="button secondary"
+                onClick={() => void a.run("screenSettings")}
+              >
+                {state.screenPermissionNeeded
+                  ? "Allow access"
+                  : "System Settings"}
+              </button>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h3>Calendars</h3>
+                <p>
+                  Read connected calendars and perform changes after approval.
+                </p>
+              </div>
+              <button
+                className="button secondary"
+                onClick={() => void a.run("calendarSettings")}
+              >
+                System Settings
+              </button>
+            </div>
+          </div>
+        </section>
+        <section>
+          <h2 className="section-label">Capture</h2>
+          <div className="card settings-card">
+            <div className="settings-row">
+              <div>
+                <h3>Capture shortcut</h3>
+                <p>Choose a shortcut in native preferences.</p>
+              </div>
+              <button
+                className="button secondary"
+                onClick={() => void a.run("advancedSettings")}
+              >
+                {state.shortcut}
+              </button>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h3>Copy captures to clipboard</h3>
+                <p>Also copy the screenshot when capturing.</p>
+              </div>
+              <input
+                type="checkbox"
+                aria-label="Copy captures to clipboard"
+                checked={s.copyCaptures}
+                onChange={(e) =>
+                  void a.run("copyCaptures", { enabled: e.target.checked })
+                }
+              />
+            </div>
+          </div>
+        </section>
+        <section>
+          <h2 className="section-label">Privacy & storage</h2>
+          <div className="card settings-card">
+            <p className="fine-print">
+              When a task runs, Calshot sends your screenshot, request, needed
+              text, relevant calendar results and a limited amount of related
+              history to your chosen OpenAI service. Requests ask not to store
+              responses for later use; OpenAI processes them under its own
+              policies.
+            </p>
+            <div className="settings-row" style={{ marginTop: 16 }}>
+              <div>
+                <h3>History on this Mac</h3>
+                <p>
+                  {state.memory.length} tasks. Removing local history does not
+                  change calendar events.
+                </p>
+              </div>
+              <button
+                className="button secondary"
+                onClick={() => void a.run("navigate", { page: "library" })}
+              >
+                Manage history
+              </button>
+            </div>
+            <div className="settings-row">
+              <div>
+                <h3>Advanced</h3>
+                <p>
+                  Connection setup, storage location and native preferences.
+                </p>
+              </div>
+              <button
+                className="button secondary"
+                onClick={() => void a.run("advancedSettings")}
+              >
+                Open
+              </button>
+            </div>
+          </div>
+        </section>
+        {editingKey && (
+          <Modal
+            title="Save an OpenAI API key"
+            onClose={() => {
+              setEditingKey(false);
+              setKey("");
+            }}
+          >
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (await a.run("saveAPIKey", { key: key.trim() })) {
+                  setKey("");
+                  setEditingKey(false);
+                }
+              }}
+            >
+              <label>
+                API key
+                <input
+                  autoFocus
+                  type="password"
+                  value={key}
+                  onChange={(e) => setKey(e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  required
+                />
+              </label>
+              <p className="fine-print" style={{ marginTop: 12 }}>
+                Stored in macOS Keychain. API usage is billed separately. Saving
+                does not change your selected AI service.
+              </p>
+              <InlineError message={a.error} />
+              <footer>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => {
+                    setEditingKey(false);
+                    setKey("");
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button primary"
+                  disabled={!key.trim() || a.busy}
+                >
+                  {a.busy && <Spinner />}Save key
+                </button>
+              </footer>
+            </form>
+          </Modal>
+        )}
+      </div>
+    </div>
+  );
+}

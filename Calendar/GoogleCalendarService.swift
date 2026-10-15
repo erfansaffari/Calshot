@@ -29,6 +29,15 @@ struct GoogleCalendarService: CalendarDestinationService {
         throw CalendarDestinationError.googleAdapterUnavailable
     }
 
+    func matchingEvents(_ draft: EventDraft, in destination: CalendarDestination) async throws -> [String] {
+        throw CalendarDestinationError.googleAdapterUnavailable
+    }
+
+    func searchEvents(query: String?, start: Date, end: Date, in destination: CalendarDestination) async throws -> [CalendarEventSnapshot] { throw CalendarDestinationError.googleAdapterUnavailable }
+    func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? { throw CalendarDestinationError.googleAdapterUnavailable }
+    func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String { throw CalendarDestinationError.googleAdapterUnavailable }
+    func delete(identifier: String, in destination: CalendarDestination) async throws { throw CalendarDestinationError.googleAdapterUnavailable }
+
     func save(_ draft: EventDraft, to destination: CalendarDestination) async throws -> String {
         guard configuration != nil else { throw CalendarDestinationError.googleNotConfigured }
         throw CalendarDestinationError.googleAdapterUnavailable

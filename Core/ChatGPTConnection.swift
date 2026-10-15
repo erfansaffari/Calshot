@@ -8,6 +8,7 @@ import Security
 /// except for requests to OpenAI's authorization and Responses endpoints.
 actor ChatGPTConnection {
     static let shared = ChatGPTConnection()
+    private(set) var modelAvailabilityError: String?
 
     struct ModelOption: Identifiable, Equatable, Sendable {
         let slug: String
@@ -127,15 +128,28 @@ actor ChatGPTConnection {
         guard let idToken = token.idToken else { throw ConnectionError.invalidToken }
         if let previous, identity.subject != previous.subject { throw ConnectionError.invalidToken }
         let scopes = token.scope
-        let canUsePlan = scopes.split(separator: " ").contains("chatgpt.tokens.use.direct")
-        let model = canUsePlan ? try await chooseModel(accessToken: token.accessToken) : ""
         let account = Account(clientID: exchangeID, subject: identity.subject,
                               email: identity.email, idToken: idToken,
                               accessToken: token.accessToken, refreshToken: token.refreshToken,
                               scopes: scopes, expiresAt: .now.addingTimeInterval(TimeInterval(token.expiresIn)),
-                              model: model)
-        try Keychain.save(JSONEncoder().encode(account))
-        return account
+                              model: "")
+        let result = try await Self.finishSignIn(account, persist: { try Keychain.save(JSONEncoder().encode($0)) },
+                                              loadModel: { try await self.chooseModel(accessToken: token.accessToken) })
+        modelAvailabilityError = result.error
+        return result.account
+    }
+
+    nonisolated static func finishSignIn(_ account: Account, persist: (Account) throws -> Void,
+                                        loadModel: () async throws -> String) async throws -> (account: Account, error: String?) {
+        // OAuth success must survive a temporary failure of the inference catalog.
+        try persist(account)
+        guard account.canUsePlan else { return (account, nil) }
+        let selected: String
+        do { selected = try await loadModel() }
+        catch { return (account, "ChatGPT sign-in completed, but plan models are unavailable: \(error.localizedDescription)") }
+        let ready = withModel(account, selected)
+        try persist(ready)
+        return (ready, nil)
     }
 
     func access() async throws -> (token: String, model: String) {
@@ -154,7 +168,18 @@ actor ChatGPTConnection {
                               model: account.model)
             try Keychain.save(JSONEncoder().encode(account))
         }
+        if account.model.isEmpty {
+            let selected = try await chooseModel(accessToken: account.accessToken)
+            account = Self.withModel(account, selected)
+            try Keychain.save(JSONEncoder().encode(account))
+        }
         return (account.accessToken, account.model)
+    }
+
+    nonisolated private static func withModel(_ account: Account, _ model: String) -> Account {
+        Account(clientID: account.clientID, subject: account.subject, email: account.email, idToken: account.idToken,
+                accessToken: account.accessToken, refreshToken: account.refreshToken, scopes: account.scopes,
+                expiresAt: account.expiresAt, model: model)
     }
 
     func refreshPreferredModel() async throws -> Account {
@@ -228,8 +253,9 @@ actor ChatGPTConnection {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = formData(fields)
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw ConnectionError.server("ChatGPT could not complete sign-in. Try again.")
+        guard let http = response as? HTTPURLResponse else { throw ConnectionError.server("ChatGPT sign-in returned an invalid response.") }
+        guard http.statusCode == 200 else {
+            throw ConnectionError.server(ResponsesCalendarAgentClient.failureMessage(http: http, data: data))
         }
         return try JSONDecoder().decode(TokenResponse.self, from: data)
     }
@@ -247,7 +273,10 @@ actor ChatGPTConnection {
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models")!)
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw ConnectionError.noModel }
+        guard let http = response as? HTTPURLResponse else { throw ConnectionError.noModel }
+        guard http.statusCode == 200 else {
+            throw ConnectionError.server(ResponsesCalendarAgentClient.failureMessage(http: http, data: data))
+        }
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let models = object?["models"] as? [[String: Any]] ?? []
         let listed = models.filter { ($0["visibility"] as? String ?? "list") == "list" }
@@ -368,7 +397,7 @@ private enum Keychain {
 }
 
 @MainActor
-private final class LoopbackCallback {
+final class LoopbackCallback {
     private let listener: NWListener
     private var continuation: CheckedContinuation<URLComponents, Error>?
     private var received: URLComponents?
@@ -413,7 +442,7 @@ private final class LoopbackCallback {
             timeout = Task { [weak self] in
                 do { try await Task.sleep(nanoseconds: 180_000_000_000) }
                 catch { return }
-                self?.continuation?.resume(throwing: ChatGPTConnection.ConnectionError.server("ChatGPT sign-in timed out."))
+                self?.continuation?.resume(throwing: ChatGPTConnection.ConnectionError.server("Sign-in timed out."))
                 self?.continuation = nil
             }
         }

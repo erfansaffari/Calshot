@@ -40,6 +40,8 @@ private enum FoundationModelsEventAnalyzer {
         var url: String?
         var notes: String?
         var confidence: Double?
+        var evidence: String?
+        var dateAmbiguous: Bool?
     }
 
     static func analyze(_ text: String, referenceDate: Date, timeZone: TimeZone,
@@ -47,7 +49,7 @@ private enum FoundationModelsEventAnalyzer {
         guard case .available = SystemLanguageModel.default.availability else { return nil }
         let session = LanguageModelSession()
         let prompt = """
-        Extract calendar events from the OCR text below. Return only a JSON array, with each item having these keys: title, date, yearInferred, startTime, endTime, allDay, timeZone, location, url, notes, confidence. Use JSON null for unknown values. Dates must be YYYY-MM-DD and times HH:mm in 24-hour form. Only use dates, times, time zones and event details that the text supports; do not infer a missing year or invent a time. Set yearInferred to true if a year is not stated in the source, otherwise false. Set notes only when the source contains a clearly labeled event description/details; never copy other page or OCR text into notes. Keep confidence between 0 and 1. Ignore navigation, advertising, and non-event dates. If there is no event, return [].
+        Extract ALL calendar events from the OCR text below, including syllabus assignments, deadlines, quizzes and exams. Preserve row associations. Resolve years from an explicit course/semester heading; otherwise use a provisional reference year and set yearInferred true. Return TBD items with a null date. Ignore percentages and week numbers. Return only a JSON array, with each item having these keys: title, date, yearInferred, startTime, endTime, allDay, timeZone, location, url, notes, confidence, evidence, dateAmbiguous. Set evidence to the shortest verbatim excerpt supporting this specific item, including any relevant heading. Set dateAmbiguous true when numeric dates or weekday/date contradictions need review. Use JSON null for unknown values. Dates must be YYYY-MM-DD and times HH:mm in 24-hour form. Only use dates, times, time zones and event details that the text supports; do not silently confirm a missing year or invent a time. Set yearInferred to true if a year is not stated in the source, otherwise false. Set notes only when the source contains a clearly labeled event description/details; never copy other page or OCR text into notes. Keep confidence between 0 and 1. Ignore navigation, advertising, and non-event dates. If there is no event, return [].
 
         Reference date: \(ISO8601DateFormatter().string(from: referenceDate))
         Default timezone: \(timeZone.identifier)
@@ -61,14 +63,13 @@ private enum FoundationModelsEventAnalyzer {
         let response = try await session.respond(to: prompt)
         guard let data = response.content.data(using: .utf8),
               let events = try? JSONDecoder().decode([ModelEvent].self, from: data) else { return nil }
-        let deterministic = EventDraftParser.parse(text, referenceDate: referenceDate, timeZone: timeZone, locale: locale).first
         return events.compactMap { event in
-            makeDraft(event, source: text, deterministic: deterministic, referenceDate: referenceDate,
+            makeDraft(event, source: event.evidence ?? text, referenceDate: referenceDate,
                       defaultTimeZone: timeZone, locale: locale)
         }
     }
 
-    private static func makeDraft(_ event: ModelEvent, source: String, deterministic: EventDraft?,
+    private static func makeDraft(_ event: ModelEvent, source: String,
                                   referenceDate: Date, defaultTimeZone: TimeZone,
                                   locale: Locale) -> EventDraft? {
         let title = event.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -79,7 +80,7 @@ private enum FoundationModelsEventAnalyzer {
         let hasExplicitYear = event.date?.range(of: #"^\d{4}-"#, options: .regularExpression) != nil
         var ambiguities: [EventAmbiguity] = []
         if dateParts == nil { ambiguities.append(.missingDate) }
-        if dateParts != nil && (!hasExplicitYear || event.yearInferred == true) { ambiguities.append(.missingYear) }
+        if dateParts != nil && (!hasExplicitYear || event.yearInferred != false) { ambiguities.append(.missingYear) }
         let date = dateParts.flatMap { parts -> Date? in
             guard let parsed = calendar.date(from: DateComponents(year: parts.0, month: parts.1, day: parts.2)) else { return nil }
             let check = calendar.dateComponents([.year, .month, .day], from: parsed)
@@ -93,9 +94,7 @@ private enum FoundationModelsEventAnalyzer {
         if let requestedZone = event.timeZone, TimeZone(identifier: requestedZone) == nil {
             ambiguities.append(.ambiguousTimeZone)
         }
-        for sourceIssue in deterministic?.ambiguities ?? [] where !ambiguities.contains(sourceIssue) {
-            ambiguities.append(sourceIssue)
-        }
+        if event.dateAmbiguous == true { ambiguities.append(.ambiguousDate) }
 
         let provisionalAllDay = date != nil && startMinutes == nil
         let resolvedAllDay = event.allDay == true || provisionalAllDay
