@@ -7,10 +7,22 @@ VERSION="${1:?Usage: release_macos.sh VERSION BUILD_NUMBER}"
 BUILD_NUMBER="${2:?Supply an increasing numeric build number}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Use a stable version such as 1.0.0.' >&2; exit 1; }
 [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo 'Build number must be a positive integer.' >&2; exit 1; }
-: "${SIGNING_IDENTITY:?Set a Developer ID Application identity}"
-: "${NOTARY_PROFILE:?Set a notarytool keychain profile}"
-[[ "$SIGNING_IDENTITY" == 'Developer ID Application: '* ]] || { echo 'A Developer ID Application certificate is required.' >&2; exit 1; }
-security find-identity -v -p codesigning | rg -F "$SIGNING_IDENTITY" >/dev/null || { echo 'Distribution signing identity is unavailable.' >&2; exit 1; }
+RELEASE_MODE="${RELEASE_MODE:-notarized}"
+case "$RELEASE_MODE" in
+  unnotarized)
+    SIGNING_IDENTITY='-'
+    RUNTIME=NO
+    echo 'Building an ad hoc signed, unnotarized release. First launch requires a Gatekeeper exception.' >&2
+    ;;
+  notarized)
+    : "${SIGNING_IDENTITY:?Set a Developer ID Application identity}"
+    : "${NOTARY_PROFILE:?Set a notarytool keychain profile}"
+    [[ "$SIGNING_IDENTITY" == 'Developer ID Application: '* ]] || { echo 'A Developer ID Application certificate is required.' >&2; exit 1; }
+    security find-identity -v -p codesigning | rg -F "$SIGNING_IDENTITY" >/dev/null || { echo 'Distribution signing identity is unavailable.' >&2; exit 1; }
+    RUNTIME=YES
+    ;;
+  *) echo 'RELEASE_MODE must be notarized or unnotarized.' >&2; exit 1 ;;
+esac
 OUT_DIR="$ROOT_DIR/build/release"
 TOOLS_DIR="$OUT_DIR/sparkle"
 mkdir -p "$OUT_DIR" "$TOOLS_DIR"
@@ -23,21 +35,24 @@ xcodebuild archive -project "$ROOT_DIR/Calshot.xcodeproj" -scheme Calshot -confi
   -destination 'generic/platform=macOS' -archivePath "$OUT_DIR/Calshot.xcarchive" \
   MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO CODE_SIGN_STYLE=Manual \
-  CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" ENABLE_HARDENED_RUNTIME=YES
+  CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" DEVELOPMENT_TEAM= ENABLE_HARDENED_RUNTIME="$RUNTIME"
 APP_PATH="$OUT_DIR/Calshot.xcarchive/Products/Applications/Calshot.app"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign -dv --verbose=4 "$APP_PATH" 2> "$OUT_DIR/signing.txt"
-rg 'Authority=Developer ID Application:' "$OUT_DIR/signing.txt" >/dev/null
-rg 'flags=.*runtime' "$OUT_DIR/signing.txt" >/dev/null
-lipo -verify_arch arm64 x86_64 "$APP_PATH/Contents/MacOS/Calshot"
-# The first ZIP is only for Apple's notarization service; publish the stapled archive below.
-ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$OUT_DIR/notarization.zip"
-NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
-if [[ -n "${NOTARY_KEYCHAIN:-}" ]]; then NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN"); fi
-xcrun notarytool submit "$OUT_DIR/notarization.zip" "${NOTARY_ARGS[@]}" --wait
-xcrun stapler staple "$APP_PATH"
-xcrun stapler validate "$APP_PATH"
-spctl --assess --type execute --verbose=2 "$APP_PATH"
+lipo "$APP_PATH/Contents/MacOS/Calshot" -verify_arch arm64 x86_64
+if [[ "$RELEASE_MODE" == notarized ]]; then
+  rg 'Authority=Developer ID Application:' "$OUT_DIR/signing.txt" >/dev/null
+  rg 'flags=.*runtime' "$OUT_DIR/signing.txt" >/dev/null
+  ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$OUT_DIR/notarization.zip"
+  NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+  if [[ -n "${NOTARY_KEYCHAIN:-}" ]]; then NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN"); fi
+  xcrun notarytool submit "$OUT_DIR/notarization.zip" "${NOTARY_ARGS[@]}" --wait
+  xcrun stapler staple "$APP_PATH"
+  xcrun stapler validate "$APP_PATH"
+  spctl --assess --type execute --verbose=2 "$APP_PATH"
+else
+  rg '^Signature=adhoc$' "$OUT_DIR/signing.txt" >/dev/null
+fi
 ARCHIVE_NAME="Calshot-$VERSION.zip"
 FEED_DIR="$(mktemp -d "$OUT_DIR/feed.XXXXXX")"
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$FEED_DIR/$ARCHIVE_NAME"
@@ -68,13 +83,17 @@ PY
 "$TOOLS_DIR/bin/sign_update" "${SIGNING_ARGS[@]}" --verify "$FEED_DIR/appcast.xml"
 # Build the website/GitHub installer only after appcast generation, so Sparkle keeps using ZIPs.
 DMG_NAME="Calshot-$VERSION.dmg"
-"$ROOT_DIR/script/package_dmg.sh" "$APP_PATH" "$FEED_DIR/$DMG_NAME"
-codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$FEED_DIR/$DMG_NAME"
-codesign --verify --strict --verbose=2 "$FEED_DIR/$DMG_NAME"
-xcrun notarytool submit "$FEED_DIR/$DMG_NAME" "${NOTARY_ARGS[@]}" --wait
-xcrun stapler staple "$FEED_DIR/$DMG_NAME"
-xcrun stapler validate "$FEED_DIR/$DMG_NAME"
-spctl --assess --type open --context context:primary-signature --verbose=2 "$FEED_DIR/$DMG_NAME"
+if [[ "$RELEASE_MODE" == unnotarized ]]; then
+  "$ROOT_DIR/script/package_dmg.sh" --unnotarized "$APP_PATH" "$FEED_DIR/$DMG_NAME"
+else
+  "$ROOT_DIR/script/package_dmg.sh" "$APP_PATH" "$FEED_DIR/$DMG_NAME"
+  codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$FEED_DIR/$DMG_NAME"
+  codesign --verify --strict --verbose=2 "$FEED_DIR/$DMG_NAME"
+  xcrun notarytool submit "$FEED_DIR/$DMG_NAME" "${NOTARY_ARGS[@]}" --wait
+  xcrun stapler staple "$FEED_DIR/$DMG_NAME"
+  xcrun stapler validate "$FEED_DIR/$DMG_NAME"
+  spctl --assess --type open --context context:primary-signature --verbose=2 "$FEED_DIR/$DMG_NAME"
+fi
 hdiutil verify "$FEED_DIR/$DMG_NAME"
 (cd "$FEED_DIR" && shasum -a 256 "$ARCHIVE_NAME" "$DMG_NAME" > SHA256SUMS)
 mkdir -p "$OUT_DIR/feed"

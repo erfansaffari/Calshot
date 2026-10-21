@@ -11,6 +11,8 @@ jobs:
   release:
     runs-on: macos-15
     environment: release
+    env:
+      RELEASE_MODE: ${{ vars.RELEASE_MODE || 'unnotarized' }}
     permissions:
       contents: write
     steps:
@@ -22,18 +24,18 @@ jobs:
         with:
           node-version: '22'
       - name: Import distribution credentials
+        if: env.RELEASE_MODE == 'notarized'
         env:
           CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
           NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         shell: bash
         run: |
           set -euo pipefail
           umask 077
-          for name in CERTIFICATE CERTIFICATE_PASSWORD NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER SPARKLE_PRIVATE_KEY; do
+          for name in CERTIFICATE CERTIFICATE_PASSWORD NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER; do
             [[ -n "${!name}" ]] || { echo "Missing release secret: $name" >&2; exit 1; }
           done
           RELEASE_KEYCHAIN="$RUNNER_TEMP/calshot-release.keychain-db"
@@ -48,30 +50,46 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN" >/dev/null
           printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
           xcrun notarytool store-credentials calshot-release --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --keychain "$RELEASE_KEYCHAIN"
-          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle.key"
           rm "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/notary.p8"
+      - name: Load update signing key
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "$SPARKLE_PRIVATE_KEY" ]] || { echo 'Missing SPARKLE_PRIVATE_KEY release secret.' >&2; exit 1; }
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle.key"
       - name: Test
         run: |
           npm --prefix WebUI ci
           npm --prefix WebUI test -- --run
           npm --prefix WebUI run build
           xcodebuild test -quiet -project Calshot.xcodeproj -scheme Calshot -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
-      - name: Build, notarize and sign update feed
+      - name: Build release and sign update feed
         env:
           SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
           NOTARY_PROFILE: calshot-release
           NOTARY_KEYCHAIN: ${{ runner.temp }}/calshot-release.keychain-db
           SPARKLE_KEY_FILE: ${{ runner.temp }}/sparkle.key
-        run: script/release_macos.sh "${GITHUB_REF_NAME#v}" "$((GITHUB_RUN_NUMBER + 100))"
+        run: script/release_macos.sh "${GITHUB_REF_NAME#v}" "$((GITHUB_RUN_NUMBER + 1000))"
       - name: Publish installer, then update feed
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" "build/release/feed/Calshot-${GITHUB_REF_NAME#v}.dmg" "build/release/feed/Calshot-${GITHUB_REF_NAME#v}.zip" build/release/feed/SHA256SUMS --verify-tag --title "Calshot ${GITHUB_REF_NAME#v}" --generate-notes
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Download the universal DMG, open it, and drag Calshot to Applications. Requires macOS 14 or later (Apple silicon and Intel).
+          NOTES
+          if [[ "$RELEASE_MODE" == unnotarized ]]; then
+            cat >> "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+
+          This release is ad hoc signed and is not notarized by Apple. After trying to open Calshot, use System Settings → Privacy & Security → Open Anyway. See https://support.apple.com/102445. Do not disable Gatekeeper globally.
+          NOTES
+          fi
+          gh release create "$GITHUB_REF_NAME" "build/release/feed/Calshot-${GITHUB_REF_NAME#v}.dmg" "build/release/feed/Calshot-${GITHUB_REF_NAME#v}.zip" build/release/feed/SHA256SUMS --verify-tag --title "Calshot ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/release-notes.md" --generate-notes
           gh release upload updates build/release/feed/appcast.xml --clobber
       - name: Remove signing material
         if: always()
         run: |
           rm -f "$RUNNER_TEMP/sparkle.key" "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/notary.p8"
-          security delete-keychain "$RUNNER_TEMP/calshot-release.keychain-db" || true
+          if [[ -f "$RUNNER_TEMP/calshot-release.keychain-db" ]]; then security delete-keychain "$RUNNER_TEMP/calshot-release.keychain-db"; fi

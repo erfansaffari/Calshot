@@ -1,5 +1,9 @@
 # Calshot
 
+[Download Calshot for Mac](https://github.com/erfansaffari/Calshot/releases/latest) · [Website](https://calshot-download.vercel.app)
+
+Requires macOS 14 or later on Apple silicon or Intel. Open the DMG and drag Calshot to Applications. Current releases are ad hoc signed and **not notarized by Apple**. If the first launch is blocked, use **System Settings → Privacy & Security → Open Anyway** after trying to open the app. [Apple’s instructions](https://support.apple.com/102445).
+
 Calshot accounts use Supabase Auth with native Keychain sessions and a calendar-onboarding flow. The hosted sharing schema and authorization RPCs are deployed in Supabase. Google and email account sign-in use Supabase; Google login has been verified in the native app. After signup, users must choose a ChatGPT plan or API key before confirming calendars. Friends can share selected calendars through exact-email requests, with access enforced by the hosted service. The hosted service source is maintained privately.
 
 Calshot is a native macOS menu bar app that turns screenshots and typed commands into a calendar agent workflow with explicit approval for changes. Press **Control–Shift–C** (customizable in Settings), drag over the event details, press Return, review the detected items, choose what to add, then approve additions to a writable calendar.

@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# A production image requires a notarized Developer ID app. --fixture is local verification only.
+# Explicit unnotarized releases use ad hoc signing. --fixture stays local verification only.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURE=false
-if [[ "${1:-}" == --fixture ]]; then FIXTURE=true; shift; fi
-APP_PATH="${1:?Usage: package_dmg.sh [--fixture] APP_PATH OUTPUT_DMG}"
+UNNOTARIZED=false
+case "${1:-}" in
+  --fixture) FIXTURE=true; shift ;;
+  --unnotarized) UNNOTARIZED=true; shift ;;
+esac
+APP_PATH="${1:?Usage: package_dmg.sh [--fixture|--unnotarized] APP_PATH OUTPUT_DMG}"
 OUTPUT_DMG="${2:?Supply the output DMG path}"
 [[ -d "$APP_PATH/Contents" && "$OUTPUT_DMG" == *.dmg ]] || { echo 'Supply an app bundle and a .dmg output path.' >&2; exit 1; }
 [[ ! -e "$OUTPUT_DMG" ]] || { echo 'The output already exists. Use a new path to preserve the previous artifact.' >&2; exit 1; }
@@ -14,6 +18,9 @@ VOLUME_NAME="Calshot"
 if "$FIXTURE"; then
   VOLUME_NAME="Calshot Packaging Preview"
   echo 'Building an unnotarized packaging fixture. Do not publish this image.' >&2
+elif "$UNNOTARIZED"; then
+  /usr/bin/codesign -dv "$APP_PATH" 2>&1 | /usr/bin/grep -q '^Signature=adhoc$' || { echo 'Unnotarized releases require an ad hoc signed app.' >&2; exit 1; }
+  echo 'Packaging an unnotarized release. macOS will require an explicit first-launch exception.' >&2
 else
   /usr/bin/codesign -dv "$APP_PATH" 2>&1 | /usr/bin/grep -q '^Authority=Developer ID Application:' || { echo 'A Developer ID Application-signed app is required.' >&2; exit 1; }
   xcrun stapler validate "$APP_PATH"
