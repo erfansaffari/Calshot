@@ -92,7 +92,7 @@ Settings is grouped into General, Calendar accounts, AI service, and Privacy & p
 
 ## Hosted website and service
 
-This repository contains the open-source Mac client and its shared presentation components. The hosted website, download landing page, account service, cloud worker and database implementation are maintained in a separate private repository. They are excluded from this checkout’s public Git index. The Mac app uses the hosted account and sharing contracts; calendar credentials, agent sessions and write approval stay native.
+The Mac client source is public; a license has not yet been chosen. This repository contains the Mac client and its shared presentation components. The hosted website, download landing page, account service, cloud worker and database implementation are maintained in a separate private repository. They are excluded from this checkout’s public Git index. The Mac app uses the hosted account and sharing contracts; calendar credentials, agent sessions and write approval stay native.
 
 Developers working on both products may have ignored local links named `Website`, `Backend` and `supabase`. They are private development conveniences and are not part of the client repository. The private website pins this public client as a submodule so presentation components retain one implementation.
 
