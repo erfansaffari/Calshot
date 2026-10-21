@@ -14,15 +14,16 @@ OUTPUT_DMG="${2:?Supply the output DMG path}"
 [[ ! -e "$OUTPUT_DMG" ]] || { echo 'The output already exists. Use a new path to preserve the previous artifact.' >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist")" == com.calshot.app ]] || { echo 'Expected the Calshot app bundle.' >&2; exit 1; }
 /usr/bin/codesign --verify --deep --strict "$APP_PATH"
+SIGNATURE_INFO="$(/usr/bin/codesign -dv "$APP_PATH" 2>&1)"
 VOLUME_NAME="Calshot"
 if "$FIXTURE"; then
   VOLUME_NAME="Calshot Packaging Preview"
   echo 'Building an unnotarized packaging fixture. Do not publish this image.' >&2
 elif "$UNNOTARIZED"; then
-  /usr/bin/codesign -dv "$APP_PATH" 2>&1 | /usr/bin/grep -q '^Signature=adhoc$' || { echo 'Unnotarized releases require an ad hoc signed app.' >&2; exit 1; }
+  /usr/bin/grep -q '^Signature=adhoc$' <<< "$SIGNATURE_INFO" || { echo 'Unnotarized releases require an ad hoc signed app.' >&2; exit 1; }
   echo 'Packaging an unnotarized release. macOS will require an explicit first-launch exception.' >&2
 else
-  /usr/bin/codesign -dv "$APP_PATH" 2>&1 | /usr/bin/grep -q '^Authority=Developer ID Application:' || { echo 'A Developer ID Application-signed app is required.' >&2; exit 1; }
+  /usr/bin/grep -q '^Authority=Developer ID Application:' <<< "$SIGNATURE_INFO" || { echo 'A Developer ID Application-signed app is required.' >&2; exit 1; }
   xcrun stapler validate "$APP_PATH"
   /usr/sbin/spctl --assess --type execute "$APP_PATH"
 fi
