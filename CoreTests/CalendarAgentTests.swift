@@ -3,6 +3,52 @@ import XCTest
 
 @MainActor
 final class CalendarAgentTests: XCTestCase {
+    func testPlanToolsAreNamespacedAndAPIKeyToolsKeepTheirSchema() throws {
+        let tool = JSONValue.object(["type": .string("function"), "name": .string("search_events"), "parameters": .object([:])])
+        let plan = ResponsesCalendarAgentClient.requestTools([tool], usesChatGPTPlan: true)
+        XCTAssertEqual(plan.first?.objectValue?["type"], .string("namespace"))
+        XCTAssertEqual(plan.first?.objectValue?["name"], .string("calendar"))
+        XCTAssertEqual(plan.first?.objectValue?["tools"], .array([tool]))
+        XCTAssertEqual(ResponsesCalendarAgentClient.requestTools([tool], usesChatGPTPlan: false), [tool])
+        XCTAssertEqual(ResponsesCalendarAgentClient.requestTools([], usesChatGPTPlan: true), [])
+        let output = JSONValue.object(["output": .array([.object(["type": .string("function_call"), "namespace": .string("calendar"), "name": .string("search_events"), "call_id": .string("call_fixture"), "arguments": .string("{}")])])])
+        XCTAssertEqual(try ResponsesCalendarAgentClient.decodeResponse(output).calls.first?.name, "search_events")
+    }
+    func testTerminalRefreshRecoveryClearsOnlyTokensAndKeepsRegistration() {
+        let account = ChatGPTConnection.Account(clientID: "oaiapp_fixture", subject: "fixture-subject", email: "alex@example.invalid", idToken: "fictional-id", accessToken: "fictional-access", refreshToken: "fictional-refresh", scopes: "chatgpt.tokens.use.direct", expiresAt: .distantFuture, model: "fixture-model")
+        let recovered = ChatGPTConnection.withoutTokens(account)
+        XCTAssertEqual(recovered.clientID, account.clientID)
+        XCTAssertEqual(recovered.subject, account.subject)
+        XCTAssertEqual(recovered.email, account.email)
+        XCTAssertTrue(recovered.accessToken.isEmpty)
+        XCTAssertTrue(recovered.refreshToken.isEmpty)
+        XCTAssertTrue(recovered.idToken.isEmpty)
+        XCTAssertFalse(recovered.canUsePlan)
+        XCTAssertTrue(ChatGPTConnection.isTerminalRefreshError("invalid_grant"))
+        XCTAssertTrue(ChatGPTConnection.isTerminalRefreshError("refresh_token_reused"))
+        XCTAssertFalse(ChatGPTConnection.isTerminalRefreshError("temporarily_unavailable"))
+        XCTAssertFalse(ChatGPTConnection.isTerminalRefreshError("invalid_client"))
+    }
+    func testOAuthErrorShapePreservesReasonCodeAndRequestID() {
+        let http = HTTPURLResponse(url: URL(string: "https://example.invalid/token")!, statusCode: 400, httpVersion: nil, headerFields: ["x-request-id": "fixture-request"])!
+        let message = ResponsesCalendarAgentClient.failureMessage(http: http, data: Data(#"{"error":"invalid_grant","error_description":"Session expired"}"#.utf8))
+        XCTAssertTrue(message.contains("invalid_grant"))
+        XCTAssertTrue(message.contains("Session expired"))
+        XCTAssertTrue(message.contains("fixture-request"))
+    }
+    func testScreenshotTurnReceivesBroadCalendarScopeAndClarificationPolicy() async throws {
+        let client = ScriptedAgentClient([.init(text: "Ready for review")])
+        let agent = CalendarAgent(client: client, executor: ScriptedAgentExecutor(results: []))
+        try await agent.start(userMessage: CalendarAgent.screenshotPrompt, imageDataURL: "data:image/png;base64,fixture")
+        let instructions = try XCTUnwrap(client.instructions.first)
+        XCTAssertTrue(instructions.contains("not just due dates"))
+        XCTAssertTrue(instructions.contains("appointments, meetings, classes, shifts"))
+        XCTAssertTrue(instructions.contains("Never ask for a title, date, time, year, calendar or choice already unambiguously provided"))
+        XCTAssertTrue(instructions.contains("prepare the useful batch with unresolved rows clearly marked"))
+        XCTAssertTrue(instructions.contains("Never invent times, durations or years"))
+        XCTAssertTrue(instructions.contains("Never claim success absent from a tool receipt"))
+    }
+
     func testSignInPersistsCredentialsBeforeUnavailableModelCatalog() async throws {
         let account = ChatGPTConnection.Account(clientID: "oaiapp_fixture", subject: "test", email: "test@example.com",
             idToken: "fixture", accessToken: "fixture", refreshToken: "fixture", scopes: "chatgpt.tokens.use.direct",
@@ -231,6 +277,22 @@ final class CalendarAgentTests: XCTestCase {
         XCTAssertEqual(executor.names.count, 8)
         XCTAssertEqual(agent.transcript.filter { $0.role == "tool" }.count, 8)
         XCTAssertEqual(agent.finalSummary, "The agent reached its step limit.")
+    }
+    func testFriendQuestionUsesReadToolsAndDoesNotReusePrivateHistory() async throws {
+        let client = ScriptedAgentClient([
+            .init(calls: [.init(name: "list_friends", callID: "friends", arguments: "{}")]),
+            .init(calls: [.init(name: "search_friend_events", callID: "events", arguments: "{}")]),
+            .init(text: "Riley has a portfolio review tomorrow. The shared copy is current.")
+        ])
+        let executor = ScriptedAgentExecutor(results: [#"{"friends":[{"id":"riley","name":"Riley"}]}"#, #"{"events":[{"title":"Portfolio review"}],"calendars":[{"complete":true,"stale":false}]}"#])
+        let agent = CalendarAgent(client: client, executor: executor)
+        var privateHistory = AgentTurn(role: "assistant", content: "Old confidential friend note")
+        privateHistory.sharedCalendarContext = true
+        try await agent.start(userMessage: "What does Riley have tomorrow?", imageDataURL: nil, memory: [privateHistory])
+        XCTAssertEqual(executor.names, ["list_friends", "search_friend_events"])
+        XCTAssertFalse(client.instructions[0].contains("Old confidential friend note"))
+        XCTAssertEqual(agent.transcript.last?.sharedCalendarContext, true)
+        XCTAssertTrue(agent.finalSummary.contains("portfolio review"))
     }
     func testHistoryIsBoundedContextAndNotReplayed() async throws {
         let client = ScriptedAgentClient([.init(text: "Done")])

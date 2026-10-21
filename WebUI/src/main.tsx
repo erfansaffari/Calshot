@@ -4,6 +4,7 @@ import App from "./App";
 import NotchApp from "./NotchApp";
 import "./styles.css";
 import "./notch.css";
+import { CalendarPresentationProvider } from "./calendarPresentation";
 class ErrorBoundary extends Component<
   { children: ReactNode },
   { failed: boolean }
@@ -34,6 +35,13 @@ class ErrorBoundary extends Component<
 }
 createRoot(document.getElementById("root")!).render(
   <ErrorBoundary>
-    {window.__calshotSurface === "notch" || new URLSearchParams(location.search).get("surface") === "notch" ? <NotchApp /> : <App />}
+    {window.__calshotSurface === "notch" ||
+    new URLSearchParams(location.search).get("surface") === "notch" ? (
+      <NotchApp />
+    ) : (
+      <CalendarPresentationProvider>
+        <App />
+      </CalendarPresentationProvider>
+    )}
   </ErrorBoundary>,
 );

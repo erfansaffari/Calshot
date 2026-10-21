@@ -16,6 +16,8 @@ struct CalshotApp: App {
         .menuBarExtraStyle(.window)
         .commands {
             CommandGroup(after: .appSettings) {
+                SoftwareUpdateMenuItem(controller: appDelegate.model.softwareUpdates)
+
                 Button("Open Quick Menu") {
                     appDelegate.model.showNotchLauncher()
                     appDelegate.model.notchLauncherController?.openQuickMenu()
@@ -29,6 +31,7 @@ struct CalshotApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model: CalshotModel = {
 #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--sharing-preview") { return CalshotModel.sharingPreviewModel() }
         if ProcessInfo.processInfo.arguments.contains("--calendar-agent-demo") {
             return CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL:
                 FileManager.default.temporaryDirectory.appendingPathComponent("CalshotCalendarDemo")), loadsAIConnection: false,
@@ -44,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         model.appearanceMode.apply()
+        if NSClassFromString("XCTestCase") == nil { model.softwareUpdates.start() }
         HotKeyController.shared.onPress = { [weak model = self.model] in
             Task { @MainActor in
                 model?.taskUsesNotch = true
@@ -66,16 +70,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard model.softwareUpdates.hasPendingInstallation || model.softwareUpdates.installing || model.softwareUpdates.updater?.sessionInProgress == true else { return .terminateNow }
+        guard model.canRestartForSoftwareUpdate else {
+            model.softwareUpdates.explainDeferredQuit()
+            model.openPanel()
+            return .terminateCancel
+        }
+        return .terminateNow
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         model.showNotchLauncher()
         if !hasVisibleWindows { model.openPanel() }
         return true
+    }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "calshot" {
+            model.openPanel()
+            Task { await model.account.handleCallback(url) }
+        }
     }
 
 }
 
 @MainActor
 final class CalshotModel: ObservableObject {
+    let softwareUpdates: SoftwareUpdateController
+    private var updateObservation: AnyCancellable?
+    let account: CalshotAccountService
+    private var accountObservation: AnyCancellable?
     @Published var appearanceMode: AppAppearance = .saved {
         didSet {
             if persistsAISelection {
@@ -86,6 +110,9 @@ final class CalshotModel: ObservableObject {
     }
     @Published var sidebarExpanded = UserDefaults.standard.object(forKey: "sidebarExpanded") as? Bool ?? true {
         didSet { if persistsAISelection { UserDefaults.standard.set(sidebarExpanded, forKey: "sidebarExpanded") } }
+    }
+    @Published var sidebarWidth = min(320, max(184, UserDefaults.standard.object(forKey: "sidebarWidth") as? Double ?? 228)) {
+        didSet { if persistsAISelection { UserDefaults.standard.set(sidebarWidth, forKey: "sidebarWidth") } }
     }
     var captureAsksForCommand = false
     @Published var image: NSImage?
@@ -165,7 +192,26 @@ final class CalshotModel: ObservableObject {
     @Published var lastOCRStatus = "No OCR run yet"
     @Published var lastCaptureSummary = "No capture yet"
     let calendarService: any CalendarDestinationService
-    let memoryStore: MemoryStore
+    var memoryStore: MemoryStore
+    var activeLocalAccountID: UUID?
+    var accountMemoryRoot: MemoryStore
+    var accountSyncTask: Task<Void, Never>?
+    var accountSyncTimer: Timer?
+    @Published var accountSyncBusy = false
+    @Published var accountSyncStatus = "Not synced yet"
+    @Published var accountSyncError: String?
+    @Published var accountSyncLastDate: Date?
+    @Published var accountSyncDevices: [String: AccountSyncDevice] = [:]
+    @Published var accountDisplayName = ""
+    @Published var macCalendarMirrors: [MacCalendarMirror] = []
+    @Published var macCalendarSyncBusy = false
+    @Published var macCalendarSyncError: String?
+    var macCalendarRPC: ((String, JSONValue, UUID) async throws -> JSONValue)?
+    @Published var calendarSharing = CalendarSharingState()
+    @Published var sharingLoaded = false
+    @Published var sharingBusy = false
+    @Published var sharingError: String?
+    var sharingRPC: ((String, JSONValue, UUID) async throws -> JSONValue)?
     private var calendarObservation: AnyCancellable?
     var currentMemoryRecordID: UUID?
     var currentCaptureSessionID: UUID?
@@ -176,12 +222,15 @@ final class CalshotModel: ObservableObject {
     var analysisTask: Task<Void, Never>?
 
     init(calendarService: any CalendarDestinationService = ConnectedCalendarService(), memoryStore: MemoryStore = .shared, loadsAIConnection: Bool = true, agentClient: (any CalendarAgentModelClient)? = nil) {
+        softwareUpdates = SoftwareUpdateController(enabled: loadsAIConnection)
+        account = CalshotAccountService(enabled: loadsAIConnection)
         persistsCalendarSelection = loadsAIConnection
         persistsAISelection = loadsAIConnection
         if loadsAIConnection { agentUseAPIKey = UserDefaults.standard.bool(forKey: "agentUseAPIKey") }
         self.agentClient = agentClient
         self.calendarService = calendarService
         self.memoryStore = memoryStore
+        self.accountMemoryRoot = memoryStore
         calendarActions = CalendarActionCoordinator(service: calendarService)
         calendarActions.persist = { [weak self] items in
             guard let self, let id = self.currentMemoryRecordID,
@@ -190,7 +239,36 @@ final class CalshotModel: ObservableObject {
             }
             self.refreshMemory()
         }
+        softwareUpdates.canRestart = { [weak self] in self?.canRestartForSoftwareUpdate == true }
+        updateObservation = softwareUpdates.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         calendarObservation = calendarActions.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        accountObservation = account.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        account.onShowWindow = { [weak self] in self?.openPanel() }
+        account.onAuthenticated = { [weak self] provider in
+            Task { @MainActor in
+                guard let self, let signedInUser = self.account.userID else { return }
+                if self.activeLocalAccountID != signedInUser {
+                    self.stopAgent(); self.analysisTask?.cancel(); self.ocrTask?.cancel()
+                    self.activeAgentRunID = nil; self.currentCaptureSessionID = UUID(); self.currentMemoryRecordID = nil
+                    self.image = nil; self.recognizedText = ""; self.agentMessages = []; self.agentTranscriptPrefix = []
+                    self.agentSummary = nil; self.agentStreamingText = ""; self.agentError = nil; self.agentStatus = nil
+                    self.calendarActions.replace(with: [])
+                    self.accountSyncDevices = [:]; self.accountSyncLastDate = nil
+                    self.macCalendarMirrors = []; self.macCalendarSyncError = nil
+                    self.calendarSharing = CalendarSharingState(); self.sharingLoaded = false; self.sharingBusy = false; self.sharingError = nil
+                }
+                do {
+                    self.memoryStore = try self.accountMemoryRoot.accountStore(for: signedInUser)
+                    self.activeLocalAccountID = signedInUser
+                    self.refreshMemory()
+                } catch { self.accountSyncError = "Couldn’t open this account’s local history. Sync has not started."; return }
+                if self.account.onboarded || self.account.aiSetupConfirmed { await self.loadCalendars() }
+                guard self.account.userID == signedInUser else { return }
+                self.startAccountSync()
+                self.openPanel()
+
+            }
+        }
         if loadsAIConnection { selectedCalendarID = UserDefaults.standard.string(forKey: "selectedCalendarID") }
         guard loadsAIConnection else { return }
         hasOpenAIAPIKey = (try? OpenAIAPIKeyStore.load()) != nil
@@ -201,7 +279,7 @@ final class CalshotModel: ObservableObject {
                 do {
                     self.chatGPTAccount = try await ChatGPTConnection.shared.refreshPreferredModel()
                     self.chatGPTConnectionError = nil
-                } catch { self.chatGPTConnectionError = error.localizedDescription }
+                } catch { self.chatGPTAccount = ChatGPTConnection.savedAccount(); self.chatGPTConnectionError = error.localizedDescription }
             }
         }
     }
@@ -214,7 +292,9 @@ final class CalshotModel: ObservableObject {
     func presentTask(compact: Bool = false) {
         if taskUsesNotch {
             showNotchLauncher()
-            if compact { notchLauncherController?.collapse() } else { notchLauncherController?.openQuickMenu() }
+            // Task updates may notify, but only hover or an explicit quick-menu
+            // command may reveal the panel or take keyboard focus.
+            if compact { notchLauncherController?.collapse() }
         }
         else { openPanel() }
     }
@@ -256,7 +336,7 @@ final class CalshotModel: ObservableObject {
         return try await OpenAIEventAnalyzer.testConnection(apiKey: key)
     }
 
-    func refreshMemory() { memoryRecords = memoryStore.listRecords() }
+    func refreshMemory() { memoryRecords = memoryStore.listRecords(); scheduleAccountSync() }
 
     var memoryDirectoryURL: URL { memoryStore.locationURL }
 
@@ -291,6 +371,7 @@ final class CalshotModel: ObservableObject {
             .appendingPathComponent("Memory", isDirectory: true)
         do {
             try memoryStore.move(to: destination)
+            accountMemoryRoot = MemoryStore(directoryURL: memoryStore.locationURL)
             refreshMemory()
             memoryLocationMessage = "Memory moved to \(destination.path)"
         } catch {
@@ -325,6 +406,8 @@ final class CalshotModel: ObservableObject {
     }
 
     func capture(quick: Bool = false, appendToBatch: Bool = false, visibleScreen: Bool = false, askAfterCapture: Bool = false) async {
+        guard !softwareUpdates.installing else { return }
+        guard account.canUseWorkspace else { openPanel(); return }
         guard selectionOverlay == nil, !isCapturing, !isSaving else { return }
         stopAgent()
         await Task.yield()
@@ -487,8 +570,16 @@ final class CalshotModel: ObservableObject {
         openAIAnalysisEnabled = true
     }
 
+    @Published var chatGPTIsConnecting = false
+    private var chatGPTSignInTask: Task<ChatGPTConnection.Account, Error>?
+    func cancelChatGPTSignIn() { chatGPTSignInTask?.cancel() }
     func connectChatGPT() async throws {
-        let account = try await ChatGPTConnection.shared.connect()
+        guard !chatGPTIsConnecting else { throw CalendarToolArgumentError("Finish the current ChatGPT sign-in first.") }
+        chatGPTIsConnecting = true
+        let task = Task { try await ChatGPTConnection.shared.connect() }
+        chatGPTSignInTask = task
+        defer { chatGPTSignInTask = nil; chatGPTIsConnecting = false; openPanel() }
+        let account = try await task.value
         chatGPTAccount = account
         openAIAnalysisEnabled = account.canUsePlan || hasOpenAIAPIKey
         chatGPTConnectionError = await ChatGPTConnection.shared.modelAvailabilityError
@@ -503,6 +594,7 @@ final class CalshotModel: ObservableObject {
             chatGPTModels = try await ChatGPTConnection.shared.availableModels()
         } catch {
             chatGPTModels = []
+            chatGPTAccount = ChatGPTConnection.savedAccount()
             chatGPTConnectionError = error.localizedDescription
             status = "Couldn’t load ChatGPT models: \(error.localizedDescription)"
         }
@@ -618,7 +710,19 @@ final class CalshotModel: ObservableObject {
         dismiss()
     }
 
+    var onboardingAIReady: Bool {
+        openAIAnalysisEnabled && (agentUseAPIKey ? hasOpenAIAPIKey : chatGPTAccount?.canUsePlan == true && chatGPTConnectionError == nil)
+    }
+    func confirmOnboardingAI(_ provider: String) throws {
+        guard !account.requiresLogin, ["api", "chatgpt"].contains(provider) else { throw CalendarToolArgumentError("Sign in and choose an AI service first.") }
+        guard provider == "api" ? hasOpenAIAPIKey : chatGPTAccount?.canUsePlan == true && chatGPTConnectionError == nil else {
+            throw CalendarToolArgumentError(provider == "api" ? "Save an API key before continuing." : "Connect an available ChatGPT plan before continuing.")
+        }
+        agentUseAPIKey = provider == "api"; openAIAnalysisEnabled = true
+        account.confirmAISetup()
+    }
     func loadCalendars() async {
+        guard !account.requiresLogin, !account.enabled || account.onboarded || account.aiSetupConfirmed else { return }
         guard !isSaving else { return }
         saveMessage = nil
         calendarConnectionMessage = "Connecting to macOS calendars…"
@@ -626,7 +730,7 @@ final class CalshotModel: ObservableObject {
             readableCalendars = try await calendarService.availableDestinations()
             destinations = readableCalendars.filter { !$0.isReadOnly }
             if !destinations.contains(where: { $0.id == selectedCalendarID }) { selectedCalendarID = destinations.first?.id }
-            calendarConnectionMessage = destinations.isEmpty ? (readableCalendars.isEmpty ? "No calendars connected. Connect an account in Calendars." : "Connected calendars are read-only or unavailable. Search can use readable calendars; adding events needs a writable destination.") : nil
+            calendarConnectionMessage = destinations.isEmpty ? (readableCalendars.isEmpty ? "No calendars connected. Connect an account in Settings → Calendar accounts." : "Connected calendars are read-only or unavailable. Search can use readable calendars; adding events needs a writable destination.") : nil
             if destinations.isEmpty { saveMessage = calendarConnectionMessage }
         } catch {
             destinations = []; readableCalendars = []
@@ -636,6 +740,7 @@ final class CalshotModel: ObservableObject {
     }
 
     func saveEvents() async {
+        guard account.canUseWorkspace else { calendarActions.message = "Sign in and connect a calendar before approving changes."; openPanel(); return }
         guard let selectedCalendarID,
               let destination = destinations.first(where: { $0.id == selectedCalendarID }) else {
             calendarActions.message = "Choose a writable calendar to continue."
@@ -853,5 +958,13 @@ enum ScreenCaptureService {
             case .noDisplay: "No display is available to capture."
             }
         }
+    }
+}
+
+struct SoftwareUpdateMenuItem: View {
+    @ObservedObject var controller: SoftwareUpdateController
+    var body: some View {
+        Button("Check for Updates…") { try? controller.check() }
+            .disabled(controller.updater?.canCheckForUpdates != true || controller.installing)
     }
 }

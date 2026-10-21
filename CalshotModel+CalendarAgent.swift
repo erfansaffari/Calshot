@@ -30,6 +30,14 @@ extension CalshotModel {
             onApproval: { [weak self] value in self?.agentIsWaitingForApproval = value },
             onQuestion: { [weak self] question in self?.agentQuestion = question },
             onStep: { [weak self] text in self?.agentStatus = text })
+        executor.listFriends = { [weak self] in
+            guard let self else { throw CancellationError() }
+            return try await self.listAgentFriends()
+        }
+        executor.searchFriend = { [weak self] fields in
+            guard let self else { throw CancellationError() }
+            return try await self.searchAgentFriend(fields)
+        }
         agentToolExecutor = executor
         calendarActions.onExecutionFinished = { [weak executor] proposals in executor?.finishApproval(proposals) }
         let client: any CalendarAgentModelClient
@@ -55,7 +63,7 @@ extension CalshotModel {
         workspaceSelection = .capture
         presentTask(compact: true); showNotchLauncher()
         status = nil; saveMessage = nil
-        currentAgentPrompt = "Read the visible screenshot and offer its calendar actions. Include every visible assignment, deadline, test and exam in one proposal. Ask about missing details before writing."
+        currentAgentPrompt = CalendarAgent.screenshotPrompt
         screenRecognition = ScreenTextRecognition(lines: [])
         let recognitionTask = Task { try await ScreenTextRecognizer.recognizeLayout(in: cgImage) }
         ocrTask = recognitionTask
@@ -114,11 +122,15 @@ extension CalshotModel {
         } catch { status = "Couldn’t save recognized text: \(error.localizedDescription)" }
     }
 
-    func startAgentCommand() async {
+    func startAgentCommand(expectedSessionID: UUID? = nil) async {
+        guard !softwareUpdates.installing else { return }
+        guard account.canUseWorkspace else { openPanel(); return }
+        guard expectedSessionID == nil || currentCaptureSessionID == expectedSessionID else { return }
         let prompt = agentCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !isSaving, !isCapturing else { return }
         stopAgent()
         await Task.yield()
+        guard expectedSessionID == nil || currentCaptureSessionID == expectedSessionID else { return }
         analysisTask?.cancel()
         agentCommand = ""
         status = nil; agentError = nil; agentRetryPrompt = nil; agentSummary = nil

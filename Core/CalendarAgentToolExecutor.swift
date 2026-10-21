@@ -8,6 +8,8 @@ struct AgentQuestion: Identifiable {
 
 @MainActor
 final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
+    var listFriends: (() async throws -> JSONValue)?
+    var searchFriend: (([String: JSONValue]) async throws -> JSONValue)?
     private let service: any CalendarDestinationService
     private let coordinator: CalendarActionCoordinator
     private let destination: () -> (id: String, name: String)?
@@ -54,6 +56,25 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         do {
             guard let fields = arguments.objectValue else { throw CalendarToolArgumentError("Arguments must be an object.") }
             switch name {
+            case "list_friends":
+                try CalendarToolDraftMapper.keys(fields, allowed: [])
+                guard let listFriends else { throw CalendarToolArgumentError("Friend sharing is unavailable. Open Friends & sharing in Settings.") }
+                onStep("Checking friends who share with you")
+                let result = try await listFriends()
+                guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                return result.jsonString()
+            case "search_friend_events":
+                try CalendarToolDraftMapper.keys(fields, allowed: ["friendID", "query", "start", "end"])
+                guard let id = try CalendarToolDraftMapper.string(fields, "friendID", required: true, limit: 36), UUID(uuidString: id) != nil,
+                      let start = try CalendarToolDraftMapper.instant(fields, "start"), let end = try CalendarToolDraftMapper.instant(fields, "end"),
+                      end > start, end.timeIntervalSince(start) <= 63 * 86400 else { throw CalendarToolArgumentError("Choose a listed friend and explicit dates covering up to 63 days.") }
+                _ = try CalendarToolDraftMapper.string(fields, "query", limit: 200)
+                guard let searchFriend else { throw CalendarToolArgumentError("Friend calendar reads are unavailable.") }
+                onStep("Checking your friend’s shared calendars")
+                let result = try await searchFriend(fields)
+                guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                // Friend event IDs never enter the searched targets used by write tools.
+                return result.jsonString()
             case "read_screen_text":
                 try CalendarToolDraftMapper.keys(fields, allowed: [])
                 let text = await screenText()

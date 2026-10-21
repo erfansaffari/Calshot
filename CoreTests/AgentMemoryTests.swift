@@ -32,6 +32,22 @@ final class AgentMemoryTests: XCTestCase {
         XCTAssertTrue(reopened.agentMemory(excluding: record.id).isEmpty)
         XCTAssertFalse(context.contains("data:image"))
     }
+    func testFriendCalendarAnswersAreHistoricalButNotReusedAsCurrentMemory() throws {
+        let (memory, root) = store()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var tool = AgentTurn(role: "tool", toolName: "search_friend_events", result: "Confidential fictional event")
+        tool.sharedCalendarContext = true
+        var answer = AgentTurn(role: "assistant", content: "Confidential fictional event is tomorrow")
+        answer.sharedCalendarContext = true
+        let record = try memory.recordCommand("Check Riley's calendar", transcript: [AgentTurn(role: "user", content: "Check Riley's calendar"), tool, answer])
+        let reopened = MemoryStore(directoryURL: root)
+        XCTAssertTrue(reopened.listRecords().first?.agentTranscript?.contains(answer) == true)
+        XCTAssertFalse(reopened.agentMemory().compactMap(\.content).joined().contains("Confidential fictional event"))
+        let synced = record.accountSyncCopy()
+        XCTAssertEqual(synced.agentTranscript?.last?.sharedCalendarContext, true)
+        let legacy = try JSONDecoder().decode(AgentTurn.self, from: Data(#"{"role":"assistant","content":"An older conversation"}"#.utf8))
+        XCTAssertNil(legacy.sharedCalendarContext)
+    }
     func testTypedSessionNeedsNoFabricatedScreenshot() throws {
         let (memory, root) = store()
         defer { try? FileManager.default.removeItem(at: root) }

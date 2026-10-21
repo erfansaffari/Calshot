@@ -45,7 +45,12 @@ export default function NotchApp() {
   }, [detail, review, state.question?.id, state.messages.length, state.summary, error, state.agentError]);
   useEffect(() => { setText(""); setReview(false); setConversation(false); setSource(false); setError(""); }, [state.captureID]);
   useEffect(() => {
-    const reset = () => { setReview(false); setConversation(false); setSource(false); };
+    const reset = () => {
+      // Keep an unfinished editor mounted when pointer-leave hides the panel.
+      // Returning to the notch restores its unsaved fields and focus trap.
+      if (document.querySelector('[role="dialog"]')) return;
+      setReview(false); setConversation(false); setSource(false);
+    };
     window.addEventListener("calshot:notch-collapsed", reset);
     return () => window.removeEventListener("calshot:notch-collapsed", reset);
   }, []);
@@ -63,13 +68,14 @@ export default function NotchApp() {
     return () => window.removeEventListener("keydown", handler);
   }, [review, conversation, source]);
   const submit = async () => {
-    const message = text.trim() || (captured ? "Add the events visible in this screenshot to my calendar. Ask about unclear details before preparing changes." : "");
+    const message = text.trim() || (captured ? "Prepare calendar actions for all relevant dates and scheduled activities in this screenshot. Follow my instructions and include unresolved items in the review without guessing." : "");
     if (!message || busy || sending) return;
     setSending(true); setError("");
     try { await command({ action: "send", text: message }); setText(""); setConversation(false); }
     catch (e) { setError((e as Error).message); }
     finally { setSending(false); }
   };
+  if (state.auth?.required && (!state.auth.signedIn || !state.auth.onboarded)) return <div className="notch-shell"><div className="notch-bar"><span className="notch-label">{state.auth.busy ? "Checking your account…" : "Welcome to Calshot"}</span><button className="button primary" onClick={() => void run("openWorkspace")}>Open Calshot</button></div></div>;
   return <div className="notch-shell">
     <div className="notch-bar">
       {working ? <>

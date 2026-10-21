@@ -1,0 +1,936 @@
+import { friendCalendars } from "../types";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
+import {
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  RefreshCw,
+  MapPin,
+  Clock,
+  Sparkles,
+  Plus,
+  ArrowUp,
+} from "lucide-react";
+import { useCalendarSwipe } from "../useCalendarSwipe";
+import type { AppState, CalendarEvent, Command } from "../types";
+import {
+  Badge,
+  Empty,
+  InlineError,
+  Modal,
+  Spinner,
+  timeRange,
+} from "../components/ui";
+import {
+  calendarColor,
+  dateKey,
+  monthDays,
+  useCalendar,
+} from "../calendarPresentation";
+
+export const dayKey = dateKey;
+function allDayKey(value: string, zone?: string) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone || undefined,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date(value));
+    return ["year", "month", "day"]
+      .map((type) => parts.find((p) => p.type === type)?.value)
+      .join("-");
+  } catch {
+    return value.slice(0, 10);
+  }
+}
+export function occursOn(event: CalendarEvent, day: Date) {
+  if (event.isAllDay)
+    return (
+      allDayKey(event.start, event.timeZone) <= dayKey(day) &&
+      allDayKey(event.end, event.timeZone) > dayKey(day)
+    );
+  const end = new Date(day);
+  end.setDate(end.getDate() + 1);
+  return new Date(event.start) < end && new Date(event.end) > day;
+}
+const labelDay = (date: Date) =>
+  date.toLocaleDateString(undefined, { dateStyle: "full" });
+const eventKey = (event: CalendarEvent) =>
+  event.calendarIdentifier + event.eventIdentifier + event.start;
+const minuteOfDay = (date: Date) => date.getHours() * 60 + date.getMinutes();
+export function dayInterval(event: CalendarEvent, day: Date) {
+  const next = new Date(day);
+  next.setDate(next.getDate() + 1);
+  const start = new Date(event.start),
+    end = new Date(event.end);
+  const from = start <= day ? 0 : minuteOfDay(start);
+  return {
+    from,
+    to: Math.max(from + 1, end >= next ? 1440 : minuteOfDay(end)),
+  };
+}
+// Assign lanes to each connected overlap group, including the minimum hit area
+// of short events. Back-to-back events can reuse a lane; transitive overlaps
+// share the group's maximum lane count rather than covering one another.
+export function layoutDayEvents(events: CalendarEvent[], day: Date) {
+  const sorted = events
+    .filter((e) => !e.isAllDay && occursOn(e, day))
+    .map((event) => ({ event, ...dayInterval(event, day), lane: 0, lanes: 1 }))
+    .sort(
+      (a, b) =>
+        a.from - b.from ||
+        b.to - a.to ||
+        eventKey(a.event).localeCompare(eventKey(b.event)),
+    );
+  let group: typeof sorted = [],
+    ends: number[] = [],
+    groupEnd = -1;
+  const finish = () => {
+    for (const item of group) item.lanes = ends.length;
+    group = [];
+    ends = [];
+  };
+  for (const item of sorted) {
+    if (item.from >= groupEnd) {
+      finish();
+      groupEnd = -1;
+    }
+    const lane = ends.findIndex((end) => end <= item.from);
+    item.lane = lane < 0 ? ends.length : lane;
+    const renderedEnd = Math.max(item.to, item.from + 28);
+    ends[item.lane] = renderedEnd;
+    groupEnd = Math.max(groupEnd, renderedEnd);
+    group.push(item);
+  }
+  finish();
+  return sorted;
+}
+
+export function CalendarPage({
+  state,
+  onCommand: command,
+  readOnly = false,
+}: {
+  state: AppState;
+  onCommand: (message: Command) => Promise<void>;
+  readOnly?: boolean;
+}) {
+  const { anchor, setAnchor, mode, setMode, hidden } = useCalendar();
+  const [detailKey, setDetailKey] = useState<string>();
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  const [ask, setAsk] = useState("");
+  const [sending, setSending] = useState(false);
+  const [newEvent, setNewEvent] = useState(false);
+  const [now, setNow] = useState(() => new Date());
+  const scroller = useRef<HTMLDivElement>(null);
+  const board = useRef<HTMLDivElement>(null);
+  const monthYear = `${anchor.getFullYear()}-${anchor.getMonth()}`;
+  const rangeKey = `${mode}-${dayKey(anchor)}`;
+  const range = useMemo(() => {
+    if (mode !== "month") {
+      const start = new Date(anchor);
+      if (mode === "week") start.setDate(start.getDate() - start.getDay());
+      const end = new Date(start);
+      end.setDate(end.getDate() + (mode === "week" ? 7 : 1));
+      return { start, end, days: monthDays(anchor) };
+    }
+    const days = monthDays(anchor),
+      end = new Date(days[0]);
+    end.setDate(end.getDate() + 42);
+    return { start: days[0], end, days };
+  }, [rangeKey]);
+  const visibleSources = [...state.calendars, ...friendCalendars(state)];
+  const sharingAccess = JSON.stringify(state.sharing?.shares.map(s => [s.id, s.permission, s.status, s.calendars.map(c => c.id)]) || []);
+  const ids = visibleSources
+    .filter((c) => !hidden.has(c.id))
+    .map((c) => c.id)
+    .sort();
+  const idsKey = JSON.stringify(ids);
+  useEffect(() => {
+    let current = true;
+    setPending(true);
+    setError("");
+    void command({
+      action: "loadCalendarEvents",
+      start: range.start.toISOString(),
+      end: range.end.toISOString(),
+      calendarIDs: JSON.parse(idsKey),
+    })
+      .catch((e) => {
+        if (current) setError(e.message);
+      })
+      .finally(() => {
+        if (current) setPending(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [range, idsKey, refresh, sharingAccess, state.sharing?.error]);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(timer);
+  }, []);
+  const view = state.calendarView;
+  const loading = pending || Boolean(view?.loading);
+  const matches = Boolean(
+    view?.loaded &&
+    view.start &&
+    new Date(view.start).getTime() === range.start.getTime() &&
+    new Date(view.end!).getTime() === range.end.getTime(),
+  );
+  const events = matches
+    ? (view?.events || [])
+        .filter((e) => ids.includes(e.calendarIdentifier))
+        .sort(
+          (a, b) =>
+            Number(b.isAllDay) - Number(a.isAllDay) ||
+            a.start.localeCompare(b.start) ||
+            a.title.localeCompare(b.title),
+        )
+    : [];
+  const errors = [
+    ...(matches ? (view?.errors || []).filter((e) => ids.includes(e.calendarIdentifier)) : []),
+    ...(state.sharing?.error ? [{ calendarIdentifier: "shared:status", calendarName: "Friend calendars", message: state.sharing.error }] : []),
+  ];
+  const detail = events.find((e) => eventKey(e) === detailKey);
+  const color = (id: string) =>
+    calendarColor(visibleSources.findIndex((c) => c.id === id));
+  const tint = (event: CalendarEvent) =>
+    ({ "--event-color": color(event.calendarIdentifier) }) as CSSProperties;
+  const weekStart = new Date(anchor);
+  weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+  const days =
+    mode === "day"
+      ? [anchor]
+      : Array.from(
+          { length: 7 },
+          (_, i) =>
+            new Date(
+              weekStart.getFullYear(),
+              weekStart.getMonth(),
+              weekStart.getDate() + i,
+            ),
+        );
+  const timed = days.flatMap((day) =>
+    events
+      .filter((e) => !e.isAllDay && occursOn(e, day))
+      .map((e) => dayInterval(e, day)),
+  );
+  // Match the reference's 8 AM–8 PM window, expanding for early/late events.
+  const firstHour = Math.min(8, ...timed.map((e) => Math.floor(e.from / 60)));
+  const lastHour = Math.max(20, ...timed.map((e) => Math.ceil(e.to / 60)));
+  const hourHeight = 52,
+    gridHeight = (lastHour - firstHour) * hourHeight;
+  const hours = Array.from(
+    { length: lastHour - firstHour + 1 },
+    (_, i) => firstHour + i,
+  );
+  const columns = {
+    gridTemplateColumns: `52px repeat(${days.length}, minmax(0, 1fr))`,
+  };
+  useEffect(() => {
+    if (scroller.current)
+      scroller.current.scrollTop =
+        firstHour < 8 ? (8 - firstHour) * hourHeight : 0;
+  }, [mode, dayKey(anchor), firstHour]);
+  const blocked =
+    state.running ||
+    state.saving ||
+    state.waitingApproval ||
+    Boolean(state.question) ||
+    state.isCapturing ||
+    state.isRecognizing;
+  const changeRange = (offset: number) => {
+    setDetailKey(undefined);
+    const next = new Date(anchor);
+    if (mode === "month")
+      setAnchor(new Date(anchor.getFullYear(), anchor.getMonth() + offset, 1));
+    else {
+      next.setDate(next.getDate() + offset * (mode === "week" ? 7 : 1));
+      setAnchor(next);
+    }
+  };
+  const openSettings = () =>
+    void command({
+      action: "navigate",
+      page: "settings",
+      section: "calendars",
+    }).catch((e) => setError(e.message));
+  useCalendarSwipe(board, changeRange, visibleSources.length > 0);
+  const send = async (text: string) => {
+    if (blocked)
+      throw new Error(
+        "Finish or stop the current task in Assistant before starting another.",
+      );
+    if (!text.trim() || sending) return;
+    setSending(true);
+    setError("");
+    try {
+      await command({ action: "startCalendarTask", text: text.trim() });
+      setAsk("");
+      setNewEvent(false);
+      setDetailKey(undefined);
+    } catch (e) {
+      setError((e as Error).message);
+      throw e;
+    } finally {
+      setSending(false);
+    }
+  };
+  const eventLabel = (event: CalendarEvent) =>
+    `${event.title || "Untitled event"}, ${timeRange(event.start, event.end, undefined, event.isAllDay)}, ${event.calendarName}`;
+  const allDayCount = Math.max(
+    1,
+    ...days.map(
+      (day) => events.filter((e) => e.isAllDay && occursOn(e, day)).length,
+    ),
+  );
+  return (
+    <div className="calendar-page">
+      <header className="calendar-toolbar">
+        <h1>
+          {anchor.toLocaleDateString(undefined, { month: "long" })}{" "}
+          <span>{anchor.getFullYear()}</span>
+        </h1>
+        <div className="calendar-range-buttons">
+          <button
+            className="icon-button"
+            aria-label={`Previous ${mode}`}
+            onClick={() => changeRange(-1)}
+          >
+            <ChevronLeft size={15} />
+          </button>
+          <button
+            className="icon-button"
+            aria-label={`Next ${mode}`}
+            onClick={() => changeRange(1)}
+          >
+            <ChevronRight size={15} />
+          </button>
+        </div>
+        <button
+          className="button secondary calendar-today"
+          onClick={() => {
+            const date = new Date();
+            date.setHours(0, 0, 0, 0);
+            setAnchor(date);
+          }}
+        >
+          Today
+        </button>
+        {readOnly ? (
+          <a className="button secondary calendar-ask" href="calshot://">
+            Ask Calshot in the Mac app ↗
+          </a>
+        ) : (
+          <form
+            className="calendar-ask"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void send(ask).catch(() => {});
+            }}
+          >
+            <Sparkles size={14} />
+            <input
+              aria-label="Ask Calshot about your calendar"
+              placeholder={friendCalendars(state).length ? "Ask about your calendar or a friend’s…" : "Ask about your calendar…"}
+              value={ask}
+              maxLength={8000}
+              onChange={(e) => setAsk(e.target.value)}
+              disabled={sending}
+            />
+            {ask.trim() && (
+              <button
+                type="submit"
+                className="icon-button"
+                aria-label="Send calendar question"
+                disabled={blocked || sending}
+              >
+                {sending ? <Spinner /> : <ArrowUp size={14} />}
+              </button>
+            )}
+          </form>
+        )}
+        <div
+          className="calendar-segment"
+          role="group"
+          aria-label="Calendar view"
+        >
+          {(["day", "week", "month"] as const).map((value) => (
+            <button
+              key={value}
+              aria-pressed={mode === value}
+              onClick={() => {
+                setMode(value);
+                setDetailKey(undefined);
+              }}
+            >
+              {value[0].toUpperCase() + value.slice(1)}
+            </button>
+          ))}
+        </div>
+        <button
+          className="icon-button calendar-refresh"
+          title="Refresh events"
+          aria-label="Refresh events"
+          disabled={loading}
+          onClick={() => setRefresh((n) => n + 1)}
+        >
+          {loading ? <Spinner /> : <RefreshCw size={14} />}
+        </button>
+        {!readOnly && (
+          <button
+            className="button primary calendar-new"
+            aria-label="New event"
+            title="New event"
+            disabled={blocked || sending}
+            onClick={() => setNewEvent(true)}
+          >
+            <Plus size={18} />
+          </button>
+        )}
+      </header>
+      <div className="calendar-notices">
+        <InlineError message={error} />
+        {!!errors.length && (
+          <div className="calendar-load-errors" role="alert">
+            <strong>Some calendars couldn’t be loaded</strong>
+            {errors.map((e) => (
+              <p key={e.calendarIdentifier}>
+                {e.calendarName}: {e.message}
+              </p>
+            ))}
+            <button
+              className="text-button"
+              onClick={() => setRefresh((n) => n + 1)}
+            >
+              Try again
+            </button>
+          </div>
+        )}
+        {matches && view?.truncated && (
+          <p className="notice" role="status">
+            Some events may be missing in this busy range. Check the calendar
+            provider for the full list.
+          </p>
+        )}
+        {blocked && (
+          <p className="calendar-task-notice">
+            A task is waiting in Assistant.{" "}
+            <button
+              className="text-button"
+              onClick={() =>
+                void command({ action: "navigate", page: "chat" }).catch((e) =>
+                  setError(e.message),
+                )
+              }
+            >
+              Continue task
+            </button>
+          </p>
+        )}
+      </div>
+      {!visibleSources.length ? (
+        <Empty
+          icon={<CalendarDays size={28} />}
+          title={state.sharing?.error ? "Friend calendars couldn’t be verified" : "Connect a calendar to see your schedule"}
+          action={
+            <button className="button primary" onClick={openSettings}>
+              Connect calendars
+            </button>
+          }
+        >
+          Add an account in Settings or allow access to your macOS calendars.
+        </Empty>
+      ) : (
+        <>
+          <div className="calendar-board" ref={board} aria-busy={loading}>
+            {mode === "month" ? (
+              <section className="month-board" aria-label="Month calendar">
+                <div className="weekday-labels">
+                  {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(
+                    (day) => (
+                      <span key={day}>{day}</span>
+                    ),
+                  )}
+                </div>
+                <div
+                  className="month-grid"
+                  style={{
+                    gridTemplateRows: `repeat(${range.days.length / 7}, minmax(86px, 1fr))`,
+                  }}
+                >
+                  {range.days.map((day) => {
+                    const items = events.filter((e) => occursOn(e, day));
+                    return (
+                      <div
+                        key={dayKey(day)}
+                        className={
+                          "month-day " +
+                          (day.getMonth() !== anchor.getMonth()
+                            ? "outside "
+                            : "") +
+                          (dayKey(day) === dayKey(now) ? "today" : "")
+                        }
+                      >
+                        <button
+                          className="day-number"
+                          aria-label={`Open ${labelDay(day)}`}
+                          onClick={() => {
+                            setAnchor(day);
+                            setMode("day");
+                          }}
+                        >
+                          {day.getDate()}
+                        </button>
+                        {items.slice(0, 3).map((event) => (
+                          <button
+                            key={eventKey(event)}
+                            className={
+                              "month-event " + (event.isAllDay ? "all-day" : "")
+                            }
+                            style={tint(event)}
+                            aria-label={eventLabel(event)}
+                            onClick={() => setDetailKey(eventKey(event))}
+                          >
+                            <span className="calendar-event-dot" />
+                            <span className="truncate">
+                              {event.title || "Untitled event"}
+                            </span>
+                            {!event.isAllDay && (
+                              <time>
+                                {new Date(event.start).toLocaleTimeString(
+                                  undefined,
+                                  { hour: "numeric", minute: "2-digit" },
+                                )}
+                              </time>
+                            )}
+                          </button>
+                        ))}
+                        {items.length > 3 && (
+                          <button
+                            className="month-more"
+                            onClick={() => {
+                              setAnchor(day);
+                              setMode("day");
+                            }}
+                          >
+                            +{items.length - 3} more
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : (
+              <section
+                className="timetable"
+                aria-label={mode === "week" ? "Week calendar" : "Day calendar"}
+              >
+                <div className="timetable-header" style={columns}>
+                  <div />
+                  {days.map((day) => (
+                    <button
+                      key={dayKey(day)}
+                      className={
+                        "timetable-day " +
+                        (dayKey(day) === dayKey(now) ? "today" : "")
+                      }
+                      onClick={() => {
+                        setAnchor(day);
+                        setMode("day");
+                      }}
+                      aria-label={`Open ${labelDay(day)}`}
+                    >
+                      <span>
+                        {day.toLocaleDateString(undefined, {
+                          weekday: "short",
+                        })}
+                      </span>
+                      <strong>{day.getDate()}</strong>
+                    </button>
+                  ))}
+                </div>
+                <div
+                  className="timetable-all-day"
+                  style={{
+                    ...columns,
+                    maxHeight: 112,
+                    minHeight: 28,
+                    height: 6 + allDayCount * 23,
+                  }}
+                >
+                  <span className="all-day-label">all-day</span>
+                  {days.map((day) => (
+                    <div className="all-day-cell" key={dayKey(day)}>
+                      {events
+                        .filter((e) => e.isAllDay && occursOn(e, day))
+                        .map((event) => (
+                          <button
+                            key={eventKey(event)}
+                            className="all-day-event"
+                            style={tint(event)}
+                            aria-label={eventLabel(event)}
+                            onClick={() => setDetailKey(eventKey(event))}
+                          >
+                            {event.title || "Untitled event"}
+                          </button>
+                        ))}
+                    </div>
+                  ))}
+                </div>
+                <div className="timetable-scroll" ref={scroller}>
+                  <div
+                    className="timetable-grid"
+                    style={{ ...columns, height: gridHeight }}
+                  >
+                    <div className="hour-gutter">
+                      {hours.slice(1, -1).map((hour) => (
+                        <span
+                          key={hour}
+                          style={{ top: (hour - firstHour) * hourHeight }}
+                        >
+                          {new Date(2026, 0, 1, hour).toLocaleTimeString(
+                            undefined,
+                            { hour: "numeric" },
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                    {days.map((day) => (
+                      <div
+                        key={dayKey(day)}
+                        className={
+                          "timetable-column " +
+                          (dayKey(day) === dayKey(now) ? "today" : "")
+                        }
+                        aria-label={labelDay(day)}
+                      >
+                        {layoutDayEvents(events, day).map(
+                          ({ event, from, to, lane, lanes }) => (
+                            <button
+                              key={eventKey(event)}
+                              className={
+                                "time-event " +
+                                (detailKey === eventKey(event)
+                                  ? "selected "
+                                  : "") +
+                                (to - from < 45 ? "short" : "")
+                              }
+                              style={{
+                                ...tint(event),
+                                top: (from / 60 - firstHour) * hourHeight,
+                                height: Math.max(
+                                  24,
+                                  ((to - from) / 60) * hourHeight - 2,
+                                ),
+                                left: `calc(${(lane / lanes) * 100}% + 3px)`,
+                                width: `calc(${100 / lanes}% - 6px)`,
+                              }}
+                              aria-label={eventLabel(event)}
+                              title={eventLabel(event)}
+                              onClick={() => setDetailKey(eventKey(event))}
+                            >
+                              <strong>{event.title || "Untitled event"}</strong>
+                              <span>{timeRange(event.start, event.end)}</span>
+                              {mode === "day" && (
+                                <small>
+                                  {event.calendarName}
+                                  {event.location ? " · " + event.location : ""}
+                                </small>
+                              )}
+                            </button>
+                          ),
+                        )}
+                        {dayKey(day) === dayKey(now) &&
+                          minuteOfDay(now) >= firstHour * 60 &&
+                          minuteOfDay(now) < lastHour * 60 && (
+                            <div
+                              className="calendar-now"
+                              aria-label="Current time"
+                              style={{
+                                top:
+                                  (minuteOfDay(now) / 60 - firstHour) *
+                                  hourHeight,
+                              }}
+                            />
+                          )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            )}
+            {!loading &&
+              !events.some((e) =>
+                (mode === "month" ? range.days : days).some((day) =>
+                  occursOn(e, day),
+                ),
+              ) && (
+                <div className="calendar-empty-label" role="status">
+                  {!ids.length
+                    ? "Choose calendars in the sidebar to see your events."
+                    : errors.length || error
+                      ? "Some calendars couldn’t be checked."
+                      : matches
+                        ? `Nothing scheduled this ${mode}.`
+                        : "Waiting for calendar data…"}
+                </div>
+              )}
+          </div>
+          <footer className="calendar-status" role="status">
+            <span>
+              {loading
+                ? "Loading events…"
+                : error
+                  ? "Couldn’t refresh calendars"
+                  : errors.length
+                    ? "Some calendars unavailable"
+                    : !ids.length
+                      ? "No calendars selected"
+                      : !matches
+                        ? "Waiting for calendar data…"
+                        : "Calendars up to date"}
+            </span>
+            <span>
+              {Intl.DateTimeFormat()
+                .resolvedOptions()
+                .timeZone.replaceAll("_", " ")}
+            </span>
+          </footer>
+        </>
+      )}
+      {detail && (
+        <Modal
+          title={detail.title || "Event details"}
+          onClose={() => setDetailKey(undefined)}
+          className="calendar-event-popover"
+        >
+          <div className="calendar-event-detail">
+            <p>
+              <CalendarDays size={15} />
+              {detail.isAllDay
+                ? allDayKey(detail.start, detail.timeZone)
+                : new Date(detail.start).toLocaleDateString(undefined, {
+                    dateStyle: "full",
+                  })}
+            </p>
+            <p>
+              <Clock size={15} />
+              {timeRange(detail.start, detail.end, undefined, detail.isAllDay)}
+            </p>
+            <p>
+              <span
+                className="calendar-color"
+                style={{ background: color(detail.calendarIdentifier) }}
+              />
+              {detail.calendarName} <small>· {detail.sourceName}</small>
+            </p>
+            {detail.location && (
+              <p>
+                <MapPin size={15} />
+                {detail.location}
+              </p>
+            )}
+            {detail.notes && <p className="event-notes">{detail.notes}</p>}
+            {detail.timeZone && <small>{detail.timeZone}</small>}
+            {detail.calendarIdentifier.startsWith("shared:") && <Badge>Shared · Read-only</Badge>}
+            {!readOnly && !detail.calendarIdentifier.startsWith("shared:") && (
+              <button
+                className="button secondary"
+                disabled={blocked}
+                onClick={() => {
+                  setAsk(
+                    `Change “${detail.title}” on ${new Date(detail.start).toLocaleString()} in “${detail.calendarName}”: `,
+                  );
+                  setDetailKey(undefined);
+                  requestAnimationFrame(() =>
+                    document
+                      .querySelector<HTMLInputElement>(".calendar-ask input")
+                      ?.focus(),
+                  );
+                }}
+              >
+                Ask Calshot to change this
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
+      {newEvent && (
+        <NewEvent
+          state={state}
+          date={dayKey(anchor)}
+          onClose={() => setNewEvent(false)}
+          onSend={send}
+        />
+      )}
+    </div>
+  );
+}
+
+function NewEvent({
+  state,
+  date,
+  onClose,
+  onSend,
+}: {
+  state: AppState;
+  date: string;
+  onClose: () => void;
+  onSend: (text: string) => Promise<void>;
+}) {
+  const writable = state.calendars.filter(
+    (c) => !c.isReadOnly && !c.unavailable,
+  );
+  const [title, setTitle] = useState("");
+  const [day, setDay] = useState(date);
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [allDay, setAllDay] = useState(false);
+  const [calendarID, setCalendarID] = useState(
+    writable.find((c) => c.id === state.selectedCalendarID)?.id ||
+      writable[0]?.id ||
+      "",
+  );
+  const [error, setError] = useState("");
+  const [invalid, setInvalid] = useState("");
+  const [sending, setSending] = useState(false);
+  const submit = async () => {
+    setError("");
+    setInvalid("");
+    if (!title.trim()) {
+      setInvalid("title");
+      setError("Give your event a title.");
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      setInvalid("date");
+      setError("Choose the event date.");
+      return;
+    }
+    if (!allDay && (!start || !end || end <= start)) {
+      setInvalid("time");
+      setError("Choose a start time and a later end time, or select All day.");
+      return;
+    }
+    const calendar = writable.find((c) => c.id === calendarID);
+    if (!calendar) {
+      setInvalid("calendar");
+      setError("Choose an available calendar.");
+      return;
+    }
+    setSending(true);
+    try {
+      await onSend(
+        `Create one event titled ${JSON.stringify(title.trim())} on ${day}, ${allDay ? "all day (confirmed)" : `from ${start} to ${end} in ${Intl.DateTimeFormat().resolvedOptions().timeZone}`}, in calendar ${JSON.stringify(calendar.title)} (${calendar.sourceName}). Show it for my approval.`,
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <Modal title="New event" onClose={onClose}>
+      <form
+        className="calendar-new-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <label>
+          Title
+          <input
+            autoFocus
+            value={title}
+            aria-invalid={invalid === "title"}
+            maxLength={500}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </label>
+        {invalid === "title" && <InlineError message={error} />}
+        <label>
+          Date
+          <input
+            type="date"
+            value={day}
+            aria-invalid={invalid === "date"}
+            onChange={(e) => setDay(e.target.value)}
+          />
+        </label>
+        {invalid === "date" && <InlineError message={error} />}
+        <label className="calendar-all-day-check">
+          <input
+            type="checkbox"
+            checked={allDay}
+            onChange={(e) => setAllDay(e.target.checked)}
+          />
+          All day
+        </label>
+        {!allDay && (
+          <div className="calendar-time-fields">
+            <label>
+              Starts
+              <input
+                type="time"
+                value={start}
+                onChange={(e) => setStart(e.target.value)}
+              />
+            </label>
+            <label>
+              Ends
+              <input
+                type="time"
+                value={end}
+                onChange={(e) => setEnd(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+        {invalid === "time" && <InlineError message={error} />}
+        <label>
+          Calendar
+          <select
+            value={calendarID}
+            onChange={(e) => setCalendarID(e.target.value)}
+          >
+            {!writable.length && (
+              <option value="">Connect a writable calendar</option>
+            )}
+            {writable.map((c) => (
+              <option value={c.id} key={c.id}>
+                {c.title} · {c.sourceName}
+              </option>
+            ))}
+          </select>
+        </label>
+        {(!invalid || invalid === "calendar") && (
+          <InlineError message={error} />
+        )}
+        <p className="fine-print">
+          Calshot will prepare this event for review. Nothing is added until you
+          approve.
+        </p>
+        <button
+          className="button primary"
+          type="submit"
+          disabled={sending || !writable.length}
+        >
+          {sending ? <Spinner /> : <Sparkles size={14} />} Review with Calshot
+        </button>
+      </form>
+    </Modal>
+  );
+}

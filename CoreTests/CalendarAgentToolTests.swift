@@ -58,6 +58,28 @@ final class CalendarAgentToolTests: XCTestCase {
                                   onQuestion: { if $0 != nil { question?.send() } })
     }
 
+    func testFriendReadsAreBoundedAndNeverAuthorizeWriteTargets() async throws {
+        let service = ToolCalendarService(); let coordinator = CalendarActionCoordinator(service: service)
+        let tools = executor(service, coordinator); let session = UUID(); tools.activate(sessionID: session)
+        var calls = 0
+        tools.listFriends = { .object(["friends": .array([])]) }
+        tools.searchFriend = { _ in calls += 1; return .object(["events": .array([.object(["key": .string("friend-private"), "title": .string("Fictional class")])])]) }
+        let invalid = try decode(await tools.execute(name: "search_friend_events", arguments: .object(["friendID": .string(UUID().uuidString), "start": .string("2026-01-01T00:00:00Z"), "end": .string("2026-12-01T00:00:00Z")]), sessionID: session))
+        XCTAssertNotNil(invalid["error"]); XCTAssertEqual(calls, 0)
+        let result = try decode(await tools.execute(name: "search_friend_events", arguments: .object(["friendID": .string(UUID().uuidString), "start": .string("2026-10-21T00:00:00Z"), "end": .string("2026-10-22T00:00:00Z")]), sessionID: session))
+        XCTAssertEqual((result["events"] as? [[String: Any]])?.count, 1)
+        let write = try decode(await tools.execute(name: "delete_event", arguments: .object(["eventIdentifier": .string("friend-private"), "reason": .string("Requested")]), sessionID: session))
+        XCTAssertNotNil(write["error"]); XCTAssertTrue(coordinator.proposals.isEmpty)
+    }
+    func testNewSessionDropsLateFriendReadResults() async throws {
+        let service = ToolCalendarService(); let tools = executor(service, CalendarActionCoordinator(service: service))
+        let started = ToolSignal(), finish = ToolSignal(); let old = UUID(); tools.activate(sessionID: old)
+        tools.searchFriend = { _ in started.send(); await finish.wait(); return .object(["private": .string("Old friend result")]) }
+        let request = Task { await tools.execute(name: "search_friend_events", arguments: .object(["friendID": .string(UUID().uuidString), "start": .string("2026-10-21T00:00:00Z"), "end": .string("2026-10-22T00:00:00Z")]), sessionID: old) }
+        await started.wait(); tools.activate(sessionID: UUID()); finish.send()
+        let completed = await request.value
+        XCTAssertEqual(try decode(completed)["cancelled"] as? Bool, true)
+    }
     func testEmptySearchNamesTheCalendarAndExactRange() async throws {
         let service = ToolCalendarService()
         let tools = executor(service, CalendarActionCoordinator(service: service))

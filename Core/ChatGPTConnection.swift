@@ -9,6 +9,7 @@ import Security
 actor ChatGPTConnection {
     static let shared = ChatGPTConnection()
     private(set) var modelAvailabilityError: String?
+    private var refreshing: (id: UUID, task: Task<Account, Error>)?
 
     struct ModelOption: Identifiable, Equatable, Sendable {
         let slug: String
@@ -42,6 +43,7 @@ actor ChatGPTConnection {
     enum ConnectionError: LocalizedError {
         case invalidCallback, denied, invalidToken, noPlanPermission, noModel, notConnected
         case server(String)
+        case oauth(String, String)
 
         var errorDescription: String? {
             switch self {
@@ -52,6 +54,7 @@ actor ChatGPTConnection {
             case .noModel: "This ChatGPT account has no available model for image analysis."
             case .notConnected: "Connect your ChatGPT account in Settings first."
             case .server(let message): message
+            case .oauth(let code, let message): "ChatGPT authorization failed: \(message) (\(code))."
             }
         }
     }
@@ -62,6 +65,7 @@ actor ChatGPTConnection {
     }
 
     func connect() async throws -> Account {
+        if let pending = refreshing { _ = try? await pending.task.value }
         let previous = Self.savedAccount()
         let callback = try await LoopbackCallback.start()
         defer { Task { await callback.stop() } }
@@ -86,7 +90,8 @@ actor ChatGPTConnection {
             URLQueryItem(name: "ext_agent_host_id", value: hostID)
         ]
         if let previous {
-            parameters.append(URLQueryItem(name: "id_token_hint", value: previous.idToken))
+            if !previous.idToken.isEmpty { parameters.append(URLQueryItem(name: "id_token_hint", value: previous.idToken)) }
+            if !previous.canUsePlan { parameters.append(URLQueryItem(name: "prompt", value: "consent")) }
             parameters.append(URLQueryItem(name: "login_hint", value: previous.email))
         } else {
             parameters.append(URLQueryItem(name: "agent_name_hint", value: "Calshot"))
@@ -156,17 +161,15 @@ actor ChatGPTConnection {
         guard var account = Self.savedAccount() else { throw ConnectionError.notConnected }
         guard account.canUsePlan else { throw ConnectionError.noPlanPermission }
         if account.expiresAt.timeIntervalSinceNow < 120 {
-            let refreshed = try await exchange([
-                "grant_type": "refresh_token", "client_id": account.clientID,
-                "refresh_token": account.refreshToken, "resource": "https://api.openai.com/v1"
-            ])
-            account = Account(clientID: account.clientID, subject: account.subject,
-                              email: account.email, idToken: account.idToken,
-                              accessToken: refreshed.accessToken, refreshToken: refreshed.refreshToken,
-                              scopes: refreshed.scope.isEmpty ? account.scopes : refreshed.scope,
-                              expiresAt: .now.addingTimeInterval(TimeInterval(refreshed.expiresIn)),
-                              model: account.model)
-            try Keychain.save(JSONEncoder().encode(account))
+            if let pending = refreshing { account = try await pending.task.value }
+            else {
+                let id = UUID(), original = account
+                let task = Task { try await self.renew(original) }
+                refreshing = (id, task)
+                defer { if refreshing?.id == id { refreshing = nil } }
+                account = try await task.value
+            }
+            guard account.canUsePlan else { throw ConnectionError.noPlanPermission }
         }
         if account.model.isEmpty {
             let selected = try await chooseModel(accessToken: account.accessToken)
@@ -174,6 +177,33 @@ actor ChatGPTConnection {
             try Keychain.save(JSONEncoder().encode(account))
         }
         return (account.accessToken, account.model)
+    }
+
+    private func renew(_ account: Account) async throws -> Account {
+        let refreshed: TokenResponse
+        do {
+            refreshed = try await exchange([
+                "grant_type": "refresh_token", "client_id": account.clientID,
+                "refresh_token": account.refreshToken, "resource": "https://api.openai.com/v1"
+            ])
+        } catch ConnectionError.oauth(let code, _) where Self.isTerminalRefreshError(code) {
+            try Keychain.save(JSONEncoder().encode(Self.withoutTokens(account)))
+            throw ConnectionError.server("Your ChatGPT session expired or was revoked. Choose Reconnect and sign in again. Your account registration is kept.")
+        }
+        let updated = Account(clientID: account.clientID, subject: account.subject,
+            email: account.email, idToken: account.idToken, accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken, scopes: refreshed.scope.isEmpty ? account.scopes : refreshed.scope,
+            expiresAt: .now.addingTimeInterval(TimeInterval(refreshed.expiresIn)), model: account.model)
+        try Keychain.save(JSONEncoder().encode(updated))
+        return updated
+    }
+
+    nonisolated static func isTerminalRefreshError(_ code: String) -> Bool {
+        ["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"].contains(code)
+    }
+    nonisolated static func withoutTokens(_ account: Account) -> Account {
+        Account(clientID: account.clientID, subject: account.subject, email: account.email, idToken: "",
+            accessToken: "", refreshToken: "", scopes: "", expiresAt: .distantPast, model: "")
     }
 
     nonisolated private static func withModel(_ account: Account, _ model: String) -> Account {
@@ -187,7 +217,7 @@ actor ChatGPTConnection {
         let models = try await fetchModels(accessToken: access.token)
         let selectedModel = models.contains(where: { $0.slug == access.model })
             ? access.model
-            : models.first(where: { $0.slug == "gpt-5.6-luna" })?.slug ?? models.first?.slug ?? ""
+            : models.first?.slug ?? ""
         guard let account = Self.savedAccount() else { throw ConnectionError.notConnected }
         guard selectedModel != account.model else { return account }
         let updated = Account(clientID: account.clientID, subject: account.subject,
@@ -255,6 +285,10 @@ actor ChatGPTConnection {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ConnectionError.server("ChatGPT sign-in returned an invalid response.") }
         guard http.statusCode == 200 else {
+            let object = (try? JSONDecoder().decode(JSONValue.self, from: data))?.objectValue
+            if let code = object?["error"]?.stringValue ?? object?["error"]?.objectValue?["code"]?.stringValue {
+                throw ConnectionError.oauth(code, object?["error_description"]?.stringValue ?? "The saved authorization was not accepted. Reconnect your account.")
+            }
             throw ConnectionError.server(ResponsesCalendarAgentClient.failureMessage(http: http, data: data))
         }
         return try JSONDecoder().decode(TokenResponse.self, from: data)
@@ -262,10 +296,7 @@ actor ChatGPTConnection {
 
     private func chooseModel(accessToken: String) async throws -> String {
         let models = try await fetchModels(accessToken: accessToken)
-        guard let selected = ["gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]
-            .first(where: { slug in models.contains(where: { $0.slug == slug }) }) ?? models.first?.slug else {
-            throw ConnectionError.noModel
-        }
+        guard let selected = models.first?.slug else { throw ConnectionError.noModel }
         return selected
     }
 

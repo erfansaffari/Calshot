@@ -8,3 +8,23 @@ xcuserdata/
 
 WebUI/node_modules/
 WebUI/dist/
+Backend/node_modules/
+Backend/.env*
+!Backend/.env.example
+
+Website/node_modules/
+Website/.next/
+Website/.env*
+!Website/.env.example
+Website/*.tsbuildinfo
+.vercel/
+Website/.vercel/
+Backend/dist/
+.vercel
+
+# Hosted product source lives in the separate private Calshot-website repository.
+/Website
+/Backend
+/supabase
+/render.yaml
+/script/deploy_website_preview.sh

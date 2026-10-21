@@ -1,22 +1,20 @@
-# This workflow will build a Swift project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-swift
-
-name: Swift
-
+name: Build and test
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   pull_request:
-    branches: [ "main" ]
-
+    branches: [main]
+permissions:
+  contents: read
 jobs:
-  build:
-
-    runs-on: macos-latest
-
+  test:
+    runs-on: macos-15
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: swift build -v
-    - name: Run tests
-      run: swift test -v
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm --prefix WebUI ci
+      - run: npm --prefix WebUI test -- --run
+      - run: npm --prefix WebUI run build
+      - run: xcodebuild test -quiet -project Calshot.xcodeproj -scheme Calshot -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO

@@ -37,6 +37,7 @@ public struct AgentTurn: Codable, Sendable, Equatable {
     public var result: String?
     public var content: String?
     public var callID: String?
+    public var sharedCalendarContext: Bool?
     public init(role: String, toolName: String? = nil, arguments: String? = nil, result: String? = nil,
          content: String? = nil, callID: String? = nil) {
         self.role = role; self.toolName = toolName; self.arguments = arguments

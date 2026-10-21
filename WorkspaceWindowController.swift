@@ -18,8 +18,8 @@ final class WorkspaceWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        // Keep the native titlebar controls in their standard position and put
-        // Calshot's compact brand/sidebar control in the titlebar accessory area.
+        // Keep traffic lights, but let the workspace paint through the titlebar.
+        // A narrow native drag region handles movement without swallowing web controls.
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 920, height: 650)
         window.level = .normal
@@ -29,11 +29,20 @@ final class WorkspaceWindowController: NSObject, NSWindowDelegate {
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--compact-workspace") { window.setContentSize(NSSize(width: 920, height: 650)) }
 #endif
+        window.setFrameAutosaveName("CalshotWorkspace")
         window.center()
         if Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "WebUI") != nil {
             let workspace = WebWorkspaceController(model: model)
             webWorkspace = workspace
-            window.contentView = workspace.webView
+            let container = NSView(frame: window.contentView?.bounds ?? .zero)
+            let webView = workspace.webView!
+            webView.frame = container.bounds
+            webView.autoresizingMask = [.width, .height]
+            container.addSubview(webView)
+            let dragRegion = WorkspaceDragRegion(frame: NSRect(x: 84, y: container.bounds.height - 24, width: max(0, container.bounds.width - 84), height: 24))
+            dragRegion.autoresizingMask = [.width, .minYMargin]
+            container.addSubview(dragRegion)
+            window.contentView = container
         } else {
             // Native recovery surface remains available when frontend resources are absent.
             window.contentView = NSHostingView(rootView: CalshotWorkspaceView(model: model))
@@ -47,4 +56,16 @@ final class WorkspaceWindowController: NSObject, NSWindowDelegate {
 
     func hide() { window.orderOut(nil) }
 
+}
+
+/// Transparent header strip; controls below it keep their normal WebKit gestures.
+@MainActor
+private final class WorkspaceDragRegion: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
 }

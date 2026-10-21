@@ -44,6 +44,74 @@ export interface Turn {
   result?: string;
   callID?: string;
 }
+export type SharingPermission = "busy" | "titles" | "details";
+export interface SharedSource {
+  id: string;
+  sourceKey: string;
+  name: string;
+  revision: number;
+  withdrawn: boolean;
+  syncedAt: string;
+  coverageStart: string;
+  coverageEnd: string;
+  error?: string | null;
+}
+export interface FriendCalendar {
+  id: string;
+  name: string;
+  syncedAt: string;
+  stale: boolean;
+  error?: string | null;
+}
+export interface CalendarShare {
+  id: string;
+  ownerID: string;
+  recipientID?: string;
+  outgoing: boolean;
+  personName: string;
+  email?: string;
+  permission: SharingPermission;
+  status: "pending" | "accepted" | "expired";
+  expiresAt: string;
+  calendars: FriendCalendar[];
+}
+export interface SharingState {
+  loaded: boolean;
+  busy: boolean;
+  error?: string | null;
+  token: string;
+  sources: SharedSource[];
+  shares: CalendarShare[];
+}
+export function friendCalendarID(shareID: string, calendarID: string) {
+  return `shared:${shareID}:${calendarID}`.toLowerCase();
+}
+export function friendCalendars(state: AppState): CalendarInfo[] {
+  if (!state.sharing?.loaded || state.sharing.error) return [];
+  const rank = { busy: 0, titles: 1, details: 2 };
+  const seen = new Set<string>();
+  return [...state.sharing.shares]
+    .sort((a, b) => rank[b.permission] - rank[a.permission])
+    .filter((s) => !s.outgoing && s.status === "accepted")
+    .flatMap((s) =>
+      s.calendars
+        .filter((c) => {
+          const key = `${s.ownerID}:${c.id}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .map((c) => ({
+          id: friendCalendarID(s.id, c.id),
+          title: c.name,
+          provider: "friend",
+          sourceName: s.personName,
+          isReadOnly: true,
+          direct: false,
+          unavailable: false,
+        })),
+    );
+}
 export interface CalendarInfo {
   id: string;
   title: string;
@@ -68,8 +136,92 @@ export interface MemoryRecord {
   count: number;
   provider: string;
 }
+export interface CalendarEvent {
+  eventIdentifier: string;
+  calendarIdentifier: string;
+  title: string;
+  start: string;
+  end: string;
+  isAllDay: boolean;
+  timeZone?: string;
+  location?: string;
+  calendarName: string;
+  sourceName: string;
+  url?: string;
+  notes?: string;
+}
+export interface CalendarViewState {
+  loading: boolean;
+  loaded: boolean;
+  start?: string;
+  end?: string;
+  events: CalendarEvent[];
+  errors: {
+    calendarIdentifier: string;
+    calendarName: string;
+    message: string;
+  }[];
+  truncated?: boolean;
+}
+export interface AccountSyncState {
+  busy: boolean;
+  status: string;
+  displayName: string;
+  deviceID: string;
+  lastSyncedAt?: string;
+  error?: string;
+  devices: Record<
+    string,
+    {
+      name: string;
+      updatedAt: string;
+      connections: { key: string; provider: string; label: string }[];
+    }
+  >;
+}
+export interface SoftwareUpdateState {
+  version: string; build: string; available: boolean; canCheck: boolean; checking: boolean;
+  status: string; error?: string | null; automaticChecks: boolean; automaticDownloads: boolean;
+  lastChecked?: string | null; development: boolean;
+}
 export interface AppState {
+  softwareUpdate?: SoftwareUpdateState;
+  accountSync?: AccountSyncState;
+  webCalendarSync?: {
+    busy: boolean;
+    error?: string | null;
+    sourceKeys: Record<string, string>;
+    mirrors: {
+      id: string;
+      sourceKey: string;
+      generation: string;
+      enabled: boolean;
+      name: string;
+      syncedAt?: string;
+      complete: boolean;
+      error?: string;
+    }[];
+  };
+  auth?: {
+    required: boolean;
+    signedIn: boolean;
+    phase: string;
+    busy: boolean;
+    onboarded: boolean;
+    googleEnabled: boolean;
+    signInProvider?: "google" | "email";
+    identityProviders?: string[];
+    aiSetupConfirmed?: boolean;
+    email?: string;
+    userID?: string;
+    message?: string;
+    error?: string;
+  };
+  settingsSection?: "general" | "calendars" | "friends" | "ai" | "privacy";
+  calendarView?: CalendarViewState;
+  sharing?: SharingState;
   sidebarExpanded: boolean;
+  sidebarWidth?: number;
   duplicateComparisons?: Record<string, Draft[]>;
   ready: boolean;
   native: boolean;
@@ -112,6 +264,7 @@ export interface AppState {
   memoryLocation: string;
   shortcut: string;
   screenPermissionNeeded: boolean;
+  screenPermissionGranted?: boolean;
   settings: {
     appearance: "system" | "light" | "dark";
     agentEnabled: boolean;
@@ -119,6 +272,7 @@ export interface AppState {
     useAPIKey: boolean;
     chatGPTEmail?: string;
     chatGPTPlan: boolean;
+    chatGPTConnecting?: boolean;
     chatGPTError?: string;
     model: string;
     models: { id: string; name: string }[];

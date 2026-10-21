@@ -23,8 +23,10 @@ import type { AppState, Page } from "./types";
 import { Badge, Empty, InlineError, Modal, Spinner } from "./components/ui";
 import { Review } from "./components/Review";
 import { Question } from "./components/Question";
+import { AccountScreen } from "./views/AccountScreen";
+import { CalendarPage } from "./views/CalendarPage";
 import { Sidebar } from "./components/Sidebar";
-import { Calendars, HistoryPage, SettingsPage } from "./views/Pages";
+import { HistoryPage, SettingsPage } from "./views/Pages";
 function App() {
   const state = useAppState(),
     [source, setSource] = useState(false),
@@ -129,8 +131,9 @@ function App() {
     }
   };
   if (!state.ready) return <Startup />;
+  if (state.auth?.required && (!state.auth.signedIn || !state.auth.onboarded || state.auth.phase === "passwordRecovery")) return <AccountScreen state={state} />;
   return (
-    <div className="app">
+    <div className={"app" + (state.page === "calendars" ? " calendar-workspace" : "")}>
       <Sidebar state={state} onAction={run} />
       <main className="workspace">
         {assistant ? (
@@ -523,7 +526,7 @@ function App() {
             </div>
           </>
         ) : state.page === "calendars" ? (
-          <Calendars state={state} />
+          <CalendarPage state={state} onCommand={command} />
         ) : state.page === "library" ? (
           <HistoryPage state={state} />
         ) : (

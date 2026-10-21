@@ -1,0 +1,74 @@
+name: Release macOS
+on:
+  push:
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
+permissions:
+  contents: read
+concurrency:
+  group: macos-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: macos-15
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Import distribution credentials
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in CERTIFICATE CERTIFICATE_PASSWORD NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER SPARKLE_PRIVATE_KEY; do
+            [[ -n "${!name}" ]] || { echo "Missing release secret: $name" >&2; exit 1; }
+          done
+          RELEASE_KEYCHAIN="$RUNNER_TEMP/calshot-release.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$RELEASE_KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$RELEASE_KEYCHAIN" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security list-keychains -d user -s "$RELEASE_KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN" >/dev/null
+          printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
+          xcrun notarytool store-credentials calshot-release --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --keychain "$RELEASE_KEYCHAIN"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle.key"
+          rm "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/notary.p8"
+      - name: Test
+        run: |
+          npm --prefix WebUI ci
+          npm --prefix WebUI test -- --run
+          npm --prefix WebUI run build
+          xcodebuild test -quiet -project Calshot.xcodeproj -scheme Calshot -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+      - name: Build, notarize and sign update feed
+        env:
+          SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          NOTARY_PROFILE: calshot-release
+          NOTARY_KEYCHAIN: ${{ runner.temp }}/calshot-release.keychain-db
+          SPARKLE_KEY_FILE: ${{ runner.temp }}/sparkle.key
+        run: script/release_macos.sh "${GITHUB_REF_NAME#v}" "$((GITHUB_RUN_NUMBER + 100))"
+      - name: Publish installer, then update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" "build/release/feed/Calshot-${GITHUB_REF_NAME#v}.zip" build/release/feed/SHA256SUMS --verify-tag --title "Calshot ${GITHUB_REF_NAME#v}" --generate-notes
+          gh release upload updates build/release/feed/appcast.xml --clobber
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/sparkle.key" "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/notary.p8"
+          security delete-keychain "$RUNNER_TEMP/calshot-release.keychain-db" || true

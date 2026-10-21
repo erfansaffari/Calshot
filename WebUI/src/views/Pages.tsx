@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CalendarDays,
   RefreshCw,
@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import type { AppState } from "../types";
 import { command } from "../bridge";
+import { SoftwareUpdates } from "./SoftwareUpdates";
+import { FriendsSettings } from "./FriendsSettings";
 import {
   Badge,
   Empty,
@@ -48,7 +50,214 @@ function useAction() {
     setNotice,
   };
 }
-export function Calendars({ state }: { state: AppState }) {
+function AccountSyncCard({ state }: { state: AppState }) {
+  const a = useAction();
+  const sync = state.accountSync;
+  if (!state.auth?.signedIn || !sync) return null;
+  const local = sync.devices[sync.deviceID]?.connections || [];
+  const otherAccounts = Object.entries(sync.devices).flatMap(([id, device]) =>
+    id === sync.deviceID
+      ? []
+      : device.connections.map((connection) => ({
+          ...connection,
+          device: device.name,
+        })),
+  );
+  const unique = otherAccounts.filter(
+    (item, i) =>
+      otherAccounts.findIndex((other) => other.key === item.key) === i,
+  );
+  return (
+    <section aria-label="Account sync">
+      <h2 className="section-label">Account & sync</h2>
+      <div className="card settings-card">
+        <div className="settings-row">
+          <div>
+            <h3>
+              {sync.displayName || state.auth.email || "Your Calshot account"}
+            </h3>
+            <p>{sync.busy ? "Syncing your account…" : sync.status}</p>
+            {sync.lastSyncedAt && (
+              <small>Last synced {formatDate(sync.lastSyncedAt)}</small>
+            )}
+          </div>
+          <button
+            className="button secondary"
+            disabled={sync.busy || a.busy || state.running || state.saving}
+            onClick={() => void a.run("syncAccount")}
+          >
+            {sync.busy ? <Spinner /> : <RefreshCw size={14} />} Sync now
+          </button>
+        </div>
+        <div className="settings-row">
+          <div>
+            <h3>Signed in to Calshot</h3>
+            <p>{state.auth.email}</p>
+          </div>
+          <button
+            className="button secondary"
+            disabled={a.busy || state.running || state.saving || state.isCapturing || state.isRecognizing}
+            onClick={() => void a.run("authSignOut")}
+          >
+            Sign out
+          </button>
+        </div>
+        <InlineError message={sync.error || a.error} />
+        <p className="fine-print">
+          Your profile, appearance, sidebar preference, connected-account list
+          and task history sync privately with your Calshot account. Screenshot
+          images and authorization credentials stay on each Mac. Restoring
+          history never repeats calendar changes.
+        </p>
+        {!!unique.length && (
+          <div style={{ marginTop: 16 }}>
+            <h3>Accounts from your other devices</h3>
+            {unique.map((item) => (
+              <div className="settings-row" key={item.key}>
+                <div>
+                  <h3>{item.label}</h3>
+                  <p>
+                    {item.provider} · {item.device}
+                  </p>
+                  <small>
+                    {local.some((account) => account.key === item.key)
+                      ? "Also connected on this Mac"
+                      : "Reconnect on this Mac to use this account"}
+                  </small>
+                </div>
+                <button
+                  className="button secondary"
+                  onClick={() =>
+                    void a.run("navigate", {
+                      page: "settings",
+                      section: item.provider === "chatgpt" ? "ai" : "calendars",
+                    })
+                  }
+                >
+                  Manage connection
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+function WebCalendarSync({ state }: { state: AppState }) {
+  const a = useAction();
+  const sync = state.webCalendarSync;
+  if (!state.auth?.signedIn || !sync) return null;
+  const calendars = state.calendars.filter((c) => !c.unavailable);
+  const busy = a.busy || sync.busy || state.running || state.saving;
+  return (
+    <section aria-label="Calendar web sync">
+      <h2 className="section-label">Your calendars on the web</h2>
+      <div className="card settings-card">
+        <div className="settings-row">
+          <div>
+            <h3>Sync selected calendars to Calshot</h3>
+            <p>
+              See these calendars on the website, even when your Mac is offline.
+            </p>
+          </div>
+          <button
+            className="button secondary"
+            disabled={busy}
+            onClick={() => void a.run("syncMacCalendars")}
+          >
+            {sync.busy ? <Spinner /> : <RefreshCw size={14} />} Refresh web sync
+          </button>
+        </div>
+        <p className="fine-print">
+          Choose each calendar to upload its event titles, times and locations
+          privately to your account. Updates happen while Calshot is running on
+          this Mac, covering the past 7 days and next 55 days. Stopping sync
+          removes the web copy and keeps your original events.
+        </p>
+        <InlineError message={a.error || sync.error || undefined} />
+        {!calendars.length && (
+          <p className="fine-print">
+            Allow Calendar access to choose calendars.
+          </p>
+        )}
+        {sync.mirrors
+          .filter(
+            (m) =>
+              m.enabled &&
+              !calendars.some((c) => sync.sourceKeys[c.id] === m.sourceKey),
+          )
+          .map((m) => (
+            <div className="settings-row" key={m.id}>
+              <div>
+                <h3>{m.name}</h3>
+                <p>
+                  This calendar is unavailable on this Mac. Its web copy may be
+                  out of date.
+                </p>
+                <InlineError message={m.error} />
+              </div>
+              <button
+                className="button secondary"
+                disabled={busy}
+                onClick={() =>
+                  void a.run("stopMacCalendarSync", { mirrorID: m.id })
+                }
+              >
+                Stop syncing
+              </button>
+            </div>
+          ))}
+        {calendars.map((c) => {
+          const mirror = sync.mirrors.find(
+            (m) => m.sourceKey === sync.sourceKeys[c.id],
+          );
+          return (
+            <div className="web-sync-calendar" key={c.id}>
+              <div className="settings-row">
+                <div>
+                  <h3>{c.title}</h3>
+                  <p>
+                    {c.sourceName} ·{" "}
+                    {mirror?.enabled
+                      ? mirror.syncedAt
+                        ? `Last synced ${formatDate(mirror.syncedAt)}`
+                        : "Waiting for the first sync"
+                      : "Only on this Mac"}
+                  </p>
+                </div>
+                <button
+                  className="button secondary"
+                  disabled={busy}
+                  onClick={() =>
+                    void a.run("setMacCalendarSync", {
+                      calendarID: c.id,
+                      enabled: !mirror?.enabled,
+                    })
+                  }
+                >
+                  {mirror?.enabled ? "Stop syncing" : "Sync to web"}
+                </button>
+              </div>
+              {mirror?.enabled &&
+                !mirror.complete &&
+                mirror.syncedAt &&
+                !mirror.error && (
+                  <p className="fine-print">
+                    The web copy may be incomplete. Refresh to retry.
+                  </p>
+                )}
+              <InlineError
+                message={mirror?.enabled ? mirror.error : undefined}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+export function CalendarConnections({ state }: { state: AppState }) {
   const a = useAction(),
     [disconnect, setDisconnect] = useState<string>();
   const available = state.calendars.filter((c) => !c.unavailable),
@@ -61,10 +270,10 @@ export function Calendars({ state }: { state: AppState }) {
     {},
   );
   return (
-    <div className="page-scroll">
-      <div className="page-inner">
+    <div className="connections-settings">
+      <div className="connections-inner">
         <header className="page-title">
-          <h1>Calendars & Accounts</h1>
+          <h2>Calendar accounts</h2>
           <button
             className="button secondary"
             disabled={a.busy || state.running || state.saving}
@@ -121,6 +330,7 @@ export function Calendars({ state }: { state: AppState }) {
             You can choose a different calendar in each task.
           </p>
         </section>
+        <WebCalendarSync state={state} />
         <section>
           <h2 className="section-label">Available calendars</h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -501,6 +711,10 @@ export function SettingsPage({ state }: { state: AppState }) {
   const a = useAction(),
     [editingKey, setEditingKey] = useState(false),
     [key, setKey] = useState("");
+  const [tab, setTab] = useState(state.settingsSection || "general");
+  useEffect(() => {
+    setTab(state.settingsSection || "general");
+  }, [state.settingsSection]);
   const s = state.settings,
     locked = state.running || state.saving || a.busy;
   return (
@@ -509,253 +723,356 @@ export function SettingsPage({ state }: { state: AppState }) {
         <header className="page-title">
           <h1>Settings</h1>
         </header>
+        <nav className="settings-tabs" aria-label="Settings sections">
+          {(
+            [
+              ["general", "General"],
+              ["calendars", "Calendar accounts"],
+              ["friends", "Friends & sharing"],
+              ["ai", "AI service"],
+              ["privacy", "Privacy & permissions"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              className={tab === id ? "active" : ""}
+              aria-current={tab === id ? "page" : undefined}
+              onClick={() => {
+                setTab(id);
+                void a.run("navigate", { page: "settings", section: id });
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+        {tab === "calendars" && <CalendarConnections state={state} />}
+        {tab === "friends" && <FriendsSettings state={state} onAction={(action, extra) => command({ action, ...extra })} />}
         <InlineError message={a.error} />
         {state.notice && (
           <div className="notice" style={{ margin: 0 }}>
             <p>{state.notice}</p>
           </div>
         )}
-        <section>
-          <h2 className="section-label">Appearance</h2>
-          <div className="card settings-card">
-            <div className="settings-row">
-              <div>
-                <h3>Choose your look</h3>
-                <p>
-                  System follows your Mac. Applies to the workspace and native
-                  Calshot windows.
-                </p>
+        {tab === "general" && <AccountSyncCard state={state} />}
+        {tab === "general" && <SoftwareUpdates state={state} onAction={(action, extra) => command({ action, ...extra })} />}
+        {tab === "general" && (
+          <section>
+            <h2 className="section-label">Appearance</h2>
+            <div className="card settings-card">
+              <div className="settings-row">
+                <div>
+                  <h3>Choose your look</h3>
+                  <p>
+                    System follows your Mac. Applies to the workspace and native
+                    Calshot windows.
+                  </p>
+                </div>
+                <Select
+                  label="Appearance"
+                  value={s.appearance || "system"}
+                  disabled={a.busy}
+                  onChange={(mode) => void a.run("appearance", { mode })}
+                >
+                  <option value="system">System</option>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </Select>
               </div>
-              <Select
-                label="Appearance"
-                value={s.appearance || "system"}
-                disabled={a.busy}
-                onChange={(mode) => void a.run("appearance", { mode })}
-              >
-                <option value="system">System</option>
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-              </Select>
             </div>
-          </div>
-        </section>
-        <section>
-          <h2 className="section-label">AI service</h2>
-          <div className="card settings-card">
-            <div className="settings-row">
-              <div>
-                <h3>Use for new requests</h3>
-                <p>
-                  API usage is billed separately from your ChatGPT plan. Your
-                  choice is saved.
-                </p>
-              </div>
-              <Select
-                label="AI service"
-                value={s.useAPIKey ? "api" : "plan"}
-                disabled={locked}
-                onChange={(value) =>
-                  void a.run("provider", { useAPIKey: value === "api" })
-                }
-              >
-                <option value="api">OpenAI API key</option>
-                <option value="plan">ChatGPT plan</option>
-              </Select>
-            </div>
-            <div className="settings-row">
-              <div>
-                <h3>
-                  OpenAI API key{" "}
-                  {s.useAPIKey && <Badge tone="success">In use</Badge>}
-                </h3>
-                <p>
-                  {s.apiKeySaved
-                    ? "Key saved in your macOS Keychain."
-                    : "Add an API key to use this service."}{" "}
-                  Usage is billed by OpenAI.
-                </p>
-              </div>
-              <div className="settings-actions">
-                <button
-                  className="button secondary"
+          </section>
+        )}
+        {tab === "ai" && (
+          <section>
+            <h2 className="section-label">AI service</h2>
+            <div className="card settings-card">
+              <div className="settings-row">
+                <div>
+                  <h3>Use for new requests</h3>
+                  <p>
+                    API usage is billed separately from your ChatGPT plan. Your
+                    choice is saved.
+                  </p>
+                </div>
+                <Select
+                  label="AI service"
+                  value={s.useAPIKey ? "api" : "plan"}
                   disabled={locked}
-                  onClick={() => setEditingKey(true)}
+                  onChange={(value) =>
+                    void a.run("provider", { useAPIKey: value === "api" })
+                  }
                 >
-                  {s.apiKeySaved ? "Replace key" : "Add key"}
-                </button>
+                  <option value="api">OpenAI API key</option>
+                  <option value="plan">ChatGPT plan</option>
+                </Select>
+              </div>
+              <div className="settings-row">
+                <div>
+                  <h3>
+                    OpenAI API key{" "}
+                    {s.useAPIKey && <Badge tone="success">In use</Badge>}
+                  </h3>
+                  <p>
+                    {s.apiKeySaved
+                      ? "Key saved in your macOS Keychain."
+                      : "Add an API key to use this service."}{" "}
+                    Usage is billed by OpenAI.
+                  </p>
+                </div>
+                <div className="settings-actions">
+                  <button
+                    className="button secondary"
+                    disabled={locked}
+                    onClick={() => setEditingKey(true)}
+                  >
+                    {s.apiKeySaved ? "Replace key" : "Add key"}
+                  </button>
+                  <button
+                    className="button secondary"
+                    disabled={locked || !s.apiKeySaved}
+                    onClick={() => void a.run("testAI")}
+                  >
+                    Test connection
+                  </button>
+                </div>
+              </div>
+              <div className="settings-row">
+                <div>
+                  <h3>
+                    ChatGPT plan{" "}
+                    {s.chatGPTPlan && (
+                      <Badge tone={s.chatGPTError ? "warning" : "success"}>
+                        {s.chatGPTError ? "Service issue" : "Signed in"}
+                      </Badge>
+                    )}
+                  </h3>
+                  <p>
+                    {s.chatGPTEmail
+                      ? (s.chatGPTPlan ? "Signed in as " : "Saved account: ") +
+                        s.chatGPTEmail +
+                        "."
+                      : "Connect a supported ChatGPT account."}{" "}
+                    {s.chatGPTError
+                      ? s.chatGPTPlan
+                        ? "Your sign-in is kept while the service is unavailable."
+                        : "Reconnect to authorize ChatGPT plan access."
+                      : ""}
+                  </p>
+                  {s.chatGPTError && (
+                    <details>
+                      <summary>Service details</summary>
+                      <p>{s.chatGPTError}</p>
+                    </details>
+                  )}
+                </div>
+                <div className="account-actions">
+                  {s.chatGPTConnecting ? (
+                    <>
+                      <span role="status">
+                        Finish ChatGPT sign-in in your browser…
+                      </span>
+                      <button
+                        className="button secondary"
+                        onClick={() => void a.run("cancelChatGPT")}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        className="button secondary"
+                        disabled={locked}
+                        onClick={() => void a.run("connectChatGPT")}
+                      >
+                        {s.chatGPTEmail ? "Reconnect" : "Continue with ChatGPT"}
+                      </button>
+                      {s.chatGPTPlan && (
+                        <>
+                          <button
+                            className="button secondary"
+                            disabled={locked}
+                            onClick={() => void a.run("refreshChatGPT")}
+                          >
+                            Check again
+                          </button>
+                          <button
+                            className="button secondary"
+                            disabled={locked}
+                            onClick={() => void a.run("testChatGPT")}
+                          >
+                            Test ChatGPT
+                          </button>
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+              {s.models.length > 0 && (
+                <div className="settings-row">
+                  <label htmlFor="chatgpt-model">ChatGPT model</label>
+                  <select
+                    id="chatgpt-model"
+                    value={s.useAPIKey ? "" : s.model}
+                    disabled={locked || s.chatGPTConnecting}
+                    onChange={(e) =>
+                      void a.run("selectChatGPTModel", {
+                        model: e.target.value,
+                      })
+                    }
+                  >
+                    {s.useAPIKey && (
+                      <option value="" disabled>
+                        Choose after selecting ChatGPT plan
+                      </option>
+                    )}
+                    {s.models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <p className="fine-print">
+                ChatGPT plan access powers AI requests. Your Calshot account and
+                calendar permissions stay separate.
+              </p>
+              <div className="settings-row">
+                <div>
+                  <h3>Calendar agent</h3>
+                  <p>
+                    Use the chosen AI service for screenshots and conversation.
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  aria-label="Enable calendar agent"
+                  checked={s.agentEnabled}
+                  disabled={locked}
+                  onChange={(e) =>
+                    void a.run("agentEnabled", { enabled: e.target.checked })
+                  }
+                />
+              </div>
+            </div>
+          </section>
+        )}
+        {tab === "privacy" && (
+          <section>
+            <h2 className="section-label">Permissions</h2>
+            <div className="card settings-card">
+              <div className="settings-row">
+                <div>
+                  <h3>Screen Recording</h3>
+                  <p>
+                    Only captures when you ask. macOS may require you to restart
+                    Calshot after changing access.
+                  </p>
+                </div>
                 <button
                   className="button secondary"
-                  disabled={locked || !s.apiKeySaved}
-                  onClick={() => void a.run("testAI")}
+                  onClick={() => void a.run("screenSettings")}
                 >
-                  Test connection
+                  {state.screenPermissionNeeded
+                    ? "Allow access"
+                    : "System Settings"}
+                </button>
+              </div>
+              <div className="settings-row">
+                <div>
+                  <h3>Calendars</h3>
+                  <p>
+                    Read connected calendars and perform changes after approval.
+                  </p>
+                </div>
+                <button
+                  className="button secondary"
+                  onClick={() => void a.run("calendarSettings")}
+                >
+                  System Settings
                 </button>
               </div>
             </div>
-            <div className="settings-row">
-              <div>
-                <h3>
-                  ChatGPT plan{" "}
-                  {s.chatGPTPlan && (
-                    <Badge tone={s.chatGPTError ? "warning" : "success"}>
-                      {s.chatGPTError ? "Service issue" : "Signed in"}
-                    </Badge>
-                  )}
-                </h3>
-                <p>
-                  {s.chatGPTEmail
-                    ? "Signed in as " + s.chatGPTEmail + "."
-                    : "Connect a supported ChatGPT account."}{" "}
-                  {s.chatGPTError
-                    ? "Your sign-in is kept while the service is unavailable."
-                    : ""}
-                </p>
-                {s.chatGPTError && (
-                  <details>
-                    <summary>Service details</summary>
-                    <p>{s.chatGPTError}</p>
-                  </details>
-                )}
+          </section>
+        )}
+        {tab === "general" && (
+          <section>
+            <h2 className="section-label">Capture</h2>
+            <div className="card settings-card">
+              <div className="settings-row">
+                <div>
+                  <h3>Capture shortcut</h3>
+                  <p>Choose a shortcut in native preferences.</p>
+                </div>
+                <button
+                  className="button secondary"
+                  onClick={() => void a.run("advancedSettings")}
+                >
+                  {state.shortcut}
+                </button>
               </div>
-              <button
-                className="button secondary"
-                disabled={locked}
-                onClick={() =>
-                  void a.run(
-                    s.chatGPTPlan ? "refreshChatGPT" : "connectChatGPT",
-                  )
-                }
-              >
-                {s.chatGPTPlan ? "Check again" : "Connect"}
-              </button>
-            </div>
-            <div className="settings-row">
-              <div>
-                <h3>Calendar agent</h3>
-                <p>
-                  Use the chosen AI service for screenshots and conversation.
-                </p>
+              <div className="settings-row">
+                <div>
+                  <h3>Copy captures to clipboard</h3>
+                  <p>Also copy the screenshot when capturing.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  aria-label="Copy captures to clipboard"
+                  checked={s.copyCaptures}
+                  onChange={(e) =>
+                    void a.run("copyCaptures", { enabled: e.target.checked })
+                  }
+                />
               </div>
-              <input
-                type="checkbox"
-                aria-label="Enable calendar agent"
-                checked={s.agentEnabled}
-                disabled={locked}
-                onChange={(e) =>
-                  void a.run("agentEnabled", { enabled: e.target.checked })
-                }
-              />
             </div>
-          </div>
-        </section>
-        <section>
-          <h2 className="section-label">Permissions</h2>
-          <div className="card settings-card">
-            <div className="settings-row">
-              <div>
-                <h3>Screen Recording</h3>
-                <p>
-                  Only captures when you ask. macOS may require you to restart
-                  Calshot after changing access.
-                </p>
+          </section>
+        )}
+        {tab === "privacy" && (
+          <section>
+            <h2 className="section-label">Privacy & storage</h2>
+            <div className="card settings-card">
+              <p className="fine-print">
+                When a task runs, Calshot sends your screenshot, request, needed
+                text, relevant calendar results and a limited amount of related
+                history to your chosen OpenAI service. Requests ask not to store
+                responses for later use; OpenAI processes them under its own
+                policies.
+              </p>
+              <div className="settings-row" style={{ marginTop: 16 }}>
+                <div>
+                  <h3>History on this Mac</h3>
+                  <p>
+                    {state.memory.length} tasks. Removing local history does not
+                    change calendar events.
+                  </p>
+                </div>
+                <button
+                  className="button secondary"
+                  onClick={() => void a.run("navigate", { page: "library" })}
+                >
+                  Manage history
+                </button>
               </div>
-              <button
-                className="button secondary"
-                onClick={() => void a.run("screenSettings")}
-              >
-                {state.screenPermissionNeeded
-                  ? "Allow access"
-                  : "System Settings"}
-              </button>
-            </div>
-            <div className="settings-row">
-              <div>
-                <h3>Calendars</h3>
-                <p>
-                  Read connected calendars and perform changes after approval.
-                </p>
+              <div className="settings-row">
+                <div>
+                  <h3>Advanced</h3>
+                  <p>
+                    Connection setup, storage location and native preferences.
+                  </p>
+                </div>
+                <button
+                  className="button secondary"
+                  onClick={() => void a.run("advancedSettings")}
+                >
+                  Open
+                </button>
               </div>
-              <button
-                className="button secondary"
-                onClick={() => void a.run("calendarSettings")}
-              >
-                System Settings
-              </button>
             </div>
-          </div>
-        </section>
-        <section>
-          <h2 className="section-label">Capture</h2>
-          <div className="card settings-card">
-            <div className="settings-row">
-              <div>
-                <h3>Capture shortcut</h3>
-                <p>Choose a shortcut in native preferences.</p>
-              </div>
-              <button
-                className="button secondary"
-                onClick={() => void a.run("advancedSettings")}
-              >
-                {state.shortcut}
-              </button>
-            </div>
-            <div className="settings-row">
-              <div>
-                <h3>Copy captures to clipboard</h3>
-                <p>Also copy the screenshot when capturing.</p>
-              </div>
-              <input
-                type="checkbox"
-                aria-label="Copy captures to clipboard"
-                checked={s.copyCaptures}
-                onChange={(e) =>
-                  void a.run("copyCaptures", { enabled: e.target.checked })
-                }
-              />
-            </div>
-          </div>
-        </section>
-        <section>
-          <h2 className="section-label">Privacy & storage</h2>
-          <div className="card settings-card">
-            <p className="fine-print">
-              When a task runs, Calshot sends your screenshot, request, needed
-              text, relevant calendar results and a limited amount of related
-              history to your chosen OpenAI service. Requests ask not to store
-              responses for later use; OpenAI processes them under its own
-              policies.
-            </p>
-            <div className="settings-row" style={{ marginTop: 16 }}>
-              <div>
-                <h3>History on this Mac</h3>
-                <p>
-                  {state.memory.length} tasks. Removing local history does not
-                  change calendar events.
-                </p>
-              </div>
-              <button
-                className="button secondary"
-                onClick={() => void a.run("navigate", { page: "library" })}
-              >
-                Manage history
-              </button>
-            </div>
-            <div className="settings-row">
-              <div>
-                <h3>Advanced</h3>
-                <p>
-                  Connection setup, storage location and native preferences.
-                </p>
-              </div>
-              <button
-                className="button secondary"
-                onClick={() => void a.run("advancedSettings")}
-              >
-                Open
-              </button>
-            </div>
-          </div>
-        </section>
+          </section>
+        )}
         {editingKey && (
           <Modal
             title="Save an OpenAI API key"

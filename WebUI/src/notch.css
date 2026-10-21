@@ -41,3 +41,11 @@ html[data-surface="notch"] .event-form .form-grid { grid-template-columns:1fr 1f
 html[data-surface="notch"] .event-form footer { position:sticky; bottom:-14px; background:var(--surface); padding:10px 0; z-index:2; }
 .notch-followup { display:flex; gap:8px; margin-top:10px; }
 .notch-followup input { min-width:0; flex:1; }
+
+/* Match the native shell's gentle motion without moving button hit targets. */
+@media (prefers-reduced-motion: no-preference) {
+  .notch-bar { animation:notch-content-in 240ms ease-out both; }
+  .notch-details { animation:notch-content-in 280ms ease-out both; }
+  .notch-bar button,.notch-input input { transition:background-color 180ms ease, color 180ms ease, border-color 180ms ease; }
+}
+@keyframes notch-content-in { from { opacity:0; } to { opacity:1; } }

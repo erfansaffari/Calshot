@@ -1,5 +1,7 @@
 # Calshot
 
+Calshot accounts use Supabase Auth with native Keychain sessions and a calendar-onboarding flow. The hosted sharing schema and authorization RPCs are deployed in Supabase. Google and email account sign-in use Supabase; Google login has been verified in the native app. After signup, users must choose a ChatGPT plan or API key before confirming calendars. Friends can share selected calendars through exact-email requests, with access enforced by the hosted service. The hosted service source is maintained privately.
+
 Calshot is a native macOS menu bar app that turns screenshots and typed commands into a calendar agent workflow with explicit approval for changes. Press **Control–Shift–C** (customizable in Settings), drag over the event details, press Return, review the detected items, choose what to add, then approve additions to a writable calendar.
 
 ## Run
@@ -80,4 +82,20 @@ The bridge accepts only known actions from the bundled main page, excludes token
 
 Settings → Appearance offers System, Light and Dark. System follows live macOS appearance changes; the saved choice controls React surfaces, native preferences and screenshot window chrome. The expanded notch follows the same appearance, while the camera bezel/status strip stays black.
 
-Hover over the notch for the compact Capture / Ask bar. Capture and the global shortcut save a screenshot first; add optional instructions and choose Add to calendar to start the agent. Questions, source inspection, batch review, event editing, approval, partial retries and follow-up conversation stay in the notch. Clean create batches offer Add all; updates, moves and unchecked deletions use inline review. Working collapses to a small status strip with Stop available on expansion. Command–Shift–K opens the notch with keyboard focus; Escape closes an editor, details or the panel in order. Hover and background progress do not take keyboard focus. The pop-out button opens the optional full workspace. Completion feedback uses write receipts and fades after four seconds; actionable failures and pending reviews remain available. The shell respects camera safe areas; expanded content follows System, Light or Dark.
+Hover over the notch for the compact Capture / Ask bar. Capture and the global shortcut save a screenshot first; add optional instructions and choose Add to calendar to start the agent. Questions, source inspection, batch review, event editing, approval, partial retries and follow-up conversation stay in the notch. Clean create batches offer Add all; updates, moves and unchecked deletions use inline review. Working collapses to a small status strip with Stop available on expansion. Command–Shift–K opens the notch with keyboard focus; Escape closes an editor, details or the panel in order. Hover and background progress do not take keyboard focus. The pop-out button opens the optional full workspace. Activity notifications, including pending reviews and errors, hide after four seconds without clearing the task. Moving outside the notch closes it even after clicking or typing; return to hover for the pending task and unfinished edits. Background progress never opens it. Completion feedback uses write receipts. The shell respects camera safe areas; expanded content follows System, Light or Dark.
+
+### Calendar and Settings
+
+Calendar follows the updated HTML reference with Day, Week (default), and Month views, a sidebar mini month and colored calendar filters, a compact date toolbar and an Ask Calshot field. Calendar questions start a fresh conversation; Assistant messages continue the current one. Two-finger horizontal swipes over the board move one day, week or month in the selected view, while vertical gestures scroll the schedule. The timetable separates all-day events, lays overlapping events in lanes and expands for early/late events. Event details open in a compact card. The + form asks for explicit date/time or all-day intent, then prepares the event through Assistant and its approval review. Visibility filters never change the default destination. Navigation and Refresh issue bounded native reads; source failures and truncation remain visible. Sharing controls will be added with the real accounts integration.
+
+Settings is grouped into General, Calendar accounts, AI service, and Privacy & permissions. Manage accounts and the sidebar connection status open Calendar accounts, where existing connection, default destination, reconnect and disconnect controls are preserved.
+
+## Hosted website and service
+
+This repository contains the open-source Mac client and its shared presentation components. The hosted website, download landing page, account service, cloud worker and database implementation are maintained in a separate private repository. They are excluded from this checkout’s public Git index. The Mac app uses the hosted account and sharing contracts; calendar credentials, agent sessions and write approval stay native.
+
+Developers working on both products may have ignored local links named `Website`, `Backend` and `supabase`. They are private development conveniences and are not part of the client repository. The private website pins this public client as a submodule so presentation components retain one implementation.
+
+## Automatic software updates
+
+The Mac app uses Sparkle with a signed GitHub Releases feed and Settings → General update controls. See [UPDATES.md](UPDATES.md) for release signing, notarization, GitHub Actions setup and current distribution limitations.

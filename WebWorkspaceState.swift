@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import CoreGraphics
 
 /// Explicit, credential-free view state. OAuth/API secrets never cross into JavaScript.
 @MainActor
@@ -20,6 +21,8 @@ enum WebWorkspaceState {
         var state: [String: JSONValue] = [:]
         func string(_ key: String, _ value: String?) { if let value { state[key] = .string(value) } }
         func flag(_ key: String, _ value: Bool) { state[key] = .bool(value) }
+        state["softwareUpdate"] = model.softwareUpdates.snapshot
+        state["sidebarWidth"] = .number(model.sidebarWidth)
         flag("sidebarExpanded", model.sidebarExpanded); flag("ready", true); flag("native", true); string("page", model.workspaceSelection.rawValue)
         string("status", model.status); string("notice", notice); string("imageURL", imageURL)
         string("captureID", model.currentCaptureSessionID?.uuidString); string("ocr", String(model.recognizedText.prefix(16000)))
@@ -60,6 +63,10 @@ enum WebWorkspaceState {
                      "isReadOnly": .bool(calendar.isReadOnly), "direct": .bool(calendar.id.hasPrefix("remote:") || calendar.id.hasPrefix("icloud:")),
                      "unavailable": .bool(calendar.id.hasPrefix("unavailable:"))])
         })
+        if model.account.userID != nil {
+            state["sharing"] = .object(["loaded": .bool(model.sharingLoaded), "busy": .bool(model.sharingBusy), "error": model.sharingError.map(JSONValue.string) ?? .null, "token": .string(model.calendarSharing.token), "sources": encoded(model.calendarSharing.sources), "shares": encoded(model.calendarSharing.shares)])
+            state["webCalendarSync"] = .object(["busy": .bool(model.macCalendarSyncBusy), "error": model.macCalendarSyncError.map(JSONValue.string) ?? .null, "mirrors": encoded(model.macCalendarMirrors), "sourceKeys": .object(Dictionary(uniqueKeysWithValues: model.readableCalendars.map { ($0.id, JSONValue.string(MacCalendarSnapshot.key($0.id))) }))])
+        }
         string("selectedCalendarID", model.selectedCalendarID ?? ""); string("calendarMessage", model.calendarConnectionMessage)
         state["duplicateComparisons"] = .object(comparisons)
         state["accounts"] = .array(accounts); flag("connecting", model.calendarAccountIsConnecting)
@@ -82,15 +89,30 @@ enum WebWorkspaceState {
         })
         string("memoryLocation", model.memoryDirectoryURL.path); string("shortcut", model.shortcut.label)
         flag("screenPermissionNeeded", model.screenCapturePermissionNeeded)
+        flag("screenPermissionGranted", CGPreflightScreenCaptureAccess())
         var settings: [String: JSONValue] = [
             "appearance": .string(model.appearanceMode.rawValue), "agentEnabled": .bool(model.openAIAnalysisEnabled), "apiKeySaved": .bool(model.hasOpenAIAPIKey),
-            "useAPIKey": .bool(model.agentUseAPIKey), "chatGPTPlan": .bool(model.chatGPTAccount?.canUsePlan == true),
+            "useAPIKey": .bool(model.agentUseAPIKey), "chatGPTPlan": .bool(model.chatGPTAccount?.canUsePlan == true), "chatGPTConnecting": .bool(model.chatGPTIsConnecting),
             "model": .string(model.agentUseAPIKey || model.chatGPTAccount == nil ? OpenAIEventAnalyzer.modelName : model.chatGPTAccount?.model ?? ""),
             "models": .array(model.chatGPTModels.map { .object(["id": .string($0.slug), "name": .string($0.displayName)]) }),
             "copyCaptures": .bool(CaptureClipboard.automaticallyCopyCapture)]
         if let email = model.chatGPTAccount?.email { settings["chatGPTEmail"] = .string(email) }
         if let error = model.chatGPTConnectionError { settings["chatGPTError"] = .string(error) }
         state["settings"] = .object(settings)
+        state["auth"] = model.account.snapshot
+        if model.account.userID != nil {
+            state["accountSync"] = .object([
+                "busy": .bool(model.accountSyncBusy), "status": .string(model.accountSyncStatus),
+                "displayName": .string(model.accountDisplayName), "deviceID": .string(CalshotModel.syncDeviceID),
+                "devices": encoded(model.accountSyncDevices), "lastSyncedAt": encoded(model.accountSyncLastDate),
+                "error": model.accountSyncError.map(JSONValue.string) ?? .null])
+        }
+        if model.account.requiresLogin {
+            for key in ["messages", "proposals", "calendars", "accounts", "memory"] { state[key] = .array([]) }
+            for key in ["imageURL", "summary", "question", "agentError", "status", "notice", "agentStatus"] { state.removeValue(forKey: key) }
+            state["ocr"] = .string(""); state["streaming"] = .string(""); state["canApprove"] = .bool(false)
+            state["waitingApproval"] = .bool(false); state["running"] = .bool(false)
+        }
         return .object(state)
     }
 }

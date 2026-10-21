@@ -285,3 +285,105 @@ if (scenario === "question") {
     ),
   };
 }
+
+if (["sign-in", "onboarding"].includes(scenario ?? "")) {
+  const signedIn = scenario !== "sign-in";
+  preview.auth = {
+    required: true,
+    signedIn,
+    phase: signedIn ? "signedIn" : "signedOut",
+    busy: false,
+    onboarded: false,
+    googleEnabled: true,
+    signInProvider: "google",
+    aiSetupConfirmed: false,
+    email: signedIn ? "alex@example.invalid" : undefined,
+  };
+  preview.waitingApproval = false;
+  preview.messages = [];
+  preview.proposals = [];
+  preview.canApprove = false;
+}
+
+if (scenario === "web-calendar-sync") {
+  preview.page = "settings";
+  preview.settingsSection = "calendars";
+  preview.auth = {
+    required: true,
+    signedIn: true,
+    onboarded: true,
+    phase: "signedIn",
+    busy: false,
+    googleEnabled: true,
+    email: "casey@example.invalid",
+  };
+  preview.waitingApproval = false;
+  preview.running = false;
+  preview.calendars = [
+    {
+      id: "fixture-school",
+      title: "School",
+      sourceName: "iCloud",
+      provider: "apple",
+      direct: false,
+      unavailable: false,
+      isReadOnly: false,
+    },
+    {
+      id: "fixture-personal",
+      title: "Personal",
+      sourceName: "iCloud",
+      provider: "apple",
+      direct: false,
+      unavailable: false,
+      isReadOnly: false,
+    },
+    {
+      id: "fixture-long",
+      title:
+        "A shared calendar with a long name for accessibility and layout verification",
+      sourceName: "iCloud",
+      provider: "apple",
+      direct: false,
+      unavailable: false,
+      isReadOnly: true,
+    },
+  ];
+  preview.webCalendarSync = {
+    busy: false,
+    sourceKeys: {
+      "fixture-school": "school",
+      "fixture-personal": "personal",
+      "fixture-long": "long",
+    },
+    mirrors: [
+      {
+        id: "fixture-mirror",
+        sourceKey: "school",
+        generation: "fictional",
+        enabled: true,
+        name: "School",
+        syncedAt: "2026-10-20T14:00:00Z",
+        complete: false,
+        error: "Calendar access was lost. The previous web copy is kept.",
+      },
+    ],
+  };
+}
+
+if (["friends", "friends-empty", "friends-error", "friends-batch"].includes(scenario ?? "")) {
+  preview.native = true;
+  preview.page = "settings"; preview.settingsSection = "friends";
+  preview.auth = { required: true, signedIn: true, onboarded: true, phase: "signedIn", busy: false, googleEnabled: true, email: "sam@example.invalid" };
+  preview.running = false; preview.saving = false; preview.waitingApproval = false; preview.proposals = []; preview.messages = [];
+  preview.sharing = { loaded: true, busy: false, token: "preview", sources: [], shares: scenario === "friends-empty" ? [] : [
+    { id: "55555555-5555-4555-8555-555555555555", ownerID: "22222222-2222-4222-8222-222222222222", recipientID: "11111111-1111-4111-8111-111111111111", outgoing: false, personName: "Riley Morgan", email: "riley@example.invalid", permission: "titles", status: "pending", expiresAt: "2026-10-28T00:00:00Z", calendars: [{ id: "33333333-3333-4333-8333-333333333333", name: "Studio workshops, portfolio reviews and community events", syncedAt: "2026-10-21T00:00:00Z", stale: false }] },
+    { id: "66666666-6666-4666-8666-666666666666", ownerID: "77777777-7777-4777-8777-777777777777", recipientID: "11111111-1111-4111-8111-111111111111", outgoing: false, personName: "Jordan Lee", email: "jordan@example.invalid", permission: "busy", status: "accepted", expiresAt: "2026-10-28T00:00:00Z", calendars: [{ id: "44444444-4444-4444-8444-444444444444", name: "Personal", syncedAt: "2026-10-20T12:00:00Z", stale: true, error: "Source Mac is offline. Previous sharing copy is kept." }] },
+    { id: "88888888-8888-4888-8888-888888888888", ownerID: "11111111-1111-4111-8111-111111111111", recipientID: "22222222-2222-4222-8222-222222222222", outgoing: true, personName: "Riley Morgan", email: "riley@example.invalid", permission: "titles", status: "accepted", expiresAt: "2026-10-28T00:00:00Z", calendars: [{ id: "99999999-9999-4999-8999-999999999999", name: "School", syncedAt: "2026-10-21T00:00:00Z", stale: false }] }
+  ], ...(scenario === "friends-error" ? { error: "Sharing couldn’t refresh. Check your connection and try again. Friend calendars haven’t been verified." } : {}) };
+}
+
+if (scenario === "friends-batch" && preview.sharing) {
+  preview.calendars = Array.from({ length: 20 }, (_, i) => ({ ...preview.calendars[0], id: `fixture-source-${i}`, title: `Studio ${i + 1} — workshops, project reviews and community sessions` }));
+  preview.sharing.shares[0].calendars = Array.from({ length: 20 }, (_, i) => ({ ...preview.sharing!.shares[0].calendars[0], id: `fixture-calendar-${i}`, name: `Studio ${i + 1} — workshops, portfolio reviews and community sessions` }));
+}

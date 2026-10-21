@@ -48,7 +48,7 @@ final class ResponsesCalendarAgentClient: CalendarAgentModelClient {
               tools: [JSONValue], onText: @escaping @MainActor (String) -> Void) async throws -> AgentModelResponse {
         let token: String
         let model: String
-        if !prefersAPIKey(), ChatGPTConnection.savedAccount()?.canUsePlan == true {
+        if !prefersAPIKey() {
             let access = try await ChatGPTConnection.shared.access()
             token = access.token; model = access.model
         } else {
@@ -66,7 +66,7 @@ final class ResponsesCalendarAgentClient: CalendarAgentModelClient {
             ])])
         }
         let payload = JSONValue.object(["model": .string(model), "store": .bool(false), "stream": .bool(true),
-            "instructions": .string(instructions), "input": .array(input), "tools": .array(tools), "parallel_tool_calls": .bool(false),
+            "instructions": .string(instructions), "input": .array(input), "tools": .array(Self.requestTools(tools, usesChatGPTPlan: !prefersAPIKey())), "parallel_tool_calls": .bool(false),
             "include": .array([.string("reasoning.encrypted_content")])])
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
         request.httpMethod = "POST"
@@ -97,13 +97,18 @@ final class ResponsesCalendarAgentClient: CalendarAgentModelClient {
         }
         throw ClientError.invalidResponse
     }
+    nonisolated static func requestTools(_ tools: [JSONValue], usesChatGPTPlan: Bool) -> [JSONValue] {
+        guard usesChatGPTPlan, !tools.isEmpty else { return tools }
+        return [.object(["type": .string("namespace"), "name": .string("calendar"),
+            "description": .string("Calshot calendar tools. Calendar writes require user approval."), "tools": .array(tools)])]
+    }
     nonisolated static func failureMessage(http: HTTPURLResponse, data: Data) -> String {
         let object = (try? JSONDecoder().decode(JSONValue.self, from: data))?.objectValue
         let error = object?["error"]?.objectValue
-        let detail = error?["message"]?.stringValue ?? object?["detail"]?.stringValue
+        let detail = error?["message"]?.stringValue ?? object?["error_description"]?.stringValue ?? object?["detail"]?.stringValue
             ?? object?["message"]?.stringValue
             ?? (http.statusCode >= 500 ? "The service did not complete the request. Try again shortly." : "Check your AI connection in Settings.")
-        let code = error?["code"]?.stringValue.map { " Code: \($0)." } ?? ""
+        let code = (error?["code"]?.stringValue ?? object?["error"]?.stringValue).map { " Code: \($0)." } ?? ""
         let parameter = error?["param"]?.stringValue.map { " Parameter: \($0)." } ?? ""
         let identifier = http.value(forHTTPHeaderField: "x-request-id") ?? http.value(forHTTPHeaderField: "cf-ray")
         let requestID = identifier.map { " Request ID: \($0)." } ?? ""

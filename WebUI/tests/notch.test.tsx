@@ -56,3 +56,17 @@ it("closes the editor with Escape while preserving the review and focus", async 
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(screen.getByRole("button", { name: "Hide review" })).toBeDefined();
 });
+
+it("preserves unfinished event edits when pointer leave hides the notch", async () => {
+  mock.state.proposals = [{ ...mock.state.proposals[0], operation: "create" }];
+  render(<NotchApp />);
+  await userEvent.click(screen.getByRole("button", { name: "Review" }));
+  await userEvent.click(screen.getByRole("button", { name: "Edit " + mock.state.proposals[0].draft.title }));
+  const title = screen.getByRole("textbox", { name: "Event title" });
+  await userEvent.clear(title);
+  await userEvent.type(title, "Unfinished corrected title");
+  fireEvent(window, new Event("calshot:notch-collapsed"));
+  expect(screen.getByRole("dialog")).toBeDefined();
+  expect((screen.getByRole("textbox", { name: "Event title" }) as HTMLInputElement).value).toBe("Unfinished corrected title");
+  expect(mock.command.mock.calls.some(([c]) => ["approve", "skip", "editProposal", "stop"].includes(c.action))).toBe(false);
+});

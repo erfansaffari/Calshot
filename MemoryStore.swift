@@ -121,6 +121,56 @@ public final class MemoryStore: @unchecked Sendable {
         self.decoder = decoder
     }
 
+    /// A separate folder per Calshot identity prevents one person's local history
+    /// from being uploaded into the next account signed in on this Mac.
+    public func accountStore(for user: UUID) throws -> MemoryStore {
+        var root = locationURL
+        if fileManager.fileExists(atPath: root.appendingPathComponent(".calshot-account").path) { root.deleteLastPathComponent() }
+        let destination = root.appendingPathComponent(user.uuidString, isDirectory: true)
+        if fileManager.fileExists(atPath: destination.appendingPathComponent(".calshot-account").path) {
+            return MemoryStore(directoryURL: destination, fileManager: fileManager, preferences: preferences)
+        }
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        let marker = root.appendingPathComponent(".calshot-legacy-owner")
+        let owner = try? String(contentsOf: marker, encoding: .utf8)
+        if owner == nil || owner == user.uuidString {
+            // Claim legacy local history once. Copy it, preserving the original
+            // as a migration backup and never overwriting newer account files.
+            try user.uuidString.write(to: marker, atomically: true, encoding: .utf8)
+            for record in listRecords() where root == locationURL {
+                let names = [record.id.uuidString + ".json", record.screenshotFileName] + (record.additionalScreenshots ?? []).map(\.fileName)
+                for name in names where name == URL(fileURLWithPath: name).lastPathComponent && !name.isEmpty {
+                    let source = root.appendingPathComponent(name), target = destination.appendingPathComponent(name)
+                    if fileManager.fileExists(atPath: source.path), !fileManager.fileExists(atPath: target.path) { try fileManager.copyItem(at: source, to: target) }
+                }
+            }
+        }
+        try user.uuidString.write(to: destination.appendingPathComponent(".calshot-account"), atomically: true, encoding: .utf8)
+        return MemoryStore(directoryURL: destination, fileManager: fileManager, preferences: preferences)
+    }
+    func applyAccountSync(_ document: AccountSyncDocument) throws {
+        lock.lock(); defer { lock.unlock() }
+        try ensureDirectory()
+        for (key, remote) in document.history {
+            guard key == remote.id.uuidString, remote.screenshotFileName.isEmpty, remote.additionalScreenshots == nil else { throw MemoryStoreError.unsupportedImageFormat }
+            var copy = remote.accountSyncCopy()
+            let url = metadataURL(for: remote.id)
+            if let data = try? Data(contentsOf: url), let local = try? decoder.decode(MemoryCaptureRecord.self, from: data) {
+                if try local.syncHash() == remote.syncHash() { continue }
+                copy = MemoryCaptureRecord(id: copy.id, createdAt: copy.createdAt, screenshotFileName: local.screenshotFileName, imageFormat: local.imageFormat,
+                    event: copy.event, recognizedText: copy.recognizedText, analysisProvider: copy.analysisProvider,
+                    savedToCalendarAt: copy.savedToCalendarAt, savedCalendarName: copy.savedCalendarName, calendarEventIdentifier: copy.calendarEventIdentifier,
+                    schemaVersion: copy.schemaVersion, proposals: copy.proposals, agentTranscript: copy.agentTranscript, additionalScreenshots: local.additionalScreenshots)
+            }
+            try encoder.encode(copy).write(to: url, options: .atomic)
+        }
+        // Tombstones remove metadata only here; local screenshot files stay local.
+        for id in document.deleted where document.history[id.uuidString] == nil {
+            let url = metadataURL(for: id)
+            if fileManager.fileExists(atPath: url.path) { try fileManager.removeItem(at: url) }
+        }
+    }
+
     /// The active folder used for capture files.
     public var locationURL: URL {
         lock.lock()
@@ -249,7 +299,7 @@ public final class MemoryStore: @unchecked Sendable {
                     "end": proposal.draft.endDate.map(formatter.string(from:)) ?? "",
                     "savedAt": formatter.string(from: receipt.savedAt)]
             }
-            let context = (record.agentTranscript ?? []).filter { $0.role == "user" || $0.role == "tool" || ($0.role == "assistant" && $0.toolName == nil) }.suffix(8)
+            let context = (record.agentTranscript ?? []).filter { $0.sharedCalendarContext != true && ($0.role == "user" || $0.role == "tool" || ($0.role == "assistant" && $0.toolName == nil)) }.suffix(8)
             let contextual: [[String: String]] = context.map { turn in
                 ["role": turn.role, "tool": turn.toolName ?? "", "content": String((turn.result ?? turn.content ?? "").prefix(2000))]
             }
@@ -393,10 +443,13 @@ public final class MemoryStore: @unchecked Sendable {
     public func deleteAll() throws {
         lock.lock()
         defer { lock.unlock() }
+        let accountMarker = directoryURL.appendingPathComponent(".calshot-account")
+        let owner = try? Data(contentsOf: accountMarker)
         if fileManager.fileExists(atPath: directoryURL.path) {
             try fileManager.removeItem(at: directoryURL)
         }
         try ensureDirectory()
+        if let owner { try owner.write(to: accountMarker, options: .atomic) }
     }
 
     private func updateRecord(

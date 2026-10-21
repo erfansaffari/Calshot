@@ -38,11 +38,13 @@ export function Modal({
   children,
   onClose,
   wide = false,
+  className = "",
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  className?: string;
 }) {
   const previousFocus = useRef(document.activeElement as HTMLElement | null);
   return (
@@ -61,7 +63,7 @@ export function Modal({
               previousFocus.current.focus();
           }}
           aria-describedby={undefined}
-          className={"modal " + (wide ? "wide" : "")}
+          className={"modal " + (wide ? "wide " : "") + className}
         >
           <header>
             <Dialog.Title>{title}</Dialog.Title>
