@@ -66,8 +66,18 @@ new.write(sys.argv[2], encoding='utf-8', xml_declaration=True)
 PY
 "$TOOLS_DIR/bin/sign_update" "${SIGNING_ARGS[@]}" "$FEED_DIR/appcast.xml"
 "$TOOLS_DIR/bin/sign_update" "${SIGNING_ARGS[@]}" --verify "$FEED_DIR/appcast.xml"
-(cd "$FEED_DIR" && shasum -a 256 "$ARCHIVE_NAME" > SHA256SUMS)
+# Build the website/GitHub installer only after appcast generation, so Sparkle keeps using ZIPs.
+DMG_NAME="Calshot-$VERSION.dmg"
+"$ROOT_DIR/script/package_dmg.sh" "$APP_PATH" "$FEED_DIR/$DMG_NAME"
+codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$FEED_DIR/$DMG_NAME"
+codesign --verify --strict --verbose=2 "$FEED_DIR/$DMG_NAME"
+xcrun notarytool submit "$FEED_DIR/$DMG_NAME" "${NOTARY_ARGS[@]}" --wait
+xcrun stapler staple "$FEED_DIR/$DMG_NAME"
+xcrun stapler validate "$FEED_DIR/$DMG_NAME"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$FEED_DIR/$DMG_NAME"
+hdiutil verify "$FEED_DIR/$DMG_NAME"
+(cd "$FEED_DIR" && shasum -a 256 "$ARCHIVE_NAME" "$DMG_NAME" > SHA256SUMS)
 mkdir -p "$OUT_DIR/feed"
-cp "$FEED_DIR/$ARCHIVE_NAME" "$FEED_DIR/appcast.xml" "$FEED_DIR/SHA256SUMS" "$OUT_DIR/feed/"
+cp "$FEED_DIR/$ARCHIVE_NAME" "$FEED_DIR/$DMG_NAME" "$FEED_DIR/appcast.xml" "$FEED_DIR/SHA256SUMS" "$OUT_DIR/feed/"
 rm -r "$FEED_DIR"
 echo "Verified release artifacts: $OUT_DIR/feed"

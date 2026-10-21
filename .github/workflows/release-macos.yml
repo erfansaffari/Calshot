@@ -15,6 +15,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -65,7 +68,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" "build/release/feed/Calshot-${GITHUB_REF_NAME#v}.zip" build/release/feed/SHA256SUMS --verify-tag --title "Calshot ${GITHUB_REF_NAME#v}" --generate-notes
+          gh release create "$GITHUB_REF_NAME" "build/release/feed/Calshot-${GITHUB_REF_NAME#v}.dmg" "build/release/feed/Calshot-${GITHUB_REF_NAME#v}.zip" build/release/feed/SHA256SUMS --verify-tag --title "Calshot ${GITHUB_REF_NAME#v}" --generate-notes
           gh release upload updates build/release/feed/appcast.xml --clobber
       - name: Remove signing material
         if: always()
