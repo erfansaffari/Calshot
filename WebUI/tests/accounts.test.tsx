@@ -308,3 +308,24 @@ it("keeps verification and password recovery outside onboarding", async () => {
   );
   expect(screen.getByLabelText("Password")).toBeTruthy();
 });
+
+it("connects Google Calendar without routing users to developer setup", async () => {
+  const { OnboardingScreen } = await import("../src/views/OnboardingScreen");
+  const state = onboarding(); state.auth = { ...state.auth!, aiSetupConfirmed:true }; state.googleReady = false;
+  render(<OnboardingScreen state={state}/>);
+  const connect = screen.getByRole("button", {name:"Connect Google Calendar"});
+  expect((connect as HTMLButtonElement).disabled).toBe(false);
+  await userEvent.click(connect);
+  expect(command).toHaveBeenCalledWith({action:"connectGoogle"});
+  expect(screen.queryByText(/setup is still being completed/)).toBeNull();
+  await userEvent.click(screen.getByRole("button", {name:"Add Google through macOS"}));
+  expect(command).toHaveBeenCalledWith({action:"internetAccountsSettings"});
+});
+it("offers the native Screen Recording helper during setup", async () => {
+  const { OnboardingScreen } = await import("../src/views/OnboardingScreen");
+  const state = onboarding(); state.auth = { ...state.auth!, aiSetupConfirmed:true };
+  render(<OnboardingScreen state={state}/>);
+  await userEvent.click(screen.getByRole("button", {name:/Continue/}));
+  await userEvent.click(screen.getByRole("button", {name:"Set up Screen Recording"}));
+  expect(command).toHaveBeenCalledWith({action:"screenSettings"});
+});

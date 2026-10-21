@@ -102,7 +102,7 @@ enum CalendarDestinationError: LocalizedError, Sendable {
             "That calendar is read-only. Choose a calendar that allows changes."
         case .invalidDraft(let reason): "This event can’t be saved: \(reason)"
         case .googleNotConfigured:
-            "Direct Google Calendar access needs an OAuth client ID and redirect configuration. Google calendars already added to macOS are available through Apple Calendar."
+            "Connect Google Calendar in Settings → Calendar accounts, or use a Google calendar already added to macOS."
         case .googleAdapterUnavailable:
             "Direct Google Calendar saving is not enabled in this build."
         }

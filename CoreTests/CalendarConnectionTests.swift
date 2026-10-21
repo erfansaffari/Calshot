@@ -13,6 +13,17 @@ private actor ScriptedCalendarHTTP {
     func captured() -> [URLRequest] { requests }
 }
 final class CalendarConnectionTests: XCTestCase {
+    func testConsumerGoogleExchangeUsesHostedRegistrationAndNativeSessionOnly() throws {
+        let fields = ["client_id": CalendarAccountConnection.googleClientID, "grant_type": "authorization_code", "code": "fictional-code", "code_verifier": String(repeating: "v", count: 43), "redirect_uri": "http://127.0.0.1:54321/auth/callback"]
+        let request = try CalshotAccountService.googleCalendarTokenRequest(fields, accessToken: "fictional-session")
+        XCTAssertEqual(request.url?.absoluteString, "https://calshot-oauth.vercel.app/api/google-token")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fictional-session")
+        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: request.httpBody!) as? [String: String])
+        XCTAssertEqual(sent, fields)
+        XCTAssertNil(sent["client_secret"])
+        XCTAssertThrowsError(try CalshotAccountService.googleCalendarTokenRequest(["client_id": "foreign", "grant_type": "authorization_code"], accessToken: "fictional-session"))
+    }
+
     func testGoogleCodeAndRefreshRequestsIncludeDesktopSecretAndPreservePKCE() throws {
         for grant in ["authorization_code", "refresh_token"] {
             let request = try CalendarAccountConnection.tokenRequest(provider: .google,

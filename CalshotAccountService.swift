@@ -137,6 +137,34 @@ final class CalshotAccountService: ObservableObject {
             throw CalendarToolArgumentError(self.error!)
         }
     }
+    /// The app registration stays on the server; provider tokens return only to native Keychain storage.
+    func exchangeGoogleCalendarToken(_ fields: [String: String]) async throws -> Data {
+        guard let client, let owner = userID else { throw CalendarToolArgumentError("Sign in to Calshot before connecting Google Calendar.") }
+        let attempt = generation
+        let session = try await client.session
+        guard generation == attempt, userID == owner, session.user.id == owner else { throw CancellationError() }
+        var request = try Self.googleCalendarTokenRequest(fields, accessToken: session.accessToken)
+        request.timeoutInterval = 25
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard generation == attempt, userID == owner else { throw CancellationError() }
+        try Task.checkCancellation()
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            let code = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["error"] as? String
+            if code == "access_expired" { throw CalendarToolArgumentError("Google Calendar access expired or was revoked. Reconnect your Google account.") }
+            throw CalendarToolArgumentError("Google Calendar sign-in couldn’t finish. Try connecting again. Your existing calendars are unchanged.")
+        }
+        return data
+    }
+    nonisolated static func googleCalendarTokenRequest(_ fields: [String: String], accessToken: String) throws -> URLRequest {
+        guard fields["client_id"] == CalendarAccountConnection.googleClientID,
+              ["authorization_code", "refresh_token"].contains(fields["grant_type"]) else { throw CalendarToolArgumentError("Unsupported Google Calendar connection.") }
+        var request = URLRequest(url: URL(string: "https://calshot-oauth.vercel.app/api/google-token")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer " + accessToken, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(fields)
+        return request
+    }
     static let sharingRPCNames: Set<String> = ["read_calendar_sharing", "publish_calendar", "request_calendar_share", "respond_calendar_request", "manage_calendar_request", "withdraw_calendar", "calendar_publication_status", "read_shared_calendar", "search_friend_calendars"]
     func syncRPC<T: Decodable>(_ name: String, body: JSONValue, user: UUID) async throws -> T {
         guard let client, userID == user, (["read_account_state", "write_account_state", "read_mac_calendar_sync", "set_mac_calendar_sync", "write_mac_calendar_snapshot", "disable_mac_calendar_sync"].contains(name) || Self.sharingRPCNames.contains(name)) else { throw CancellationError() }

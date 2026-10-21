@@ -147,6 +147,7 @@ final class CalshotModel: ObservableObject {
     @Published var isRecognizing = false
     @Published var status: String?
     @Published var screenCapturePermissionNeeded = false
+    var screenPermissionWindow: NSWindowController?
     var workspaceWindowController: WorkspaceWindowController?
     var taskUsesNotch = false
     var notchLauncherController: NotchExperienceController?
@@ -248,6 +249,7 @@ final class CalshotModel: ObservableObject {
             Task { @MainActor in
                 guard let self, let signedInUser = self.account.userID else { return }
                 if self.activeLocalAccountID != signedInUser {
+                    self.cancelCalendarConnection()
                     self.stopAgent(); self.analysisTask?.cancel(); self.ocrTask?.cancel()
                     self.activeAgentRunID = nil; self.currentCaptureSessionID = UUID(); self.currentMemoryRecordID = nil
                     self.image = nil; self.recognizedText = ""; self.agentMessages = []; self.agentTranscriptPrefix = []
@@ -271,6 +273,12 @@ final class CalshotModel: ObservableObject {
         }
         if loadsAIConnection { selectedCalendarID = UserDefaults.standard.string(forKey: "selectedCalendarID") }
         guard loadsAIConnection else { return }
+        let calendarAccount = account
+        Task {
+            await CalendarAccountConnection.shared.configureGoogleTokenExchange { fields in
+                try await calendarAccount.exchangeGoogleCalendarToken(fields)
+            }
+        }
         hasOpenAIAPIKey = (try? OpenAIAPIKeyStore.load()) != nil
         chatGPTAccount = ChatGPTConnection.savedAccount()
         if chatGPTAccount?.canUsePlan == true {
@@ -652,6 +660,16 @@ final class CalshotModel: ObservableObject {
     func openScreenCaptureSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
         NSWorkspace.shared.open(url)
+        if screenPermissionWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "Allow Screen Recording"
+            window.isReleasedWhenClosed = false
+            window.level = .floating
+            window.contentView = NSHostingView(rootView: ScreenRecordingPermissionHelp())
+            window.center()
+            screenPermissionWindow = NSWindowController(window: window)
+        }
+        screenPermissionWindow?.showWindow(nil)
     }
 
     func dismiss() {

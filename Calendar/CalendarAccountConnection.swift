@@ -29,6 +29,8 @@ actor CalendarAccountConnection {
         var errorDescription: String? { message }
     }
     private func currentAccounts() throws -> [Account] { try JSONDecoder().decode([Account].self, from: Self.credentialData()) }
+    private var googleTokenExchange: (@Sendable ([String: String]) async throws -> Data)?
+    func configureGoogleTokenExchange(_ exchange: @escaping @Sendable ([String: String]) async throws -> Data) { googleTokenExchange = exchange }
     private var refreshes: [UUID: Task<Account, Error>] = [:]
     nonisolated static func accounts() -> [Account] { (try? JSONDecoder().decode([Account].self, from: credentialData())) ?? [] }
     nonisolated private static func credentialData() throws -> Data {
@@ -71,7 +73,7 @@ actor CalendarAccountConnection {
     func connect(provider: Provider, clientID: String) async throws -> Account {
         guard provider != .icloud else { throw ConnectionError(message: "iCloud uses an app-specific password, not OAuth.") }
         guard !clientID.trimmingCharacters(in: .whitespaces).isEmpty else { throw ConnectionError(message: "Register Calshot's desktop OAuth client first and enter its client ID.") }
-        if provider == .google, Self.googleClientSecret(clientID: clientID) == nil { throw ConnectionError(message: "Google setup is incomplete. Save the desktop client secret in Connection setup before signing in. Your existing macOS calendars remain connected.") }
+        if provider == .google, clientID == Self.googleClientID, googleTokenExchange == nil { throw ConnectionError(message: "Google Calendar is getting ready. Try connecting again in a moment.") }
         let callback = try await LoopbackCallback.start()
         defer { Task { await callback.stop() } }
         let loopbackRedirect = await callback.redirectURI
@@ -107,6 +109,7 @@ actor CalendarAccountConnection {
         let account = Account(id: old?.id ?? UUID(), provider: provider, email: email, subject: subject, clientID: clientID,
             accessToken: tokens.accessToken, refreshToken: tokens.refreshToken ?? old?.refreshToken ?? "", expiresAt: .now.addingTimeInterval(tokens.expiresIn))
         guard !account.refreshToken.isEmpty else { throw ConnectionError(message: "No offline access was granted. Reconnect and approve calendar access.") }
+        try Task.checkCancellation()
         accounts.removeAll { $0.id == account.id }; accounts.append(account); try persist(accounts)
         return account
     }
@@ -145,6 +148,10 @@ actor CalendarAccountConnection {
         enum CodingKeys: String, CodingKey { case accessToken = "access_token", refreshToken = "refresh_token", expiresIn = "expires_in", scope }
     }
     private func token(provider: Provider, fields: [String: String]) async throws -> Tokens {
+        if provider == .google, fields["client_id"] == Self.googleClientID {
+            guard let googleTokenExchange else { throw ConnectionError(message: "Sign in to Calshot and reconnect Google Calendar.") }
+            return try JSONDecoder().decode(Tokens.self, from: await googleTokenExchange(fields))
+        }
         let secret = provider == .google ? Self.googleClientSecret(clientID: fields["client_id"] ?? "") : nil
         let request = try Self.tokenRequest(provider: provider, fields: fields, clientSecret: secret)
         let (data, response) = try await URLSession.shared.data(for: request)

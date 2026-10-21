@@ -69,3 +69,32 @@ private final class WorkspaceDragRegion: NSView {
         addCursorRect(bounds, cursor: .openHand)
     }
 }
+
+/// Native file dragging hands the installed bundle URL to System Settings; it never grants access.
+struct ScreenRecordingPermissionHelp: View {
+    @State private var allowed = CGPreflightScreenCaptureAccess()
+    private let appURL = Bundle.main.bundleURL
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: appURL.path))
+                .resizable().frame(width: 76, height: 76)
+                .onDrag { NSItemProvider(object: appURL as NSURL) }
+                .accessibilityLabel("Calshot app. Drag to Screen Recording settings.")
+                .help("Drag Calshot into the app list in System Settings")
+            Text(allowed ? "Screen Recording is allowed" : "Drag Calshot into the app list")
+                .font(.title3.weight(.semibold))
+            Text(allowed ? "You can return to Calshot and capture your screen." : "In Privacy & Security → Screen & System Audio Recording, drag the icon above into the list, or use + to add Calshot from Applications. Then turn Calshot on.")
+                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Text("If macOS asks, quit and reopen Calshot to finish. After an update, you may need to remove an old Calshot entry and add this copy again.")
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            HStack {
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([appURL]) }
+                Button("Open Settings") {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                }
+            }
+            Button("Check access") { allowed = CGPreflightScreenCaptureAccess() }
+        }.padding(24).frame(width: 420, height: 500)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in allowed = CGPreflightScreenCaptureAccess() }
+    }
+}

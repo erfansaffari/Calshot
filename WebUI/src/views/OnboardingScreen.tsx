@@ -10,7 +10,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { command } from "../bridge";
-import { InlineError, Spinner } from "../components/ui";
+import { InlineError, Spinner, MacCalendarConnectionHint } from "../components/ui";
 import type { AppState } from "../types";
 
 /** Presentation steps only; native snapshots decide permission and connection readiness. */
@@ -187,17 +187,13 @@ export function OnboardingScreen({ state }: { state: AppState }) {
             )}
             <button
               className="text-button setup-direct"
-              disabled={busy || !state.googleReady}
+              disabled={busy}
               onClick={() => void run("connectGoogle")}
             >
               <Plus size={15} />
               Connect Google Calendar
             </button>
-            {!state.googleReady && (
-              <p className="fine-print">
-                Direct Google Calendar setup is still being completed.
-              </p>
-            )}
+            <MacCalendarConnectionHint disabled={busy} onOpen={() => void run("internetAccountsSettings")} />
             {state.connecting && (
               <>
                 <p role="status">
@@ -374,13 +370,13 @@ export function OnboardingScreen({ state }: { state: AppState }) {
             <p>
               {state.screenPermissionGranted
                 ? "You’re ready to capture."
-                : "Enable Calshot in the list, then return here. You can also do this later and use text commands for now."}
+                : "Open the helper and drag Calshot into the Screen Recording app list, then turn it on. You can also do this later and use text commands for now."}
             </p>
             <button
               className="button primary"
               onClick={() => void run("screenSettings")}
             >
-              Open System Settings
+              Set up Screen Recording
             </button>
           </div>
         )}

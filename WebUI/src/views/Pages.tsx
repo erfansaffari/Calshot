@@ -1,3 +1,4 @@
+import { MacCalendarConnectionHint } from "../components/ui";
 import { useEffect, useState } from "react";
 import {
   CalendarDays,
@@ -463,9 +464,7 @@ export function CalendarConnections({ state }: { state: AppState }) {
                 className="button secondary"
                 disabled={a.busy || state.connecting}
                 onClick={() =>
-                  void a.run(
-                    state.googleReady ? "connectGoogle" : "advancedSettings",
-                  )
+                  void a.run("connectGoogle")
                 }
               >
                 {state.connecting && state.connectingProvider === "google" ? (
@@ -473,11 +472,10 @@ export function CalendarConnections({ state }: { state: AppState }) {
                 ) : null}
                 {state.connecting
                   ? "Connecting…"
-                  : state.googleReady
-                    ? "Connect"
-                    : "Complete setup"}
+                  : "Connect"}
               </button>
             </div>
+            <MacCalendarConnectionHint disabled={a.busy || state.connecting} onOpen={() => void a.run("internetAccountsSettings")} />
             <div className="settings-row">
               <div>
                 <h3>Outlook / Microsoft 365</h3>
@@ -967,8 +965,8 @@ export function SettingsPage({ state }: { state: AppState }) {
                 <div>
                   <h3>Screen Recording</h3>
                   <p>
-                    Only captures when you ask. macOS may require you to restart
-                    Calshot after changing access.
+                    Open the helper, drag Calshot into the Screen Recording list,
+                    and enable it. macOS may ask you to quit and reopen Calshot.
                   </p>
                 </div>
                 <button

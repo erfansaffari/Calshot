@@ -144,8 +144,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             .object(["id": .string(account.id.uuidString), "email": .string(account.email), "provider": .string(account.provider.rawValue),
                      "unavailable": .bool(model.readableCalendars.contains { $0.id == "unavailable:" + account.id.uuidString })])
         }
-        let client = UserDefaults.standard.string(forKey: "googleCalendarClientID") ?? CalendarAccountConnection.googleClientID
-        googleReady = CalendarAccountConnection.googleClientSecret(clientID: client) != nil
+        googleReady = true
     }
     func publish() {
         guard ready else { return }
@@ -216,7 +215,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         let accountActions = Self.actionsAllowedBeforeSignIn
         if model.account.requiresLogin && !accountActions.contains(action) { throw CalendarToolArgumentError("Sign in to Calshot to continue.") }
         if model.account.enabled, !model.account.onboarded, !model.account.aiSetupConfirmed,
-           ["refreshCalendars", "connectGoogle", "selectCalendar", "calendarSettings"].contains(action) {
+           ["refreshCalendars", "connectGoogle", "selectCalendar", "calendarSettings", "internetAccountsSettings"].contains(action) {
             throw CalendarToolArgumentError("Set up your AI service before confirming calendars.")
         }
         switch action {
@@ -264,6 +263,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             model.account.finishOnboarding()
         case "authSignOut":
             try requireIdle()
+            model.cancelCalendarConnection()
             model.accountSyncTask?.cancel(); model.accountSyncTimer?.invalidate()
             try await model.account.signOut()
             model.accountSyncDevices = [:]; model.accountSyncError = nil; model.accountSyncLastDate = nil
@@ -382,14 +382,18 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         case "refreshCalendars": try requireIdle(); await model.loadCalendars(); refreshAccounts()
         case "connectGoogle":
             guard !model.calendarAccountIsConnecting else { return }
-            let client = UserDefaults.standard.string(forKey: "googleCalendarClientID") ?? CalendarAccountConnection.googleClientID
-            model.connectCalendarAccount(.google, clientID: client)
+            model.connectCalendarAccount(.google, clientID: CalendarAccountConnection.googleClientID)
         case "cancelConnection": model.cancelCalendarConnection()
         case "disconnectAccount":
             try requireIdle()
             guard let id = (body["accountID"] as? String).flatMap(UUID.init(uuidString:)) else { return }
             await model.disconnectCalendarAccount(id); refreshAccounts()
         case "screenSettings": model.openScreenCaptureSettings()
+        case "internetAccountsSettings":
+            try requireIdle()
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preferences.internetaccounts")!)
+            model.calendarAccountError = false
+            model.calendarAccountMessage = "Choose Google in Internet Accounts, turn on Calendars, then return to Calshot and refresh your calendars."
         case "calendarSettings": NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!)
         case "refreshSharing":
             guard !isNotch else { throw CalendarToolArgumentError("Manage sharing in Settings.") }

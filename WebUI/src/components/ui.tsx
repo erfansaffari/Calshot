@@ -187,3 +187,7 @@ export function timeRange(
     })
   );
 }
+
+export function MacCalendarConnectionHint({ onOpen, disabled = false }: { onOpen: () => void; disabled?: boolean }) {
+  return <div className="account-note"><button className="text-button" disabled={disabled} onClick={onOpen}>Add Google through macOS</button><p className="fine-print">Choose Google in Internet Accounts and turn on Calendars. Then return here and refresh to use it in Calshot.</p></div>;
+}

@@ -2,10 +2,7 @@ import SwiftUI
 
 struct CalendarConnectionsView: View {
     @ObservedObject var model: CalshotModel
-    @AppStorage("googleCalendarClientID") private var googleClientID = CalendarAccountConnection.googleClientID
     @AppStorage("outlookCalendarClientID") private var outlookClientID = ""
-    @State private var secret = ""
-    @State private var secretConfigured = false
     @State private var setupExpanded = false
     @State private var iCloudExpanded = false
     @State private var email = ""
@@ -81,8 +78,7 @@ struct CalendarConnectionsView: View {
                 setup.id("connection-setup")
             }.frame(maxWidth: 820).padding(28).frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .task { checkSecret(); await model.loadCalendars() }
-        .onChange(of: googleClientID) { _, _ in checkSecret() }
+        .task { await model.loadCalendars() }
         .onChange(of: setupExpanded) { _, expanded in
             if expanded { withAnimation { proxy.scrollTo("connection-setup", anchor: .bottom) } }
         }
@@ -133,11 +129,9 @@ struct CalendarConnectionsView: View {
                             .disabled(model.calendarAccountIsConnecting)
                     } else if provider == .outlook && outlookClientID.isEmpty {
                         Text("Registration pending").font(.caption).foregroundStyle(.secondary)
-                    } else if provider == .google && !secretConfigured {
-                        Button("Complete setup") { setupExpanded = true }
                     } else {
                         Button(connecting ? "Signing in…" : (native.isEmpty && direct.isEmpty ? "Connect account" : "Connect another account")) {
-                            model.connectCalendarAccount(provider, clientID: provider == .google ? googleClientID : outlookClientID)
+                            model.connectCalendarAccount(provider, clientID: provider == .google ? CalendarAccountConnection.googleClientID : outlookClientID)
                         }.disabled(model.calendarAccountIsConnecting)
                     }
                 }
@@ -159,7 +153,8 @@ struct CalendarConnectionsView: View {
                     }
                 }
                 if provider == .google {
-                    Text(direct.isEmpty ? (native.isEmpty ? "Direct sign-in: \(secretConfigured ? "ready" : "setup incomplete")." : "Your macOS connection is active. Direct sign-in: \(secretConfigured ? "ready" : "setup incomplete").") : "Existing calendars can be reused below.")
+                    Link("Add Google through macOS", destination: URL(string: "x-apple.systempreferences:com.apple.preferences.internetaccounts")!)
+                    Text("Sign in with Google and approve calendar access in your browser. No developer setup is needed.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if provider == .outlook && outlookClientID.isEmpty {
@@ -185,20 +180,7 @@ struct CalendarConnectionsView: View {
         DisclosureGroup("Connection setup", isExpanded: $setupExpanded) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Developer configuration").font(.headline)
-                Text("Configure Calshot’s registered desktop clients once on this Mac.").font(.caption).foregroundStyle(.secondary)
-                TextField("Google desktop client ID", text: $googleClientID).textFieldStyle(.roundedBorder)
-                Label(secretConfigured ? "Google client secret saved in Keychain" : "Google client secret missing", systemImage: secretConfigured ? "checkmark.circle" : "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(secretConfigured ? Color.green : Color.orange)
-                SecureField(secretConfigured ? "Replace Google client secret" : "Google desktop client secret", text: $secret).textFieldStyle(.roundedBorder)
-                Button("Save in Keychain") {
-                    do {
-                        try CalendarAccountConnection.saveGoogleClientSecret(secret, clientID: googleClientID)
-                        secret = ""; checkSecret()
-                        model.calendarAccountError = false; model.calendarAccountMessage = "Google setup is ready. You can connect your account."
-                    } catch { model.calendarAccountError = true; model.calendarAccountMessage = error.localizedDescription }
-                }.disabled(secret.isEmpty)
-                Link("Open Google registration", destination: URL(string: "https://console.cloud.google.com/auth/clients?project=calshot-511605")!)
-                Divider()
+                Text("Optional Microsoft developer configuration.").font(.caption).foregroundStyle(.secondary)
                 TextField("Microsoft application client ID", text: $outlookClientID).textFieldStyle(.roundedBorder)
                 Text("Outlook registration is pending.").font(.caption).foregroundStyle(.secondary)
             }.padding(.top, 12)
@@ -225,5 +207,4 @@ struct CalendarConnectionsView: View {
         }
     }
     private func isDirect(_ calendar: CalendarDestinationInfo) -> Bool { calendar.id.hasPrefix("remote:") || calendar.id.hasPrefix("icloud:") }
-    private func checkSecret() { secretConfigured = CalendarAccountConnection.googleClientSecret(clientID: googleClientID) != nil }
 }
