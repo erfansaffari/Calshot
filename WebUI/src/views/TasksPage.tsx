@@ -188,6 +188,9 @@ export function TasksPage({
             )}
           </div>
         </header>
+        <p role="status" aria-live="polite" className="fine-print">
+          {announcement}
+        </p>
         {error && <InlineError message={error} />}
         {tasks?.error && (
           <div className="tasks-notice" role="alert">
@@ -498,9 +501,6 @@ export function TasksPage({
             })}
           </div>
         )}
-        <p role="status" aria-live="polite" className="fine-print">
-          {announcement}
-        </p>
         <p className="task-footer-note">
           Completing or archiving a task keeps its historical calendar deadline.
           Reminders run on the Mac where you enable them. Smart planning is
@@ -525,6 +525,7 @@ export function TasksPage({
               readOnly={readOnly}
               onSave={async (body) => {
                 await run("saveTask", body);
+                setAnnouncement("Saved “" + String(body.title) + "” to Tasks.");
                 setEditing(undefined);
               }}
               onReload={() => {
