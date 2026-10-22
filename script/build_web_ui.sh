@@ -11,3 +11,6 @@ npm run build
 DESTINATION="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/WebUI"
 mkdir -p "$DESTINATION"
 rsync -a --delete dist/ "$DESTINATION/"
+cp src/tokens.css "$DESTINATION/native-tokens.css"
+mkdir -p "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/ThirdPartyNotices"
+cp "$SRCROOT/ThirdPartyNotices/PermissionFlow.txt" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/ThirdPartyNotices/PermissionFlow.txt"

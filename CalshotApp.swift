@@ -61,6 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.model.openPanel()
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--calendar-demo") || ProcessInfo.processInfo.arguments.contains("--calendar-agent-demo") { self?.model.loadCalendarDemo() }
+            if ProcessInfo.processInfo.arguments.contains("--permission-preview") {
+                self?.model.screenPermissionFlow = ScreenPermissionFlowController()
+                self?.model.workspaceWindowController?.hide()
+                self?.model.screenPermissionFlow?.show(preview: true)
+            }
             if ProcessInfo.processInfo.arguments.contains("--calendar-agent-demo") {
                 self?.model.calendarActions.replace(with: [])
                 self?.model.agentCommand = "Read this syllabus and add its deadlines and exams."
@@ -147,7 +152,7 @@ final class CalshotModel: ObservableObject {
     @Published var isRecognizing = false
     @Published var status: String?
     @Published var screenCapturePermissionNeeded = false
-    var screenPermissionWindow: NSWindowController?
+    var screenPermissionFlow: ScreenPermissionFlowController?
     var workspaceWindowController: WorkspaceWindowController?
     var taskUsesNotch = false
     var notchLauncherController: NotchExperienceController?
@@ -658,18 +663,8 @@ final class CalshotModel: ObservableObject {
     }
 
     func openScreenCaptureSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
-        NSWorkspace.shared.open(url)
-        if screenPermissionWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            window.title = "Allow Screen Recording"
-            window.isReleasedWhenClosed = false
-            window.level = .floating
-            window.contentView = NSHostingView(rootView: ScreenRecordingPermissionHelp())
-            window.center()
-            screenPermissionWindow = NSWindowController(window: window)
-        }
-        screenPermissionWindow?.showWindow(nil)
+        if screenPermissionFlow == nil { screenPermissionFlow = ScreenPermissionFlowController() }
+        screenPermissionFlow?.show()
     }
 
     func dismiss() {

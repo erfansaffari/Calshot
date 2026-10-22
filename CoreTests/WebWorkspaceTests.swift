@@ -6,6 +6,28 @@ import Auth
 
 @MainActor
 final class WebWorkspaceTests: XCTestCase {
+    func testPermissionHelperFitsSmallAndOffsetDisplays() {
+        for visible in [CGRect(x: 0, y: 24, width: 1440, height: 876), CGRect(x: -1280, y: -400, width: 1280, height: 760), CGRect(x: 0, y: 0, width: 340, height: 600)] {
+            for settings in [CGRect(x: visible.minX + 80, y: visible.minY + 100, width: 720, height: 600), CGRect(x: visible.maxX - 720, y: visible.minY, width: 720, height: 600)] {
+                let frame = PermissionHelperGeometry.placement(settings: settings, visible: visible, size: CGSize(width: 380, height: 286))
+                XCTAssertTrue(visible.insetBy(dx: 12, dy: 12).contains(frame))
+            }
+        }
+        XCTAssertEqual(PermissionHelperGeometry.appKitFrame(CGRect(x: -900, y: 100, width: 700, height: 500), primaryTop: 900), CGRect(x: -900, y: 300, width: 700, height: 500))
+    }
+    func testPermissionDragCarriesActualBundleAsFileAndLegacyFinderPayload() {
+        let url = URL(fileURLWithPath: "/Applications/Calshot Example.app")
+        let writer = PermissionAppPasteboardWriter(url: url)
+        XCTAssertEqual(writer.pasteboardPropertyList(forType: .fileURL) as? String, url.absoluteString)
+        XCTAssertEqual(writer.pasteboardPropertyList(forType: .init("NSFilenamesPboardType")) as? [String], [url.path])
+        XCTAssertNil(writer.pasteboardPropertyList(forType: .png))
+    }
+    func testPermissionPaletteUsesPackagedSharedTokens() {
+        let light = PermissionPalette(dark: false), dark = PermissionPalette(dark: true)
+        XCTAssertEqual(light.values["--primary"], "#0760ed")
+        XCTAssertEqual(dark.values["--primary"], "#1262db")
+        XCTAssertNotEqual(light.values["--surface-solid"], dark.values["--surface-solid"])
+    }
     private func fixture(service: any CalendarDestinationService = CalendarDemoService()) -> CalshotModel {
         CalshotModel(calendarService: service, memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)), loadsAIConnection: false)
     }
