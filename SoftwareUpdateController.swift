@@ -120,6 +120,6 @@ extension CalshotModel {
         !calendarActions.proposals.contains(where: { !$0.isFinished }) &&
         agentCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !calendarAccountIsConnecting && !chatGPTIsConnecting && !account.busy &&
-        !accountSyncBusy && !sharingBusy && !macCalendarSyncBusy
+        !accountSyncBusy && !taskSyncBusy && !sharingBusy && !macCalendarSyncBusy
     }
 }

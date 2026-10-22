@@ -18,6 +18,13 @@ public struct EventDraft: Identifiable, Sendable, Codable {
     public var sourceRegion: SourceRegion?
     /// For updates only: fields explicitly changed by the tool or review editor.
     public var changedFieldNames: [String]?
+    public var isTaskDeadline: Bool?
+    public var taskID: UUID?
+    public var taskVersion: UUID?
+    public var taskSourceDeviceID: String?
+    public var taskOwnerID: UUID?
+    public var taskDeadlineTime: String?
+    public var taskBaseTitle: String?
 
     public init(id: UUID = UUID(), title: String, startDate: Date?, endDate: Date?, isAllDay: Bool,
                 timeZoneIdentifier: String?, location: String?, url: URL?, notes: String?,

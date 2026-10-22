@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C63000000000000000000001 /* CalshotTasks.swift in Sources */ = {isa = PBXBuildFile; fileRef = C62000000000000000000001; };
 		C53000000000000000000001 /* ScreenPermissionFlowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C52000000000000000000001; };
 		E30000000000000000000001 /* CalendarSharing.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001; };
 		D30000000000000000000001 /* AccountSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000001; };
@@ -76,6 +77,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C62000000000000000000001 /* CalshotTasks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalshotTasks.swift; sourceTree = "<group>"; };
 		C52000000000000000000001 /* ScreenPermissionFlowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenPermissionFlowController.swift; sourceTree = "<group>"; };
 		E20000000000000000000001 /* CalendarSharing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarSharing.swift; sourceTree = "<group>"; };
 		D20000000000000000000001 /* AccountSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSync.swift; sourceTree = "<group>"; };
@@ -207,6 +209,7 @@
 				A20000000000000000000015 /* ScreenshotExperience.swift */,
 				A20000000000000000000016 /* WorkspaceWindowController.swift */,
 				C52000000000000000000001 /* ScreenPermissionFlowController.swift */,
+				C62000000000000000000001 /* CalshotTasks.swift */,
 				A20000000000000000000012 /* Assets.xcassets */,
 			);
 			path = .;
@@ -422,6 +425,7 @@
 				A30000000000000000000013 /* ScreenshotExperience.swift in Sources */,
 				A30000000000000000000014 /* WorkspaceWindowController.swift in Sources */,
 				C53000000000000000000001 /* ScreenPermissionFlowController.swift in Sources */,
+				C63000000000000000000001 /* CalshotTasks.swift in Sources */,
 				A30000000000000000000015 /* ChatGPTConnection.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

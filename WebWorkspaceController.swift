@@ -293,8 +293,28 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             }
             model.workspaceSelection = page
             if page == .settings && settingsSection == "friends" { Task { await model.refreshSharing() } }
+            if page == .tasks { model.loadTasks(); Task { await model.syncTasks() } }
             if page == .library { model.refreshMemory() }
             if page == .calendars || (page == .settings && settingsSection == "calendars") { Task { await model.loadCalendars(); refreshAccounts() } }
+        case "saveTask":
+            guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Manage tasks on the Tasks page.") }
+            try await model.saveTask(body)
+        case "completeTask", "reorderTask", "archiveTask":
+            guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Manage tasks on the Tasks page.") }
+            try model.changeTask(body)
+        case "reviewTaskDeadline":
+            guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Open Tasks to review this deadline.") }
+            try model.validateTaskAction(body)
+            guard let raw = body["taskID"] as? String, let id = UUID(uuidString: raw) else { throw CalendarToolArgumentError("Choose a task.") }
+            try await model.reviewTaskDeadline(id)
+        case "syncTasks", "keepTaskCopies":
+            guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Sync tasks on the Tasks page.") }
+            try model.validateTaskAction(body); await model.syncTasks(keepBoth: action == "keepTaskCopies")
+        case "reloadTasks":
+            guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Open Tasks first.") }; try requireIdle(); model.loadTasks()
+        case "taskNotificationSettings":
+            guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Open Tasks first.") }
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
         case "loadCalendarEvents": try await loadCalendarView(body)
         case "dismissNotice": notice = nil
         case "capture":
@@ -336,6 +356,11 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         case "selectCalendar":
             guard !model.isSaving, let value = body["calendarID"] as? String, model.destinations.contains(where: { $0.id == value && !$0.isReadOnly }) else { throw CalendarToolArgumentError("Choose an available writable calendar.") }
             model.selectedCalendarID = value
+        case "selectInboxTaskImport":
+            try requireReview(body)
+            guard model.taskImportIsCurrent, let id=(body["taskID"] as? String).flatMap(UUID.init(uuidString:)), let selected=body["selected"] as? Bool,
+                  CFGetTypeID(body["selected"] as CFTypeRef)==CFBooleanGetTypeID(), model.taskImport?.items.contains(where:{$0.id==id && $0.dueDate==nil}) == true else { throw CalendarToolArgumentError("This task import is no longer current.") }
+            if selected { model.taskImport?.selectedInboxIDs.insert(id) } else { model.taskImport?.selectedInboxIDs.remove(id) }
         case "selectProposal":
             try requireReview(body)
             guard let raw = body["proposalID"] as? String, let id = UUID(uuidString: raw), let selected = body["selected"] as? Bool,
@@ -362,7 +387,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             model.calendarActions.update(id) { $0.allowDuplicate = true; $0.isSelected = $0.canAdd }
         case "approve":
             try requireReview(body)
-            guard model.calendarActions.canApprove else { throw CalendarToolArgumentError("Select ready events and an available destination first.") }
+            guard (model.taskImport != nil ? model.canApproveTaskImport : model.calendarActions.canApprove) else { throw CalendarToolArgumentError("Select ready events and an available destination first.") }
             if isNotch { onNotchCollapse?() }
             await model.saveEvents()
         case "skipApproval":
@@ -468,6 +493,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         let urlText = (fields["url"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let url = urlText.isEmpty ? nil : URL(string: urlText)
         guard urlText.isEmpty || (url?.host != nil && ["http", "https"].contains(url?.scheme?.lowercased() ?? "")) else { throw CalendarToolArgumentError("Enter a valid https or http link.") }
+        if row.draft.taskID != nil, fields["allDay"] as? Bool != true { throw CalendarToolArgumentError("Task deadlines stay all-day and free. Edit the exact due time on Tasks.") }
         model.calendarActions.edit(id) { draft in
             draft.title = title; draft.startDate = start; draft.endDate = end; draft.isAllDay = fields["allDay"] as? Bool == true
             draft.timeZoneIdentifier = zone; draft.location = fields["location"] as? String; draft.url = url; draft.notes = fields["notes"] as? String
@@ -476,6 +502,14 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 draft.startDate = calendar.startOfDay(for: start)
                 let endDay = calendar.startOfDay(for: end)
                 draft.endDate = endDay > draft.startDate! ? endDay : calendar.date(byAdding: .day, value: 1, to: draft.startDate!)
+            }
+            if draft.taskID != nil {
+                var calendar = Calendar(identifier: .gregorian); calendar.timeZone = timeZone
+                draft.endDate = calendar.date(byAdding: .day, value: 1, to: draft.startDate!)
+                if let dueTime = draft.taskDeadlineTime {
+                    let suffix = " · due " + dueTime
+                    if !draft.title.hasSuffix(suffix) { draft.title += suffix }
+                }
             }
             draft.ambiguities = []
         }

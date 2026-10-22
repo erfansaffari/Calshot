@@ -71,6 +71,7 @@ actor EventKitCalendarService: CalendarDestinationService {
         event.startDate = startDate
         event.endDate = endDate
         event.isAllDay = draft.isAllDay
+        if draft.isTaskDeadline == true { event.availability = .free }
         event.timeZone = draft.timeZoneIdentifier.flatMap(TimeZone.init(identifier:))
         event.location = draft.location
         event.url = draft.url
@@ -120,6 +121,7 @@ actor EventKitCalendarService: CalendarDestinationService {
             if fields.contains("startTime") { event.startDate = start }
             if fields.contains("endTime") { event.endDate = end }
         }
+        if draft.isTaskDeadline == true { event.availability = .free }
         if fields.contains("allDay") || fields.contains("startTime") { event.isAllDay = draft.isAllDay }
         if fields.contains("timeZone") { event.timeZone = draft.timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) }
         if fields.contains("location") { event.location = draft.location }
@@ -150,7 +152,7 @@ actor EventKitCalendarService: CalendarDestinationService {
         CalendarEventSnapshot(eventIdentifier: event.eventIdentifier ?? event.calendarItemIdentifier,
                               title: event.title ?? "", start: event.startDate, end: event.endDate,
                               isAllDay: event.isAllDay, timeZone: event.timeZone?.identifier,
-                              location: event.location, calendarName: event.calendar.title, url: event.url, notes: event.notes, externalEventIdentifier: event.calendarItemExternalIdentifier)
+                              location: event.location, calendarName: event.calendar.title, url: event.url, notes: event.notes, externalEventIdentifier: event.calendarItemExternalIdentifier, isFree: event.availability == .notSupported ? nil : event.availability == .free)
     }
 
     private func ensureFullAccess() async throws {

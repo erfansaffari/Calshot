@@ -58,6 +58,10 @@ export function Review({ state }: { state: AppState }) {
       count: selected.filter((p) => p.operation === kind).length,
     }))
     .filter((k) => k.count);
+  const taskImport = state.taskImport;
+  const inboxTasks = taskImport?.items.filter((t) => !t.dueDate) || [];
+  const inboxCount = taskImport?.selectedInboxIDs.length || 0;
+  const taskCount = selected.length + inboxCount;
   const run = async (action: string, extra: Record<string, unknown> = {}) => {
     setError("");
     setBusy(true);
@@ -69,21 +73,23 @@ export function Review({ state }: { state: AppState }) {
       setBusy(false);
     }
   };
-  if (!rows.length && !finished.length) return null;
+  if (!rows.length && !finished.length && !taskImport) return null;
   return (
     <>
-      {!!rows.length && (
+      {(rows.length > 0 || taskImport) && (
         <section className="card review" aria-label="Review calendar changes">
           <header className="card-header">
             <div>
               <h3>
-                {failedCount
-                  ? failedCount + " events didn't save"
-                  : move
-                    ? "Move " + rows.length + " events"
-                    : rows.length +
-                      " calendar " +
-                      (rows.length === 1 ? "action" : "actions")}
+                {taskImport
+                  ? "Review imported tasks"
+                  : failedCount
+                    ? failedCount + " events didn't save"
+                    : move
+                      ? "Move " + rows.length + " events"
+                      : rows.length +
+                        " calendar " +
+                        (rows.length === 1 ? "action" : "actions")}
               </h3>
               <small>
                 {state.saving
@@ -100,7 +106,11 @@ export function Review({ state }: { state: AppState }) {
                 onChange={(calendarID) =>
                   void run("selectCalendar", { calendarID })
                 }
-                disabled={state.saving || busy}
+                disabled={
+                  state.saving ||
+                  busy ||
+                  rows.every((p) => Boolean(p.draft.taskID))
+                }
               >
                 {!destination && <option value="">Choose a calendar</option>}
                 {calendars.map((c) => (
@@ -130,7 +140,42 @@ export function Review({ state }: { state: AppState }) {
               </div>
             </div>
           )}
+          {taskImport && (
+            <p className="transfer-note">
+              Approve the selected tasks and their calendar deadlines together.
+              Undated tasks stay in Inbox. Calendar failures keep their tasks
+              with a retry action.
+            </p>
+          )}
           <div className="review-list">
+            {inboxTasks.map((task) => (
+              <div className="proposal" key={task.id}>
+                <CheckBox
+                  checked={Boolean(
+                    taskImport?.selectedInboxIDs.includes(task.id),
+                  )}
+                  disabled={busy || state.saving}
+                  label={"Include task " + task.title}
+                  onChange={(selected) =>
+                    void run("selectInboxTaskImport", {
+                      taskID: task.id,
+                      selected,
+                    })
+                  }
+                />
+                <div className="proposal-body">
+                  <h3>{task.title}</h3>
+                  <p className="event-time">Inbox task · no calendar event</p>
+                  {task.calendarError && (
+                    <p className="row-issue">{task.calendarError}</p>
+                  )}
+                  <details>
+                    <summary>Source evidence</summary>
+                    <p className="source-text">{task.sourceText}</p>
+                  </details>
+                </div>
+              </div>
+            ))}
             {rows.map((item) => (
               <div key={item.id} className="proposal">
                 <CheckBox
@@ -315,11 +360,18 @@ export function Review({ state }: { state: AppState }) {
           </div>
           <footer className="review-footer">
             <small>
-              {kinds.length
-                ? kinds.map((k) => k.label + " " + k.count).join(" · ")
-                : "Select ready events"}
+              {taskImport
+                ? taskCount +
+                  " tasks · " +
+                  selected.length +
+                  " calendar deadlines"
+                : kinds.length
+                  ? kinds.map((k) => k.label + " " + k.count).join(" · ")
+                  : "Select ready events"}
               <br />
-              {selected.length} of {rows.length} selected
+              {taskImport
+                ? taskCount + " selected"
+                : selected.length + " of " + rows.length + " selected"}
             </small>
             <button
               className="button secondary"
@@ -331,27 +383,32 @@ export function Review({ state }: { state: AppState }) {
             <button
               className="button primary"
               disabled={
-                !state.canApprove || !destination || state.saving || busy
+                !state.canApprove ||
+                (!destination && selected.length > 0) ||
+                state.saving ||
+                busy
               }
               onClick={() => void run("approve")}
             >
               {state.saving || busy ? <Spinner /> : <Check size={14} />}{" "}
               {state.saving
                 ? "Saving…"
-                : retryOnly
-                  ? "Retry " + selected.length + " failed"
-                  : (move
-                      ? "Move"
-                      : kinds.length === 1
-                        ? kinds[0].label
-                        : "Approve") +
-                    " " +
-                    selected.length +
-                    (kinds.length === 1 &&
-                    kinds[0].kind === "create" &&
-                    destination
-                      ? " to " + destination.title
-                      : "")}
+                : taskImport
+                  ? "Add " + taskCount + " selected tasks"
+                  : retryOnly
+                    ? "Retry " + selected.length + " failed"
+                    : (move
+                        ? "Move"
+                        : kinds.length === 1
+                          ? kinds[0].label
+                          : "Approve") +
+                      " " +
+                      selected.length +
+                      (kinds.length === 1 &&
+                      kinds[0].kind === "create" &&
+                      destination
+                        ? " to " + destination.title
+                        : "")}
             </button>
           </footer>
         </section>

@@ -59,6 +59,7 @@ public struct CalendarEventSnapshot: Codable, Sendable {
     public var url: URL?
     public var notes: String?
     public var externalEventIdentifier: String? = nil
+    public var isFree: Bool? = nil
 
     public var draft: EventDraft {
         EventDraft(title: title, startDate: start, endDate: end, isAllDay: isAllDay,

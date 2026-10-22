@@ -31,6 +31,8 @@ struct CalshotApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model: CalshotModel = {
 #if DEBUG
+        if NSClassFromString("XCTestCase") != nil { return CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("CalshotTestHost-" + UUID().uuidString)), loadsAIConnection: false) }
+        if ProcessInfo.processInfo.arguments.contains("--tasks-preview") { return CalshotModel.tasksPreviewModel() }
         if ProcessInfo.processInfo.arguments.contains("--sharing-preview") { return CalshotModel.sharingPreviewModel() }
         if ProcessInfo.processInfo.arguments.contains("--calendar-agent-demo") {
             return CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL:
@@ -45,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return CalshotModel()
     }()
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if NSClassFromString("XCTestCase") != nil { return }
         NSApp.setActivationPolicy(.regular)
         model.appearanceMode.apply()
         if NSClassFromString("XCTestCase") == nil { model.softwareUpdates.start() }
@@ -156,6 +159,17 @@ final class CalshotModel: ObservableObject {
     var workspaceWindowController: WorkspaceWindowController?
     var taskUsesNotch = false
     var notchLauncherController: NotchExperienceController?
+    @Published var taskDocument = CalshotTaskDocument()
+    @Published var taskImport: CalshotTaskImport?
+    @Published var taskDataReady = false
+    @Published var taskError: String?
+    @Published var taskReminderError: String?
+    @Published var taskSyncBusy = false
+    @Published var taskConflict = false
+    var taskSessionID = UUID()
+    var taskReminderGeneration = UUID()
+    var taskReminderWork: Task<Void, Never>?
+    var taskRPC: ((String, JSONValue, UUID) async throws -> JSONValue)?
     @Published var workspaceSelection: WorkspaceSection = .capture
     @Published var selectionOverlay: RegionSelectionOverlay?
     @Published var destinations: [CalendarDestinationInfo] = []
@@ -243,17 +257,21 @@ final class CalshotModel: ObservableObject {
                   try self.memoryStore.updateProposals(for: id, proposals: items) != nil else {
                 throw CalendarDestinationError.invalidDraft("capture history is unavailable; retake the screenshot before saving")
             }
+            try self.reconcileTaskReceipts(items)
             self.refreshMemory()
         }
         softwareUpdates.canRestart = { [weak self] in self?.canRestartForSoftwareUpdate == true }
         updateObservation = softwareUpdates.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         calendarObservation = calendarActions.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         accountObservation = account.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        if loadsAIConnection { clearTaskSession() } else { loadTasks() }
+        account.onSignedOut = { [weak self] in self?.clearTaskSession() }
         account.onShowWindow = { [weak self] in self?.openPanel() }
         account.onAuthenticated = { [weak self] provider in
             Task { @MainActor in
                 guard let self, let signedInUser = self.account.userID else { return }
                 if self.activeLocalAccountID != signedInUser {
+                    self.clearTaskSession()
                     self.cancelCalendarConnection()
                     self.stopAgent(); self.analysisTask?.cancel(); self.ocrTask?.cancel()
                     self.activeAgentRunID = nil; self.currentCaptureSessionID = UUID(); self.currentMemoryRecordID = nil
@@ -267,6 +285,7 @@ final class CalshotModel: ObservableObject {
                 do {
                     self.memoryStore = try self.accountMemoryRoot.accountStore(for: signedInUser)
                     self.activeLocalAccountID = signedInUser
+                    self.loadTasks()
                     self.refreshMemory()
                 } catch { self.accountSyncError = "Couldn’t open this account’s local history. Sync has not started."; return }
                 if self.account.onboarded || self.account.aiSetupConfirmed { await self.loadCalendars() }
@@ -754,6 +773,14 @@ final class CalshotModel: ObservableObject {
 
     func saveEvents() async {
         guard account.canUseWorkspace else { calendarActions.message = "Sign in and connect a calendar before approving changes."; openPanel(); return }
+        if taskImport != nil {
+            guard canApproveTaskImport else { calendarActions.message = "Select tasks and resolve their deadline review first."; return }
+            if calendarActions.selectedCount == 0 {
+                do { try commitTaskImport(); if let agentToolExecutor { agentToolExecutor.finishApproval(calendarActions.proposals) } else { taskImport = nil } }
+                catch { calendarActions.message = error.localizedDescription }
+                return
+            }
+        }
         guard let selectedCalendarID,
               let destination = destinations.first(where: { $0.id == selectedCalendarID }) else {
             calendarActions.message = "Choose a writable calendar to continue."
@@ -763,6 +790,13 @@ final class CalshotModel: ObservableObject {
             let selected = calendarActions.proposals.filter { $0.isSelected && !$0.isFinished && calendarActions.isInApprovalScope($0.id) }
             agentStatus = selected.count == 1 && selected.first?.operation == .update ? "Updating 1 event" : "Saving approved calendar actions"
         }
+        do {
+            try validateTaskApproval()
+            if taskImport != nil {
+                if calendarActions.needsDuplicateCheck(destinationID: selectedCalendarID) { await calendarActions.checkDuplicates(destinationID: selectedCalendarID); return }
+                try commitTaskImport()
+            }
+        } catch { calendarActions.message = error.localizedDescription; return }
         await calendarActions.execute(destinationID: selectedCalendarID, calendarName: destination.title)
     }
 

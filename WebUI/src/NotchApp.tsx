@@ -25,7 +25,7 @@ export default function NotchApp() {
   const taskNotice = !busy && !captured && !state.summary ? state.status || (state.agentStatus?.includes("Connect ChatGPT") ? state.agentStatus : undefined) : undefined;
   const detail = Boolean(taskNotice || state.question || review || conversation || source || error || state.agentError || state.screenPermissionNeeded || state.notice);
   // Only clean, selected creates get a one-click shortcut. Other operations need visible review.
-  const quickApprove = rows.length > 0 && rows.every(p => p.operation === "create" && p.isSelected && p.isApprovable && p.state !== "failed");
+  const quickApprove = !state.taskImport && rows.length > 0 && rows.every(p => p.operation === "create" && p.isSelected && p.isApprovable && p.state !== "failed");
   const run = async (action: string, extra: Record<string, unknown> = {}) => {
     setError("");
     try { await command({ action, ...extra }); }
@@ -82,7 +82,7 @@ export default function NotchApp() {
         <Spinner /><span className="notch-label" role="status">{state.streaming || state.agentStatus || (state.isRecognizing ? "Reading screenshot" : state.saving ? "Saving changes" : "Working…")}</span>
         <button className="button secondary" onClick={() => void run("stop")}><Square size={11} /> Stop</button>
       </> : rows.length && !state.question ? <>
-        <span className="notch-label">{rows.length} {rows.length === 1 ? "event" : "events"}{rows.every(p => p.operation === "create") && destination ? " → " + destination.title : " to review"}</span>
+        <span className="notch-label">{state.taskImport ? state.taskImport.items.length+" tasks to review" : rows.length+" "+(rows.length===1?"event":"events")+(rows.every(p=>p.operation==="create")&&destination?" → "+destination.title:" to review")}</span>
         <button className="button secondary" aria-expanded={review} onClick={() => setReview(!review)}>{review ? "Hide review" : "Review"}</button>
         {quickApprove && <button className="button primary" disabled={!state.canApprove || sending || state.checking} onClick={() => void run("approve", { token: state.approvalToken })}>{state.checking ? "Checking…" : "Add all"}</button>}
       </> : state.question ? <>

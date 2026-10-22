@@ -14,13 +14,15 @@ enum WebWorkspaceState {
         let rows = model.calendarActions.proposals.filter { model.calendarActions.isInApprovalScope($0.id) && !$0.isFinished }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys; encoder.dateEncodingStrategy = .iso8601
         let context = (model.currentCaptureSessionID?.uuidString ?? "") + "|" + (model.currentMemoryRecordID?.uuidString ?? "") + "|" + (model.activeAgentRunID?.uuidString ?? "") + "|" + (model.selectedCalendarID ?? "")
-        var data = Data(context.utf8); data.append((try? encoder.encode(rows)) ?? Data())
+        let taskContext = (model.taskImport?.id.uuidString ?? "") + (model.taskImport?.selectedInboxIDs.map(\.uuidString).sorted().joined() ?? "")
+        var data = Data((context + taskContext).utf8); data.append((try? encoder.encode(rows)) ?? Data())
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
     static func make(_ model: CalshotModel, imageURL: String?, notice: String?, accounts: [JSONValue], googleReady: Bool, comparisons: [String: JSONValue] = [:]) -> JSONValue {
         var state: [String: JSONValue] = [:]
         func string(_ key: String, _ value: String?) { if let value { state[key] = .string(value) } }
         func flag(_ key: String, _ value: Bool) { state[key] = .bool(value) }
+        state["tasks"] = .object(["items": encoded(model.taskDocument.items), "token": .string(model.tasksToken), "loaded": .bool(model.taskDataReady), "busy": .bool(model.taskSyncBusy), "error": model.taskError.map(JSONValue.string) ?? .null, "reminderError": model.taskReminderError.map(JSONValue.string) ?? .null, "conflict": .bool(model.taskConflict), "deviceID": .string(CalshotModel.syncDeviceID)])
         state["softwareUpdate"] = model.softwareUpdates.snapshot
         state["sidebarWidth"] = .number(model.sidebarWidth)
         flag("sidebarExpanded", model.sidebarExpanded); flag("ready", true); flag("native", true); string("page", model.workspaceSelection.rawValue)
@@ -53,7 +55,8 @@ enum WebWorkspaceState {
                 (item.operation == .delete ? !(item.targetEventIdentifier?.isEmpty ?? true) : item.isSelected || item.canAdd))
             return .object(row)
         })
-        string("approvalToken", approvalToken(model)); flag("canApprove", model.calendarActions.canApprove && (!model.agentIsRunning || model.agentIsWaitingForApproval))
+        string("approvalToken", approvalToken(model)); flag("canApprove", (model.taskImport != nil ? model.canApproveTaskImport : model.calendarActions.canApprove) && (!model.agentIsRunning || model.agentIsWaitingForApproval))
+        if let batch=model.taskImport { state["taskImport"] = .object(["id":.string(batch.id.uuidString),"items":encoded(batch.items),"selectedInboxIDs":encoded(batch.selectedInboxIDs)]) }
         state["selectedCount"] = .number(Double(model.calendarActions.selectedCount))
         flag("checking", model.calendarActions.isCheckingDuplicates); flag("saving", model.isSaving)
         string("reviewMessage", model.calendarActions.message ?? model.saveMessage)
@@ -109,6 +112,7 @@ enum WebWorkspaceState {
         }
         if model.account.requiresLogin {
             for key in ["messages", "proposals", "calendars", "accounts", "memory"] { state[key] = .array([]) }
+            state.removeValue(forKey: "tasks"); state.removeValue(forKey: "taskImport")
             for key in ["imageURL", "summary", "question", "agentError", "status", "notice", "agentStatus"] { state.removeValue(forKey: key) }
             state["ocr"] = .string(""); state["streaming"] = .string(""); state["canApprove"] = .bool(false)
             state["waitingApproval"] = .bool(false); state["running"] = .bool(false)

@@ -120,6 +120,7 @@ struct CalshotWorkspaceView: View {
         case .capture: capturePage
         case .chat: chatPage
         case .calendars: calendarAccountsPage
+        case .tasks: Text("Tasks require the web workspace. Rebuild Calshot’s bundled WebUI to restore Tasks.").padding()
         case .library: SettingsView(model: model, section: .memory, showsHeading: true)
         case .settings: SettingsView(model: model, section: settingsSection, showsHeading: true)
         }
@@ -452,9 +453,9 @@ struct WorkspaceTitlebarAccessory: View {
     }
 }
 
-enum WorkspaceSection: String { case capture, chat, calendars, library, settings
-    var title: String { switch self { case .capture: "Capture"; case .chat: "Chat"; case .calendars: "Calendars"; case .library: "Memory"; case .settings: "Settings" } }
-    var symbol: String { switch self { case .capture: "viewfinder"; case .chat: "bubble.left.and.bubble.right"; case .calendars: "calendar"; case .library: "square.stack.3d.up"; case .settings: "gearshape" } }
+enum WorkspaceSection: String { case capture, chat, calendars, tasks, library, settings
+    var title: String { switch self { case .capture: "Capture"; case .chat: "Chat"; case .calendars: "Calendars"; case .tasks: "Tasks"; case .library: "Memory"; case .settings: "Settings" } }
+    var symbol: String { switch self { case .capture: "viewfinder"; case .chat: "bubble.left.and.bubble.right"; case .calendars: "calendar"; case .tasks: "checklist"; case .library: "square.stack.3d.up"; case .settings: "gearshape" } }
 }
 
 private struct ChromeButtonStyle: ButtonStyle {

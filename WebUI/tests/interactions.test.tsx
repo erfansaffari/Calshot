@@ -9,6 +9,15 @@ vi.mock('../src/bridge',()=>({command:vi.fn().mockResolvedValue(undefined)}));
 import {command} from '../src/bridge';
 afterEach(cleanup);
 describe('Interactive calendar reviews',()=>{
+ it('reviews undated imported tasks with the current native approval token',async()=>{
+  const state=structuredClone(preview);state.proposals=[];state.calendars=[];state.selectedCalendarID='';state.canApprove=true;
+  state.taskImport={id:'import-a',selectedInboxIDs:['task-a'],items:[{id:'task-a',version:'v1',title:'Read chapter',timeZone:'America/Toronto',notes:'',completed:false,deleted:false,rank:0,updatedAt:'2026-10-22T00:00:00Z',sourceText:'Reading list'}]};
+  render(<Review state={state}/>);
+  expect(screen.getByText('Inbox task · no calendar event')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button',{name:'Add 1 selected tasks'}));
+  expect(command).toHaveBeenLastCalledWith({action:'approve',token:state.approvalToken});
+ });
+
  it('binds long question choices and cancellation to the exact question',async()=>{
   const choices=Array.from({length:6},(_,i)=>'Class '+i+' — School / Shared family calendar — Thursday afternoon, long descriptive label');
   const view=render(<Question question={{id:'question-a',question:'Which class should move?',choices}}/>);

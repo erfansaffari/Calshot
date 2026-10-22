@@ -108,6 +108,7 @@ actor RemoteCalendarService: CalendarDestinationService {
             if account.provider == .outlook { body["isAllDay"] = full["isAllDay"] }
         }
         if fields.contains("location") { body["location"] = full["location"] }
+        if draft.isTaskDeadline == true { body[account.provider == .google ? "transparency" : "showAs"] = account.provider == .google ? "transparent" : "free" }
         if fields.contains("notes") { body[account.provider == .google ? "description" : "body"] = full[account.provider == .google ? "description" : "body"] }
         if fields.contains("url") { throw CalendarDestinationError.invalidDraft("this provider does not support changing an event URL") }
         _ = try await request(eventPath(route, provider: account.provider) + "/" + Self.escape(id), account: account, method: "PATCH", body: body)
@@ -173,6 +174,7 @@ actor RemoteCalendarService: CalendarDestinationService {
         var event = CalendarEventSnapshot(eventIdentifier: route.identifier(event: id), title: value[account.provider == .google ? "summary" : "subject"] as? String ?? "Untitled event",
             start: start, end: end, isAllDay: allDay, timeZone: startFields["timeZone"] as? String ?? "UTC", location: location, calendarName: calendar.title,
             url: (value[account.provider == .google ? "htmlLink" : "webLink"] as? String).flatMap(URL.init(string:)), notes: account.provider == .google ? value["description"] as? String : body?["content"] as? String)
+        event.isFree = account.provider == .google ? value["transparency"] as? String == "transparent" : value["showAs"] as? String == "free"
         event.externalEventIdentifier = value[account.provider == .google ? "iCalUID" : "iCalUId"] as? String
         return event
     }
@@ -200,11 +202,11 @@ actor RemoteCalendarService: CalendarDestinationService {
             if draft.isAllDay { formatter.dateFormat = "yyyy-MM-dd"; startValue = ["date": formatter.string(from: start)]; endValue = ["date": formatter.string(from: end)] }
             else { startValue = ["dateTime": ISO8601DateFormatter().string(from: start), "timeZone": zone]; endValue = ["dateTime": ISO8601DateFormatter().string(from: end), "timeZone": zone] }
             var notes = draft.notes ?? ""; if includeURL, let url = draft.url { notes += "\n" + url.absoluteString }
-            return ["summary": draft.title, "start": startValue, "end": endValue, "location": draft.location ?? "", "description": notes]
+            return ["transparency": draft.isTaskDeadline == true ? "transparent" : "opaque", "summary": draft.title, "start": startValue, "end": endValue, "location": draft.location ?? "", "description": notes]
         }
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         var notes = draft.notes ?? ""; if includeURL, let url = draft.url { notes += "\n" + url.absoluteString }
-        return ["subject": draft.title, "start": ["dateTime": formatter.string(from: start), "timeZone": zone], "end": ["dateTime": formatter.string(from: end), "timeZone": zone], "isAllDay": draft.isAllDay,
+        return ["showAs": draft.isTaskDeadline == true ? "free" : "busy", "subject": draft.title, "start": ["dateTime": formatter.string(from: start), "timeZone": zone], "end": ["dateTime": formatter.string(from: end), "timeZone": zone], "isAllDay": draft.isAllDay,
                 "location": ["displayName": draft.location ?? ""], "body": ["contentType": "text", "content": notes]]
     }
 }

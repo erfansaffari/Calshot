@@ -49,6 +49,26 @@ final class CalendarAgentTests: XCTestCase {
         XCTAssertTrue(instructions.contains("Never claim success absent from a tool receipt"))
     }
 
+    func testClarificationContinuationKeepsPolicyRequestAndAnswerTogether() async throws {
+        let client = ScriptedAgentClient([
+            .init(calls: [.init(name: "ask_user", callID: "question", arguments: #"{"question":"Which Work calendar?","choices":["Work · Personal account","Work · School account"]}"#)]),
+            .init(calls: [.init(name: "create_events", callID: "review", arguments: #"{"calendarIdentifier":"fixture-school","events":[{"title":"Workshop","date":"2026-11-10","startTime":null,"endTime":null,"allDay":null,"timeZone":"America/Toronto","location":null,"url":null,"notes":null,"evidence":"Workshop on November 10, 2026; time TBD.","yearInferred":false,"dateAmbiguous":false}]}"#)]),
+            .init(text: "No changes were saved.")
+        ])
+        let executor = ScriptedAgentExecutor(results: [#"{"answer":"Work · School account"}"#, #"{"added":[],"failed":[],"skipped":[{"title":"Workshop"}]}"#])
+        let agent = CalendarAgent(client: client, executor: executor)
+        try await agent.start(userMessage: "Add the workshop on November 10, 2026 to Work; the time is TBD.", imageDataURL: nil)
+        XCTAssertEqual(executor.names, ["ask_user", "create_events"])
+        XCTAssertEqual(client.instructions.count, 3)
+        XCTAssertTrue(client.instructions.allSatisfy { $0.hasPrefix(CalendarAgent.instructions) })
+        XCTAssertEqual(Set(client.instructions).count, 1, "Continuation must keep the same policy and clock context.")
+        let reviewInput = try XCTUnwrap(client.conversations.last)
+        XCTAssertEqual(reviewInput.first?.value.objectValue?["content"]?.stringValue, "Add the workshop on November 10, 2026 to Work; the time is TBD.")
+        let answers = reviewInput.compactMap { $0.value.objectValue }.filter { $0["type"]?.stringValue == "function_call_output" }
+        XCTAssertTrue(answers.contains { $0["call_id"]?.stringValue == "question" && $0["output"]?.stringValue?.contains("School account") == true })
+        XCTAssertEqual(executor.arguments.last?.objectValue?["events"]?.arrayValue?.first?.objectValue?["startTime"], .null)
+    }
+
     func testSignInPersistsCredentialsBeforeUnavailableModelCatalog() async throws {
         let account = ChatGPTConnection.Account(clientID: "oaiapp_fixture", subject: "test", email: "test@example.com",
             idToken: "fixture", accessToken: "fixture", refreshToken: "fixture", scopes: "chatgpt.tokens.use.direct",

@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import {
   CalendarDays,
+  ListTodo,
   MessageSquare,
   History,
   Settings,
@@ -29,6 +30,7 @@ export function Sidebar({
   const navigation: [Page, string, typeof MessageSquare][] = [
     ["chat", "Assistant", MessageSquare],
     ["calendars", "Calendar", CalendarDays],
+    ["tasks", "Tasks", ListTodo],
     ["library", "History", History],
     ["settings", "Settings", Settings],
   ];
@@ -171,7 +173,7 @@ export function Sidebar({
           <CalendarSidebar state={state} onAction={onAction} />
         ) : expanded ? (
           <div className="recent-tasks">
-            <p className="sidebar-section">Recent tasks</p>
+            <p className="sidebar-section">Recent conversations</p>
             {state.memory.length ? (
               state.memory.slice(0, 7).map((record) => (
                 <button
@@ -199,7 +201,7 @@ export function Sidebar({
               ))
             ) : (
               <p className="fine-print" style={{ padding: "0 10px" }}>
-                Your tasks will show up here.
+                Your conversations will show up here.
               </p>
             )}
           </div>

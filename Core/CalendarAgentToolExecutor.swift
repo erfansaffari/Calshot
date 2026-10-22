@@ -8,6 +8,10 @@ struct AgentQuestion: Identifiable {
 
 @MainActor
 final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
+    var taskImportReceipts: ((JSONValue) -> JSONValue)?
+    var finishTaskImport: (() -> Void)?
+    var listTasks: (() throws -> JSONValue)?
+    var createTasks: (([String: JSONValue]) throws -> (saved: JSONValue, proposals: [CalendarActionProposal]))?
     var listFriends: (() async throws -> JSONValue)?
     var searchFriend: (([String: JSONValue]) async throws -> JSONValue)?
     private let service: any CalendarDestinationService
@@ -56,6 +60,19 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         do {
             guard let fields = arguments.objectValue else { throw CalendarToolArgumentError("Arguments must be an object.") }
             switch name {
+            case "list_tasks":
+                try CalendarToolDraftMapper.keys(fields, allowed: [])
+                guard let listTasks else { throw CalendarToolArgumentError("Tasks are unavailable.") }
+                return try listTasks().jsonString()
+            case "create_tasks":
+                guard let createTasks else { throw CalendarToolArgumentError("Tasks are unavailable.") }
+                let result = try createTasks(fields)
+                let hasNew = result.saved.arrayValue?.contains { $0.objectValue?["alreadyInTasks"] != .bool(true) } == true
+                guard hasNew else { return JSONValue.object(["tasksSaved": taskImportReceipts?(result.saved) ?? .array([]), "calendar": .string("Already in Tasks. No new calendar writes.")]).jsonString() }
+                coordinator.replace(with: coordinator.proposals + result.proposals)
+                try coordinator.persist?(coordinator.proposals)
+                let calendar = await awaitApproval(name: name, ids: Set(result.proposals.map(\.id)))
+                return JSONValue.object(["tasksSaved": taskImportReceipts?(result.saved) ?? .array([]), "calendar": (try? JSONDecoder().decode(JSONValue.self, from: Data(calendar.utf8))) ?? .string(calendar)]).jsonString()
             case "list_friends":
                 try CalendarToolDraftMapper.keys(fields, allowed: [])
                 guard let listFriends else { throw CalendarToolArgumentError("Friend sharing is unavailable. Open Friends & sharing in Settings.") }
@@ -276,7 +293,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 "moved": .array(relevant.filter { $0.state == .moved }.map { .object(["eventIdentifier": .string($0.receipt?.eventIdentifier ?? ""), "sourceEventIdentifier": .string($0.targetEventIdentifier ?? "")]) }),
                 "failed": .array(relevant.filter { $0.state == .failed }.map { .object(["proposalID": .string($0.id.uuidString), "sourceEventIdentifier": .string($0.targetEventIdentifier ?? ""), "destinationEventIdentifier": $0.moveCopyReceipt.map { .string($0.eventIdentifier) } ?? .null, "error": .string($0.error ?? "Transfer failed; check both calendars.")]) }),
                 "skipped": .array(relevant.filter { !$0.isFinished && $0.state != .failed }.map(Self.skippedJSON))])
-        } else if writeTool == "create_events" {
+        } else if writeTool == "create_events" || writeTool == "create_tasks" {
             result = .object([
                 "added": .array(relevant.filter { $0.state == .added }.map { item in
                     .object(["proposalID": .string(item.id.uuidString), "eventIdentifier": .string(item.receipt?.eventIdentifier ?? "")])
@@ -297,6 +314,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         coordinator.approvalScope = nil
         approvalContinuation = nil; requestIDs = []; writeTool = nil; extraSkipped = []
         onApproval(false)
+        finishTaskImport?()
         continuation.resume(returning: result.jsonString())
     }
 
@@ -351,7 +369,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         let formatter = ISO8601DateFormatter()
         return .object(["eventIdentifier": .string(event.eventIdentifier), "title": .string(event.title),
             "start": .string(formatter.string(from: event.start)), "end": .string(formatter.string(from: event.end)),
-            "isAllDay": .bool(event.isAllDay), "timeZone": event.timeZone.map(JSONValue.string) ?? .null,
+            "isAllDay": .bool(event.isAllDay), "isFree": event.isFree.map(JSONValue.bool) ?? .null, "timeZone": event.timeZone.map(JSONValue.string) ?? .null,
             "location": event.location.map(JSONValue.string) ?? .null, "calendarName": .string(event.calendarName)])
     }
 }

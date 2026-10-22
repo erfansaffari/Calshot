@@ -387,3 +387,12 @@ if (scenario === "friends-batch" && preview.sharing) {
   preview.calendars = Array.from({ length: 20 }, (_, i) => ({ ...preview.calendars[0], id: `fixture-source-${i}`, title: `Studio ${i + 1} — workshops, project reviews and community sessions` }));
   preview.sharing.shares[0].calendars = Array.from({ length: 20 }, (_, i) => ({ ...preview.sharing!.shares[0].calendars[0], id: `fixture-calendar-${i}`, name: `Studio ${i + 1} — workshops, portfolio reviews and community sessions` }));
 }
+
+if (["tasks", "tasks-empty", "tasks-error", "tasks-loading"].includes(scenario || "")) {
+  preview.page = "tasks"; preview.messages = []; preview.proposals = []; preview.waitingApproval = false; preview.canApprove = false; preview.selectedCount = 0;
+  preview.tasks = {token:"task-preview",loaded:scenario!=="tasks-loading",busy:false,deviceID:"preview-mac",items:scenario==="tasks-empty"?[]:Array.from({length:12},(_,i)=>({
+    id:"task-fixture-"+i,version:"v1",title:["Finish the research methods assignment", "Outline the studio presentation", "Read chapter four and write discussion notes", "Submit the field report — include observations, illustrations and the full reference list"][i%4],
+    dueDate:i%4===2?undefined:"2026-11-"+String(1+i).padStart(2,"0"),dueTime:i%3===0?"17:00":undefined,timeZone:"America/Toronto",notes:"Fictional task for isolated UI verification.",completed:i===10,deleted:i===11,rank:i,updatedAt:"2026-10-22T12:00:00Z",calendarID:i%4===2?undefined:"google",calendarName:i%4===2?undefined:"Personal",...(i===3?{calendarError:"The calendar could not be reached. Your task is saved; review and try again."}:{}),...(i===0?{reminderMinutes:60,reminderDeviceID:"preview-mac"}:{}),
+  }))};
+  if (scenario==="tasks-error") preview.tasks.error="Tasks couldn’t sync. Local changes are kept. Try syncing again when connected.";
+}

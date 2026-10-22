@@ -1,5 +1,6 @@
-export type Page = "chat" | "capture" | "calendars" | "library" | "settings";
+export type Page = "chat" | "capture" | "calendars" | "tasks" | "library" | "settings";
 export interface Draft {
+  taskID?: string;
   sourceRegion?: { x: number; y: number; width: number; height: number };
   id: string;
   title: string;
@@ -185,6 +186,8 @@ export interface SoftwareUpdateState {
   lastChecked?: string | null; development: boolean;
 }
 export interface AppState {
+  taskImport?: { id:string; items:CalshotTask[]; selectedInboxIDs:string[] };
+  tasks?: TasksState;
   softwareUpdate?: SoftwareUpdateState;
   accountSync?: AccountSyncState;
   webCalendarSync?: {
@@ -297,3 +300,11 @@ declare global {
     }) => void;
   }
 }
+
+export interface CalshotTask {
+  id: string; version: string; title: string; dueDate?: string; dueTime?: string; timeZone: string; notes: string;
+  completed: boolean; deleted: boolean; rank: number; reminderMinutes?: number; reminderTime?: string; reminderDeviceID?: string;
+  calendarID?: string; calendarName?: string; receipt?: {eventIdentifier:string;destinationID:string;calendarName:string};
+  receiptDeviceID?: string; publishedFingerprint?: string; calendarError?: string; sourceText?: string;
+}
+export interface TasksState { items: CalshotTask[]; token: string; loaded: boolean; busy: boolean; conflict?: boolean; error?: string; reminderError?: string; deviceID: string }

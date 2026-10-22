@@ -112,10 +112,10 @@ extension CalshotModel {
     func startAccountSync() {
         accountSyncTimer?.invalidate()
         accountSyncTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.syncAccount(); await self?.syncMacCalendars(); await self?.syncSharedCalendars() }
+            Task { @MainActor in await self?.syncAccount(); await self?.syncTasks(); await self?.syncMacCalendars(); await self?.syncSharedCalendars() }
         }
         scheduleAccountSync()
-        Task { [weak self] in await self?.refreshSharing() }
+        Task { [weak self] in await self?.syncTasks(); await self?.refreshSharing() }
     }
     func syncAccount() async {
         guard !softwareUpdates.installing else { return }

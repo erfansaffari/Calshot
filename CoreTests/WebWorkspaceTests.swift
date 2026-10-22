@@ -6,6 +6,154 @@ import Auth
 
 @MainActor
 final class WebWorkspaceTests: XCTestCase {
+    func testTaskDateOnlyAndTimedDeadlinesStayAllDayAcrossDST() throws {
+        let task = CalshotTask(title: "Field report", dueDate: "2026-11-01", dueTime: "17:00", timeZone: "America/Toronto")
+        try task.validate(); let p = try task.deadline(owner: UUID())
+        XCTAssertTrue(p.draft.isAllDay); XCTAssertEqual(p.draft.title, "Field report · due 17:00")
+        XCTAssertEqual(p.draft.endDate!.timeIntervalSince(p.draft.startDate!), 25 * 3600)
+        XCTAssertTrue(p.draft.isTaskDeadline == true); XCTAssertTrue(p.draft.notes!.contains("does not reserve work time"))
+        XCTAssertThrowsError(try CalshotTask.date("2026-02-30", zone: "America/Toronto"))
+        XCTAssertThrowsError(try CalshotTask.date("2026-03-08", time: "02:30", zone: "America/Toronto"))
+        XCTAssertNoThrow(try CalshotTask(title: "Read chapter").validate())
+        XCTAssertThrowsError(try CalshotTask(title: "No date", dueTime: "17:00").validate())
+        XCTAssertThrowsError(try CalshotTask(title: "Alarm", dueDate: "2026-11-01", reminderMinutes: 60).validate())
+    }
+    func testTaskStoreDoesNotOverwriteCorruptFilesAndIsAccountScoped() throws {
+        let root = MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let a = CalshotTaskStore(directory: try root.accountStore(for: UUID()).locationURL)
+        let b = CalshotTaskStore(directory: try root.accountStore(for: UUID()).locationURL)
+        try a.save(.init(items: [CalshotTask(title: "Private fixture")]))
+        XCTAssertEqual(try a.load().items.count, 1); XCTAssertTrue(try b.load().items.isEmpty)
+        let corrupt = Data("broken fixture".utf8); try corrupt.write(to: a.url)
+        XCTAssertThrowsError(try a.load()); XCTAssertEqual(try Data(contentsOf: a.url), corrupt)
+        let duplicate = CalshotTask(title: "Duplicate")
+        XCTAssertThrowsError(try b.save(.init(items: [duplicate, duplicate])))
+    }
+    func testTaskLoadFailureNeverExposesThePreviousAccountList() throws {
+        let model = fixture(); try model.persistTasks(.init(items:[CalshotTask(title:"Previous account fixture")]))
+        let next = MemoryStore(directoryURL:FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        model.memoryStore = next; try model.taskStore.save(.init())
+        let corrupt = Data("corrupt new-account fixture".utf8); try corrupt.write(to:model.taskStore.url)
+        model.loadTasks()
+        XCTAssertFalse(model.taskDataReady); XCTAssertTrue(model.taskDocument.items.isEmpty); XCTAssertNotNil(model.taskError)
+        XCTAssertEqual(try Data(contentsOf:model.taskStore.url),corrupt)
+    }
+    func testDatedTaskSavesLocallyButNeedsExplicitCalendarApproval() async throws {
+        let model = fixture(service: CalendarDemoService())
+        await model.loadCalendars()
+        try await model.saveTask(["token":model.tasksToken,"title":"Field report","dueDate":"2026-11-10","dueTime":"17:00","timeZone":"America/Toronto","calendarID":"demo"])
+        let task = try XCTUnwrap(model.taskDocument.items.first)
+        XCTAssertNil(task.receipt); XCTAssertTrue(task.needsPublication)
+        XCTAssertEqual(model.calendarActions.proposals.count, 1); XCTAssertTrue(model.calendarActions.proposals[0].isSelected)
+        let events = try await model.calendarService.searchEvents(query:nil,start:.distantPast,end:.distantFuture,in:.resolve(identifier:"demo"))
+        XCTAssertTrue(events.isEmpty, "Saving a task must never auto-approve its calendar event")
+        await model.calendarActions.checkDuplicates(destinationID:"demo")
+        await model.saveEvents()
+        XCTAssertNotNil(model.taskDocument.items.first?.receipt); XCTAssertFalse(model.taskDocument.items[0].needsPublication)
+    }
+    func testTaskReceiptRecoveryUsesLocalHistoryWithoutReplayingWrites() async throws {
+        for device in [CalshotModel.syncDeviceID,UUID().uuidString] {
+            let model=fixture(); let task=CalshotTask(title:"Report",dueDate:"2026-11-10",calendarID:"demo",calendarName:"Fixture")
+            try model.persistTasks(.init(items:[task]))
+            var proposal=try task.deadline(owner:nil,deviceID:device); proposal.state = .added
+            proposal.receipt=CalendarActionReceipt(destinationID:"demo",calendarName:"Fixture",eventIdentifier:"historical-receipt",savedAt:.now)
+            let record=try model.memoryStore.recordCommand("Fixture receipt")
+            _ = try model.memoryStore.updateProposals(for:record.id,proposals:[proposal])
+            model.loadTasks()
+            XCTAssertEqual(model.taskDocument.items[0].receipt != nil,device==CalshotModel.syncDeviceID)
+            let events=try await model.calendarService.searchEvents(query:nil,start:.distantPast,end:.distantFuture,in:.resolve(identifier:"demo"))
+            XCTAssertTrue(events.isEmpty,"Receipt recovery must never replay a calendar write")
+        }
+    }
+    func testTaskReorderCompletionAndArchivePreserveDeadlineAndReceipt() throws {
+        let model = fixture()
+        let first = CalshotTask(title:"First",dueDate:"2026-11-10",dueTime:"17:00",rank:0), second = CalshotTask(title:"Second",rank:1), third = CalshotTask(title:"Third",rank:2)
+        try model.persistTasks(.init(items:[first,second,third]))
+        let old = model.tasksToken
+        try model.changeTask(["action":"reorderTask","token":old,"taskID":first.id.uuidString,"targetTaskID":third.id.uuidString])
+        XCTAssertEqual(model.taskDocument.items.sorted{$0.rank < $1.rank}.map(\.title),["Second","Third","First"])
+        XCTAssertEqual(model.taskDocument.items[0].dueDate,first.dueDate); XCTAssertEqual(model.taskDocument.items[0].dueTime,first.dueTime)
+        XCTAssertThrowsError(try model.changeTask(["action":"completeTask","token":old,"taskID":first.id.uuidString,"completed":true]))
+        try model.changeTask(["action":"completeTask","token":model.tasksToken,"taskID":first.id.uuidString,"completed":true])
+        XCTAssertTrue(model.taskDocument.items[0].completed)
+        try model.changeTask(["action":"archiveTask","token":model.tasksToken,"taskID":first.id.uuidString,"archived":true])
+        try model.changeTask(["action":"archiveTask","token":model.tasksToken,"taskID":first.id.uuidString,"archived":false])
+        XCTAssertFalse(model.taskDocument.items[0].deleted); XCTAssertEqual(model.taskDocument.items[0].dueDate,first.dueDate)
+    }
+    func testTaskApprovalRejectsWrongOwnerChangedTaskAndTimedDeadline() throws {
+        let model = fixture(); let task = CalshotTask(title:"Essay",dueDate:"2026-11-10")
+        try model.persistTasks(.init(items:[task])); var p = try task.deadline(owner:nil)
+        model.calendarActions.replace(with:[p]); XCTAssertNoThrow(try model.validateTaskApproval())
+        p.draft.taskOwnerID = UUID(); model.calendarActions.replace(with:[p]); XCTAssertThrowsError(try model.validateTaskApproval())
+        p.draft.taskOwnerID = nil; p.draft.taskVersion = UUID(); model.calendarActions.replace(with:[p]); XCTAssertThrowsError(try model.validateTaskApproval())
+        p.draft.taskVersion = task.version; p.draft.isAllDay = false; model.calendarActions.replace(with:[p]); XCTAssertThrowsError(try model.validateTaskApproval())
+    }
+    func testTaskWebKitNumbersAndBooleansHaveDistinctValidation() async throws {
+        let model = fixture(); await model.loadCalendars()
+        try await model.saveTask(["token":model.tasksToken,"taskID":NSNull(),"title":"Due task","dueDate":"2026-11-10","dueTime":"17:00","reminderMinutes":NSNumber(value:0),"calendarID":"demo"])
+        XCTAssertEqual(model.taskDocument.items[0].reminderMinutes,0)
+        model.calendarActions.replace(with:[])
+        let second = CalshotTask(title:"Second",rank:1); var doc=model.taskDocument; doc.items.append(second); try model.persistTasks(doc)
+        let first = model.taskDocument.items[0]
+        try model.changeTask(["action":"reorderTask","token":model.tasksToken,"taskID":first.id.uuidString,"offset":NSNumber(value:1)])
+        XCTAssertEqual(model.taskDocument.items[0].rank,1)
+        XCTAssertThrowsError(try model.changeTask(["action":"completeTask","token":model.tasksToken,"taskID":first.id.uuidString,"completed":NSNumber(value:1)]))
+        XCTAssertThrowsError(try model.changeTask(["action":"reorderTask","token":model.tasksToken,"taskID":first.id.uuidString,"offset":NSNumber(value:true)]))
+    }
+    func testTaskActionsRejectNotchAndOtherPages() async throws {
+        let model = fixture(), body:[String:Any] = ["title":"Read","token":"stale"]
+        for controller in [WebWorkspaceController(model:model,loadsResources:false,isNotch:true), WebWorkspaceController(model:model,loadsResources:false)] {
+            do { try await controller.handle("saveTask",body); XCTFail("Task action escaped its page") } catch {}
+        }
+        XCTAssertTrue(model.taskDocument.items.isEmpty)
+    }
+    func testAgentTasksPreserveUnresolvedYearsAndNeverDuplicateImports() async throws {
+        let model = fixture(); await model.loadCalendars()
+        model.currentMemoryRecordID = try model.memoryStore.recordCommand("Add assignments").id
+        let fields:[String:JSONValue] = ["calendarIdentifier":.null,"tasks":.array([.object(["title":.string("Essay"),"dueDate":.string("2026-11-10"),"dueTime":.string("17:00"),"yearResolved":.bool(false),"sourceText":.string("Essay due Nov 10 at 5pm; year unknown")])])]
+        let result = try model.createAgentTasks(fields)
+        XCTAssertTrue(result.proposals.isEmpty); XCTAssertTrue(model.taskDocument.items.isEmpty)
+        XCTAssertNil(model.taskImport?.items.first?.dueDate)
+        XCTAssertTrue(try XCTUnwrap(model.taskImport?.items.first?.calendarError).contains("year"))
+        model.agentIsWaitingForApproval=true
+        try model.commitTaskImport(); model.taskImport=nil
+        _ = try model.createAgentTasks(fields); XCTAssertEqual(model.taskDocument.items.count,1)
+    }
+    func testAgentTaskImportRequiresCurrentApprovalAndSkipPersistsNothing() async throws {
+        let model = fixture(); model.currentMemoryRecordID = try model.memoryStore.recordCommand("Add a task").id
+        model.configureCalendarAgent(); let executor = try XCTUnwrap(model.agentToolExecutor); let session = UUID(); executor.activate(sessionID:session)
+        let fields:JSONValue = .object(["calendarIdentifier":.null,"tasks":.array([.object(["title":.string("Read chapter"),"sourceText":.string("Read chapter; no deadline"),"yearResolved":.bool(false)])])])
+        let skipped = Task { await executor.execute(name:"create_tasks",arguments:fields,sessionID:session) }
+        while !model.agentIsWaitingForApproval { await Task.yield() }
+        XCTAssertTrue(model.taskDocument.items.isEmpty)
+        executor.skipApproval(); let skippedResult=try JSONDecoder().decode(JSONValue.self,from:Data((await skipped.value).utf8))
+        XCTAssertEqual(skippedResult.objectValue?["tasksSaved"]?.arrayValue?.count,0); XCTAssertNil(model.taskImport)
+        let accepted = Task { await executor.execute(name:"create_tasks",arguments:fields,sessionID:session) }
+        while !model.agentIsWaitingForApproval { await Task.yield() }
+        let workspace=WebWorkspaceController(model:model,loadsResources:false)
+        let id=try XCTUnwrap(model.taskImport?.items.first?.id); let old=WebWorkspaceState.approvalToken(model)
+        try await workspace.handle("selectInboxTaskImport",["token":old,"taskID":id.uuidString,"selected":false])
+        do { try await workspace.handle("approve",["token":old]); XCTFail("Stale task approval accepted") } catch {}
+        XCTAssertTrue(model.taskDocument.items.isEmpty)
+        try await workspace.handle("selectInboxTaskImport",["token":WebWorkspaceState.approvalToken(model),"taskID":id.uuidString,"selected":true])
+        try await workspace.handle("approve",["token":WebWorkspaceState.approvalToken(model)])
+        let acceptedResult=try JSONDecoder().decode(JSONValue.self,from:Data((await accepted.value).utf8))
+        XCTAssertEqual(acceptedResult.objectValue?["tasksSaved"]?.arrayValue?.count,1); XCTAssertEqual(model.taskDocument.items.count,1); XCTAssertNil(model.taskImport)
+    }
+    func testTaskSyncConflictKeepsLocalChangesAndExplicitlyRetainsBoth() async throws {
+        let model = fixture(); let user = mirrorUser(model); model.activeLocalAccountID = user
+        var local = CalshotTask(title:"Local edit"); let base = UUID(); local.version = UUID()
+        var remote = local; remote.title = "Remote edit"; remote.version = UUID()
+        try model.persistTasks(.init(items:[local],baseline:[local.id.uuidString:base]))
+        var writes = 0
+        model.taskRPC = { name, _, _ in
+            if name == "read_task_state" { return .object(["revision":.number(1),"items":WebWorkspaceState.encoded([remote])]) }
+            writes += 1; return .number(2)
+        }
+        await model.syncTasks(); XCTAssertTrue(model.taskConflict); XCTAssertEqual(writes,0); XCTAssertEqual(model.taskDocument.items[0].title,"Local edit")
+        await model.syncTasks(keepBoth:true); XCTAssertEqual(writes,1); XCTAssertEqual(model.taskDocument.items.count,2); XCTAssertFalse(model.taskConflict)
+        XCTAssertTrue(model.taskDocument.items.contains{$0.title=="Local edit (local copy)" && $0.receipt==nil})
+    }
     func testPermissionHelperFitsSmallAndOffsetDisplays() {
         for visible in [CGRect(x: 0, y: 24, width: 1440, height: 876), CGRect(x: -1280, y: -400, width: 1280, height: 760), CGRect(x: 0, y: 0, width: 340, height: 600)] {
             for settings in [CGRect(x: visible.minX + 80, y: visible.minY + 100, width: 720, height: 600), CGRect(x: visible.maxX - 720, y: visible.minY, width: 720, height: 600)] {

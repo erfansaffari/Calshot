@@ -218,7 +218,7 @@ struct ICS {
             }
             else { throw CalendarDestinationError.invalidDraft("iCloud event has no end time") }
             return .init(eventIdentifier: route.eventID, title: ICS.unescape(value("SUMMARY") ?? "Untitled event"), start: start, end: end, isAllDay: allDay, timeZone: timeZone,
-                         location: value("LOCATION").map(ICS.unescape), calendarName: name, url: value("URL").flatMap(URL.init(string:)), notes: value("DESCRIPTION").map(ICS.unescape), externalEventIdentifier: uid)
+                         location: value("LOCATION").map(ICS.unescape), calendarName: name, url: value("URL").flatMap(URL.init(string:)), notes: value("DESCRIPTION").map(ICS.unescape), externalEventIdentifier: uid, isFree: value("TRANSP")?.uppercased() == "TRANSPARENT")
         }
     }
     var lines: [String]
@@ -244,6 +244,7 @@ struct ICS {
         let index = events.firstIndex { Self.sameRecurrence($0.line("RECURRENCE-ID") ?? "", recurrence) }
         var event = index.map { events[$0] } ?? master
         if !recurrence.isEmpty { for field in ["RRULE", "RDATE", "EXDATE", "EXRULE"] { event.set(field, nil) }; event.set("RECURRENCE-ID", try Self.normalizedRecurrence(recurrence, master: master)) }
+        if draft.isTaskDeadline == true { event.set("TRANSP", "TRANSP:TRANSPARENT") }
         event.set("DTSTAMP", "DTSTAMP:" + Self.date(.now))
         event.set("SEQUENCE", "SEQUENCE:" + String((Int(event.value("SEQUENCE") ?? "0") ?? 0) + 1))
         if index == nil {

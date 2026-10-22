@@ -107,15 +107,15 @@ export function ProposalEditor({
         <label className="inline-check">
           <input
             type="checkbox"
+            disabled={Boolean(d.taskID)}
             checked={form.allDay}
             onChange={(e) => change("allDay", e.target.checked)}
           />{" "}
-          All-day event
+          {d.taskID ? "All-day deadline · does not reserve work time" : "All-day event"}
         </label>
         {form.allDay && (
           <p className="fine-print">
-            For all-day events, the end date is the first day after the event.
-            Times are saved at midnight.
+            {d.taskID ? "This deadline covers one day. Edit its exact due time from the Tasks page." : "For all-day events, the end date is the first day after the event. Times are saved at midnight."}
           </p>
         )}
         <label>

@@ -34,6 +34,16 @@ extension CalshotModel {
             guard let self else { throw CancellationError() }
             return try await self.listAgentFriends()
         }
+        executor.listTasks = { [weak self] in
+            guard let self, self.taskDataReady else { throw CalendarToolArgumentError("Reload Tasks before reading your list.") }
+            return WebWorkspaceState.encoded(self.taskDocument.items.filter { !$0.deleted })
+        }
+        executor.taskImportReceipts = { [weak self] prepared in self?.taskImportReceipts(prepared) ?? .array([]) }
+        executor.finishTaskImport = { [weak self] in self?.taskImport = nil }
+        executor.createTasks = { [weak self] fields in
+            guard let self else { throw CancellationError() }
+            return try self.createAgentTasks(fields)
+        }
         executor.searchFriend = { [weak self] fields in
             guard let self else { throw CancellationError() }
             return try await self.searchAgentFriend(fields)

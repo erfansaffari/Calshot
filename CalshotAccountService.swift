@@ -23,6 +23,7 @@ final class CalshotAccountService: ObservableObject {
     @Published private(set) var identityProviders: [String] = []
     @Published private(set) var aiSetupConfirmed = false
     private let preferences: UserDefaults
+    var onSignedOut: (() -> Void)?
     var onAuthenticated: ((String) -> Void)?
     var onShowWindow: (() -> Void)?
     private let webAuthentication = AccountWebAuthentication()
@@ -44,7 +45,7 @@ final class CalshotAccountService: ObservableObject {
             guard let client else { return }
             for await (event, session) in client.authStateChanges {
                 guard !Task.isCancelled, let self else { return }
-                if event == .signedOut { self.userID = nil; self.onboarded = false; self.phase = "signedOut" }
+                if event == .signedOut { self.userID = nil; self.onboarded = false; self.phase = "signedOut"; self.onSignedOut?() }
                 if event == .passwordRecovery, session != nil { self.phase = "passwordRecovery" }
             }
         }
@@ -167,7 +168,7 @@ final class CalshotAccountService: ObservableObject {
     }
     static let sharingRPCNames: Set<String> = ["read_calendar_sharing", "publish_calendar", "request_calendar_share", "respond_calendar_request", "manage_calendar_request", "withdraw_calendar", "calendar_publication_status", "read_shared_calendar", "search_friend_calendars"]
     func syncRPC<T: Decodable>(_ name: String, body: JSONValue, user: UUID) async throws -> T {
-        guard let client, userID == user, (["read_account_state", "write_account_state", "read_mac_calendar_sync", "set_mac_calendar_sync", "write_mac_calendar_snapshot", "disable_mac_calendar_sync"].contains(name) || Self.sharingRPCNames.contains(name)) else { throw CancellationError() }
+        guard let client, userID == user, (["read_task_state", "write_task_state", "read_account_state", "write_account_state", "read_mac_calendar_sync", "set_mac_calendar_sync", "write_mac_calendar_snapshot", "disable_mac_calendar_sync"].contains(name) || Self.sharingRPCNames.contains(name)) else { throw CancellationError() }
         let session = try await client.session
         guard userID == user, session.user.id == user else { throw CancellationError() }
         var request = URLRequest(url: Self.projectURL.appendingPathComponent("rest/v1/rpc/" + name))

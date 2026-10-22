@@ -24,6 +24,7 @@ import { Badge, Empty, InlineError, Modal, Spinner } from "./components/ui";
 import { Review } from "./components/Review";
 import { Question } from "./components/Question";
 import { AccountScreen } from "./views/AccountScreen";
+import { TasksPage } from "./views/TasksPage";
 import { CalendarPage } from "./views/CalendarPage";
 import { Sidebar } from "./components/Sidebar";
 import { HistoryPage, SettingsPage } from "./views/Pages";
@@ -320,7 +321,7 @@ function App() {
                           question={state.question}
                         />
                       )}
-                      {state.proposals.length > 0 && <Review state={state} />}
+                      {(state.proposals.length > 0 || state.taskImport) && <Review state={state} />}
                       {state.summary &&
                         !state.running &&
                         !state.messages.some(
@@ -527,6 +528,8 @@ function App() {
           </>
         ) : state.page === "calendars" ? (
           <CalendarPage state={state} onCommand={command} />
+        ) : state.page === "tasks" ? (
+          <TasksPage state={state} onCommand={command} deadlineReview={<Review state={state} />} />
         ) : state.page === "library" ? (
           <HistoryPage state={state} />
         ) : (
