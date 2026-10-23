@@ -72,6 +72,7 @@ actor RemoteCalendarService: CalendarDestinationService {
         guard let eventRoute = Route(identifier: identifier), eventRoute.calendarIdentifier == route.calendarIdentifier, let eventID = eventRoute.eventID else { throw CalendarDestinationError.calendarUnavailable }
         do {
             let value = try await request(eventPath(route, provider: account.provider) + "/" + Self.escape(eventID), account: account)
+            guard value["id"] as? String == eventID else { throw CalendarDestinationError.calendarUnavailable }
             return try Self.snapshot(value, route: route, account: account, calendar: calendar)
         } catch let error as HTTPError where error.status == 404 || error.status == 410 { return nil }
     }
@@ -124,7 +125,9 @@ actor RemoteCalendarService: CalendarDestinationService {
         switch destination { case .eventKit(let id), .google(let id), .direct(let id): raw = id }
         guard let route = Route(identifier: raw), let calendar = calendars[route.calendarIdentifier] else { throw CalendarDestinationError.calendarUnavailable }
         if write && calendar.isReadOnly { throw CalendarDestinationError.calendarReadOnly }
-        return (route, try await accountAccess(route.accountID), calendar)
+        let account = try await accountAccess(route.accountID)
+        guard account.id == route.accountID, account.provider != .icloud else { throw CalendarDestinationError.calendarUnavailable }
+        return (route, account, calendar)
     }
     private func eventPath(_ route: Route, provider: CalendarAccountConnection.Provider) -> String {
         provider == .google ? "https://www.googleapis.com/calendar/v3/calendars/\(Self.escape(route.calendarID))/events" : "https://graph.microsoft.com/v1.0/me/calendars/\(Self.escape(route.calendarID))/events"
@@ -132,6 +135,7 @@ actor RemoteCalendarService: CalendarDestinationService {
     struct HTTPError: LocalizedError { let status: Int; let message: String; var errorDescription: String? { message } }
     private func request(_ url: String, account: CalendarAccountConnection.Account, method: String = "GET", body: [String: Any]? = nil) async throws -> [String: Any] {
         let current = try await accountAccess(account.id)
+        guard current.id == account.id, current.provider == account.provider else { throw CalendarDestinationError.calendarUnavailable }
         guard let endpoint = URL(string: url), endpoint.scheme == "https", ["www.googleapis.com", "graph.microsoft.com"].contains(endpoint.host ?? "") else { throw CalendarDestinationError.calendarUnavailable }
         var request = URLRequest(url: endpoint); request.httpMethod = method; request.timeoutInterval = 60
         request.setValue("Bearer \(current.accessToken)", forHTTPHeaderField: "Authorization")
@@ -176,7 +180,40 @@ actor RemoteCalendarService: CalendarDestinationService {
             url: (value[account.provider == .google ? "htmlLink" : "webLink"] as? String).flatMap(URL.init(string:)), notes: account.provider == .google ? value["description"] as? String : body?["content"] as? String)
         event.isFree = account.provider == .google ? value["transparency"] as? String == "transparent" : value["showAs"] as? String == "free"
         event.externalEventIdentifier = value[account.provider == .google ? "iCalUID" : "iCalUId"] as? String
+        if account.provider == .google {
+            event.isRecurring = value["recurringEventId"] != nil || value["recurrence"] != nil || value["originalStartTime"] != nil
+            if let original = value["originalStartTime"] as? [String: Any] {
+                if let date = original["date"] as? String {
+                    event.recurrenceDate = validatedCalendarDate(date)
+                } else if let raw = original["dateTime"] as? String {
+                    // RFC3339 must carry an offset: do not invent a timezone for identity.
+                    event.originalOccurrenceStart = providerTimestamp(raw)
+                }
+            }
+            event.modifiedAt = (value["updated"] as? String).flatMap(providerTimestamp)
+        } else {
+            switch value["type"] as? String {
+            case "singleInstance": event.isRecurring = false
+            case "occurrence", "exception", "seriesMaster": event.isRecurring = true
+            default: event.isRecurring = value["seriesMasterId"] != nil ? true : nil
+            }
+            // Graph originalStart is an instant even for all-day events. Its original
+            // date/timezone type is not supplied, so never derive a date-only anchor.
+            if !allDay { event.originalOccurrenceStart = (value["originalStart"] as? String).flatMap(providerTimestamp) }
+            event.modifiedAt = (value["lastModifiedDateTime"] as? String).flatMap(providerTimestamp)
+        }
         return event
+    }
+    static func providerTimestamp(_ raw: String) -> Date? {
+        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
+    }
+    static func validatedCalendarDate(_ raw: String) -> String? {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian); formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"; formatter.isLenient = false
+        guard let date = formatter.date(from: raw), formatter.string(from: date) == raw else { return nil }
+        return raw
     }
     static func instant(_ value: [String: Any]) throws -> Date {
         if let day = value["date"] as? String {

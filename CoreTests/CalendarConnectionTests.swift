@@ -178,8 +178,149 @@ final class CalendarConnectionTests: XCTestCase {
         XCTAssertEqual(CalendarAgentToolExecutor.occurrenceKey(first), CalendarAgentToolExecutor.occurrenceKey(duplicate))
         XCTAssertNotEqual(CalendarAgentToolExecutor.occurrenceKey(first), CalendarAgentToolExecutor.occurrenceKey(next))
     }
+    func testLegacySnapshotDecodesWithoutIdentityMetadata() throws {
+        let json = #"{"eventIdentifier":"fixture","title":"Class","start":0,"end":3600,"isAllDay":false,"calendarName":"School"}"#
+        let event = try JSONDecoder().decode(CalendarEventSnapshot.self, from: Data(json.utf8))
+        XCTAssertNil(event.originalOccurrenceStart); XCTAssertNil(event.recurrenceDate)
+        XCTAssertNil(event.isRecurring); XCTAssertNil(event.modifiedAt)
+    }
+
+    func testGoogleMovedOccurrencesKeepOriginalAnchorAndRevision() throws {
+        let account = account(), route = RemoteCalendarService.Route(accountID: UUID(), calendarID: "School")
+        let calendar = CalendarDestinationInfo(id: route.calendarIdentifier, title: "School", provider: .google, isReadOnly: true, timeZone: "America/Toronto")
+        var value: [String: Any] = ["id": "moved", "summary": "Class", "recurringEventId": "series",
+            "start": ["date": "2026-11-03"], "end": ["date": "2026-11-04"],
+            "originalStartTime": ["date": "2026-11-01"], "updated": "2026-10-23T12:00:00.123Z"]
+        let day = try RemoteCalendarService.snapshot(value, route: route, account: account, calendar: calendar)
+        XCTAssertEqual(day.recurrenceDate, "2026-11-01"); XCTAssertNil(day.originalOccurrenceStart)
+        XCTAssertEqual(day.isRecurring, true); XCTAssertNotNil(day.modifiedAt)
+        value["originalStartTime"] = ["dateTime": "2026-11-01T09:00:00-05:00"]
+        let timed = try RemoteCalendarService.snapshot(value, route: route, account: account, calendar: calendar)
+        XCTAssertEqual(timed.originalOccurrenceStart, ISO8601DateFormatter().date(from: "2026-11-01T14:00:00Z"))
+        XCTAssertNil(timed.recurrenceDate)
+        value["originalStartTime"] = ["date": "2026-02-30"]
+        XCTAssertNil(try RemoteCalendarService.snapshot(value, route: route, account: account, calendar: calendar).recurrenceDate)
+    }
+
+    func testOutlookMissingOriginalAnchorStaysUnknown() throws {
+        let account = account(.outlook), route = RemoteCalendarService.Route(accountID: UUID(), calendarID: "School")
+        var value: [String: Any] = ["id": "exception", "type": "exception", "start": ["dateTime": "2026-10-23T14:00:00Z"], "end": ["dateTime": "2026-10-23T15:00:00Z"]]
+        let calendar = CalendarDestinationInfo(id: route.calendarIdentifier, title: "School", provider: .outlook, isReadOnly: true)
+        let unknown = try RemoteCalendarService.snapshot(value, route: route, account: account, calendar: calendar)
+        XCTAssertEqual(unknown.isRecurring, true); XCTAssertNil(unknown.originalOccurrenceStart)
+        value["originalStart"] = "2026-10-22T13:00:00Z"
+        value["lastModifiedDateTime"] = "2026-10-23T12:00:00Z"
+        let known = try RemoteCalendarService.snapshot(value, route: route, account: account, calendar: calendar)
+        XCTAssertNotEqual(known.originalOccurrenceStart, known.start); XCTAssertNotNil(known.modifiedAt)
+    }
+
+    func testICloudRouteRejectsSiblingCalendarResources() {
+        let calendar = URL(string: "https://caldav.icloud.com/fixture/school/")!
+        let valid = ICloudCalendarService.Route(accountID: UUID(), calendar: calendar, resource: calendar.appendingPathComponent("event.ics"))
+        XCTAssertNotNil(ICloudCalendarService.Route(id: valid.eventID))
+        for path in ["https://caldav.icloud.com/fixture/other/event.ics", "https://caldav.icloud.com/fixture/school-foreign/event.ics"] {
+            let foreign = ICloudCalendarService.Route(accountID: valid.accountID, calendar: calendar, resource: URL(string: path)!)
+            XCTAssertNil(ICloudCalendarService.Route(id: foreign.eventID))
+        }
+    }
+
+    func testICloudMovedDateOnlyAndFloatingAnchors() throws {
+        let route = ICloudCalendarService.Route(accountID: UUID(), calendar: URL(string: "https://caldav.icloud.com/fixture/")!, resource: URL(string: "https://caldav.icloud.com/fixture/event.ics")!)
+        let raw = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:fictional\nDTSTART;VALUE=DATE:20261103\nDTEND;VALUE=DATE:20261104\nRECURRENCE-ID;VALUE=DATE:20261101\nLAST-MODIFIED:20261023T120000Z\nEND:VEVENT\nEND:VCALENDAR"
+        let event = try XCTUnwrap(ICS(raw).events.first).snapshot(route: route, name: "School")
+        XCTAssertEqual(event.recurrenceDate, "2026-11-01"); XCTAssertNil(event.originalOccurrenceStart)
+        XCTAssertEqual(event.isRecurring, true); XCTAssertNotNil(event.modifiedAt)
+        let floating = raw.replacingOccurrences(of: "RECURRENCE-ID;VALUE=DATE:20261101", with: "RECURRENCE-ID:20261101T090000")
+        let unknown = try XCTUnwrap(ICS(floating).events.first).snapshot(route: route, name: "School")
+        XCTAssertNil(unknown.originalOccurrenceStart); XCTAssertNil(unknown.recurrenceDate)
+        let restored = try JSONDecoder().decode(CalendarEventSnapshot.self, from: JSONEncoder().encode(event))
+        XCTAssertEqual(restored.recurrenceDate, event.recurrenceDate); XCTAssertEqual(restored.modifiedAt, event.modifiedAt)
+    }
+
+    func testReadOnlyExactSourceCanBeReadButCannotBeMutatedOrCrossRouted() async throws {
+        let account = account(), route = RemoteCalendarService.Route(accountID: account.id, calendarID: "shared")
+        let transport = ScriptedCalendarHTTP([
+            (200, #"{"items":[{"id":"shared","summary":"School","accessRole":"reader"}]}"#),
+            (200, #"{"id":"source","summary":"Class","start":{"dateTime":"2026-10-23T13:00:00Z"},"end":{"dateTime":"2026-10-23T14:00:00Z"}}"#)])
+        let service = RemoteCalendarService(accountsLoader: { [account] }, accountAccess: { _ in account }, http: { try await transport.send($0) })
+        _ = try await service.availableDestinations()
+        let destination = CalendarDestination.direct(calendarIdentifier: route.calendarIdentifier)
+        let source = try await service.event(identifier: route.identifier(event: "source"), in: destination)
+        XCTAssertEqual(source?.title, "Class")
+        do { try await service.delete(identifier: route.identifier(event: "source"), in: destination); XCTFail("Read-only deletion allowed") }
+        catch CalendarDestinationError.calendarReadOnly {} catch { XCTFail("Unexpected error: \(error)") }
+        do { _ = try await service.update(try XCTUnwrap(source).draft, identifier: route.identifier(event: "source"), in: destination); XCTFail("Read-only update allowed") }
+        catch CalendarDestinationError.calendarReadOnly {} catch { XCTFail("Unexpected error: \(error)") }
+        for foreign in [RemoteCalendarService.Route(accountID: UUID(), calendarID: "shared"), RemoteCalendarService.Route(accountID: account.id, calendarID: "other")] {
+            do { _ = try await service.event(identifier: foreign.identifier(event: "source"), in: destination); XCTFail("Cross-source lookup allowed") }
+            catch CalendarDestinationError.calendarUnavailable {} catch { XCTFail("Unexpected error: \(error)") }
+        }
+        let requests = await transport.captured()
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertTrue(requests.allSatisfy { $0.httpMethod == "GET" })
+    }
+
+    func testExactReadRejectsMismatchedProviderEvent() async throws {
+        let account = account(), route = RemoteCalendarService.Route(accountID: account.id, calendarID: "school")
+        let transport = ScriptedCalendarHTTP([
+            (200, #"{"items":[{"id":"school","summary":"School","accessRole":"owner"}]}"#),
+            (200, #"{"id":"other","start":{"dateTime":"2026-10-23T13:00:00Z"},"end":{"dateTime":"2026-10-23T14:00:00Z"}}"#)])
+        let service = RemoteCalendarService(accountsLoader: { [account] }, accountAccess: { _ in account }, http: { try await transport.send($0) })
+        _ = try await service.availableDestinations()
+        do { _ = try await service.event(identifier: route.identifier(event: "selected"), in: .direct(calendarIdentifier: route.calendarIdentifier)); XCTFail("Wrong provider event accepted") }
+        catch CalendarDestinationError.calendarUnavailable {} catch { XCTFail("Unexpected error: \(error)") }
+    }
+
+    func testSourceReadRejectsWrongResolvedAccountBeforeSendingRequest() async throws {
+        let account = account(), foreign = self.account(), route = RemoteCalendarService.Route(accountID: account.id, calendarID: "school")
+        let transport = ScriptedCalendarHTTP([(200, #"{"items":[{"id":"school","summary":"School","accessRole":"owner"}]}"#)])
+        let service = RemoteCalendarService(accountsLoader: { [account] }, accountAccess: { _ in foreign }, http: { try await transport.send($0) })
+        let calendars = try await service.availableDestinations()
+        XCTAssertTrue(calendars.isEmpty)
+        do { _ = try await service.event(identifier: route.identifier(event: "selected"), in: .direct(calendarIdentifier: route.calendarIdentifier)); XCTFail("Foreign account accepted") }
+        catch CalendarDestinationError.calendarUnavailable {} catch { XCTFail("Unexpected error: \(error)") }
+        let requests = await transport.captured()
+        XCTAssertTrue(requests.isEmpty)
+    }
+
     func testInvalidProviderDateFailsInsteadOfInventingAnEvent() {
         XCTAssertThrowsError(try RemoteCalendarService.instant(["dateTime": "TBD"]))
+    }
+
+    @MainActor
+    func testEventKitSelectedOccurrenceDoesNotResolveFirstSeriesOccurrence() throws {
+        var first = CalendarEventSnapshot(eventIdentifier: "fictional-series", title: "Class",
+            start: Date(timeIntervalSince1970: 1_800_000_000), end: Date(timeIntervalSince1970: 1_800_003_600),
+            isAllDay: false, timeZone: "America/Toronto", location: nil, calendarName: "Fixture", url: nil, notes: nil)
+        first.isRecurring = true; first.originalOccurrenceStart = first.start
+        var selected = first
+        selected.start = first.start.addingTimeInterval(7 * 86400); selected.end = first.end.addingTimeInterval(7 * 86400)
+        selected.originalOccurrenceStart = selected.start
+        let result = try XCTUnwrap(EventKitCalendarService.exactOccurrence(selected, candidates: [first, selected]))
+        XCTAssertEqual(result.start, selected.start)
+        XCTAssertNil(EventKitCalendarService.exactOccurrence(selected, candidates: [first]))
+        XCTAssertNil(EventKitCalendarService.exactOccurrence(selected, candidates: [selected, selected]))
+        var changed = selected; changed.start = selected.start.addingTimeInterval(3600)
+        XCTAssertEqual(EventKitCalendarService.exactOccurrence(selected, candidates: [first, changed])?.start, changed.start)
+        // The caller's complete fingerprint check must reject changed source data.
+        XCTAssertNotEqual(try CalshotModel.taskSourceFingerprint(changed), try CalshotModel.taskSourceFingerprint(selected))
+    }
+
+    func testEventKitOccurrenceLookupRequiresOneTypedAnchorAndExactIdentifier() {
+        var selected = CalendarEventSnapshot(eventIdentifier: "fictional-all-day", title: "Deadline",
+            start: Date(timeIntervalSince1970: 1_800_000_000), end: Date(timeIntervalSince1970: 1_800_086_400),
+            isAllDay: true, timeZone: nil, location: nil, calendarName: "Fixture", url: nil, notes: nil)
+        selected.isRecurring = true; selected.recurrenceDate = "2027-01-15"
+        var other = selected; other.recurrenceDate = "2027-01-08"
+        XCTAssertEqual(EventKitCalendarService.exactOccurrence(selected, candidates: [other, selected])?.recurrenceDate, "2027-01-15")
+        other = selected; other.eventIdentifier = "different-series"
+        XCTAssertNil(EventKitCalendarService.exactOccurrence(selected, candidates: [other]))
+        var unknown = selected; unknown.recurrenceDate = nil
+        XCTAssertNil(EventKitCalendarService.exactOccurrence(unknown, candidates: [unknown]))
+        var ambiguous = selected; ambiguous.originalOccurrenceStart = selected.start
+        XCTAssertNil(EventKitCalendarService.exactOccurrence(ambiguous, candidates: [ambiguous]))
+        var ordinary = selected; ordinary.isRecurring = false
+        XCTAssertNil(EventKitCalendarService.exactOccurrence(ordinary, candidates: [ordinary]))
     }
 }
 

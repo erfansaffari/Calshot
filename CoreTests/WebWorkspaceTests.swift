@@ -147,7 +147,7 @@ final class WebWorkspaceTests: XCTestCase {
         try model.persistTasks(.init(items:[local],baseline:[local.id.uuidString:base]))
         var writes = 0
         model.taskRPC = { name, _, _ in
-            if name == "read_task_state" { return .object(["revision":.number(1),"items":WebWorkspaceState.encoded([remote])]) }
+            if name == "read_task_state_v2" { return .object(["protocol_version":.number(2),"revision":.number(1),"items":WebWorkspaceState.encoded([remote])]) }
             writes += 1; return .number(2)
         }
         await model.syncTasks(); XCTAssertTrue(model.taskConflict); XCTAssertEqual(writes,0); XCTAssertEqual(model.taskDocument.items[0].title,"Local edit")
@@ -175,6 +175,71 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertEqual(light.values["--primary"], "#0760ed")
         XCTAssertEqual(dark.values["--primary"], "#1262db")
         XCTAssertNotEqual(light.values["--surface-solid"], dark.values["--surface-solid"])
+    }
+    func testSelectedEventTaskLinkUsesNativeReadOnlySnapshotAndDurableReceipt() async throws {
+        let service = SelectedTaskLinkFixture()
+        let model = fixture(service: service); await model.loadCalendars(); model.workspaceSelection = .calendars
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        let range: [String: Any] = ["start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z", "calendarIDs": ["selected-source"]]
+        try await bridge.loadCalendarView(range)
+        let event = try XCTUnwrap(bridge.calendarView.objectValue?["events"]?.arrayValue?.first?.objectValue)
+        let handle = try XCTUnwrap(event["selectionHandle"]?.stringValue)
+        let generation = try XCTUnwrap(event["selectionGeneration"]?.stringValue)
+        let body: [String: Any] = ["selectionHandle": handle, "selectionGeneration": generation]
+        try await bridge.handle("linkCalendarEventTask", body)
+        try await bridge.handle("linkCalendarEventTask", body)
+        XCTAssertEqual(model.taskDocument.items.count, 1)
+        XCTAssertEqual(model.taskDocument.items.first?.sourceLink?.eventID, "native-source")
+        XCTAssertEqual(model.taskDocument.items.first?.resolvedCalendarIntent, .existing)
+        XCTAssertNil(model.taskDocument.items.first?.receipt)
+        XCTAssertTrue(model.calendarActions.proposals.isEmpty)
+        XCTAssertEqual(bridge.calendarTaskNotices[handle]?.objectValue?["receipt"]?.objectValue?["outcome"]?.stringValue, "alreadyLinked")
+        let writes = await service.writes; XCTAssertEqual(writes, 0)
+        try await bridge.loadCalendarView(range)
+        do { try await bridge.handle("linkCalendarEventTask", body); XCTFail("Old view must not authorize a task link") } catch {}
+    }
+    func testSelectedEventTaskLinkRejectsForgedFieldsWrongPageStaleSessionAndRevokedAccess() async throws {
+        let service = SelectedTaskLinkFixture()
+        let model = fixture(service: service); await model.loadCalendars(); model.workspaceSelection = .calendars
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        let range: [String: Any] = ["start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z", "calendarIDs": ["selected-source"]]
+        try await bridge.loadCalendarView(range)
+        let event = try XCTUnwrap(bridge.calendarView.objectValue?["events"]?.arrayValue?.first?.objectValue)
+        let body: [String: Any] = ["selectionHandle": try XCTUnwrap(event["selectionHandle"]?.stringValue), "selectionGeneration": try XCTUnwrap(event["selectionGeneration"]?.stringValue)]
+        var forged = body; forged["snapshot"] = ["title": "Forged title"]
+        do { try await bridge.handle("linkCalendarEventTask", forged); XCTFail("Snapshot fields cannot confer authority") } catch {}
+        model.workspaceSelection = .tasks
+        do { try await bridge.handle("linkCalendarEventTask", body); XCTFail("Calendar origin required") } catch {}
+        model.workspaceSelection = .calendars; model.agentIsRunning = true
+        do { try await bridge.handle("linkCalendarEventTask", body); XCTFail("Idle session required") } catch {}
+        model.agentIsRunning = false; let calendars = model.readableCalendars; model.readableCalendars = []
+        do { try await bridge.handle("linkCalendarEventTask", body); XCTFail("Readable membership required") } catch {}
+        model.readableCalendars = calendars; model.currentCaptureSessionID = UUID()
+        do { try await bridge.handle("linkCalendarEventTask", body); XCTFail("Current session required") } catch {}
+        XCTAssertTrue(model.taskDocument.items.isEmpty)
+        let writes = await service.writes; XCTAssertEqual(writes, 0)
+    }
+    func testSelectedEventTaskLinkPublishesPersistentSourceChangeError() async throws {
+        let service = SelectedTaskLinkFixture()
+        let model = fixture(service: service); await model.loadCalendars(); model.workspaceSelection = .calendars
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        try await bridge.loadCalendarView(["start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z", "calendarIDs": ["selected-source"]])
+        let event = try XCTUnwrap(bridge.calendarView.objectValue?["events"]?.arrayValue?.first?.objectValue)
+        let handle = try XCTUnwrap(event["selectionHandle"]?.stringValue)
+        await service.changeSource()
+        do { try await bridge.handle("linkCalendarEventTask", ["selectionHandle": handle, "selectionGeneration": try XCTUnwrap(event["selectionGeneration"]?.stringValue)]); XCTFail("Changed source must not link") } catch {}
+        XCTAssertEqual(bridge.calendarTaskNotices[handle]?.objectValue?["status"]?.stringValue, "error")
+        XCTAssertTrue(model.taskDocument.items.isEmpty)
+        let writes = await service.writes; XCTAssertEqual(writes, 0)
+    }
+    func testNativeSelectedContextBindsOnlyToItsConversationAndCapture() throws {
+        let model = fixture(); let record = try model.memoryStore.recordCommand("Fictional selected source")
+        let capture = UUID(); model.currentMemoryRecordID = record.id; model.currentCaptureSessionID = capture
+        let snapshot = CalendarEventSnapshot(eventIdentifier: "fixture", title: "Fictional source", start: .now, end: .now.addingTimeInterval(3600), isAllDay: false, calendarName: "Fixture", isRecurring: false)
+        model.selectedEventContext = CalshotSelectedEventContext(ownerID: model.account.userID, storeURL: model.taskStore.url, snapshot: snapshot, destinationID: "source", fingerprint: try CalshotModel.taskSourceFingerprint(snapshot), recordID: record.id, captureID: capture)
+        let runID = UUID(); model.bindSelectedEventContext(runID: runID); model.currentCaptureSessionID = runID
+        XCTAssertEqual(model.selectedEventContext?.runID, runID)
+        model.currentCaptureSessionID = UUID(); XCTAssertNil(model.selectedEventContext)
     }
     private func fixture(service: any CalendarDestinationService = CalendarDemoService()) -> CalshotModel {
         CalshotModel(calendarService: service, memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)), loadsAIConnection: false)
@@ -920,5 +985,448 @@ final class AccountWebAuthenticationTests: XCTestCase {
         for raw in ["https://auth/callback", "calshot://wrong/callback", "calshot://auth/other", "calshot://user@auth/callback", "calshot://auth:123/callback"] {
             XCTAssertFalse(AccountWebAuthentication.isCallback(URL(string: raw)!))
         }
+    }
+}
+
+private actor SelectedTaskLinkFixture: CalendarDestinationService {
+    var writes = 0
+    var source = CalendarEventSnapshot(eventIdentifier: "native-source", title: "Fictional workshop", start: Date(timeIntervalSince1970: 1794297600), end: Date(timeIntervalSince1970: 1794301200), isAllDay: false, timeZone: "UTC", calendarName: "Personal read-only fixture", isRecurring: false)
+    func availableDestinations() async throws -> [CalendarDestinationInfo] { [.init(id: "selected-source", title: "Personal read-only fixture", provider: .apple, isReadOnly: true)] }
+    func searchEvents(query: String?, start: Date, end: Date, in destination: CalendarDestination) async throws -> [CalendarEventSnapshot] { [source] }
+    func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? { identifier == source.eventIdentifier && destination == .resolve(identifier: "selected-source") ? source : nil }
+    func changeSource() { source.title = "Changed fictional workshop" }
+    func matchingEvents(_ draft: EventDraft, in destination: CalendarDestination) async throws -> [String] { [] }
+    func save(_ draft: EventDraft, to destination: CalendarDestination) async throws -> String { writes += 1; throw CalendarDestinationError.calendarReadOnly }
+    func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String { writes += 1; throw CalendarDestinationError.calendarReadOnly }
+    func delete(identifier: String, in destination: CalendarDestination) async throws { writes += 1; throw CalendarDestinationError.calendarReadOnly }
+}
+
+// MARK: - Task-only review and saved task permissions (isolated, fictional fixtures, no provider writes)
+
+private final class ReadOnlySourceFixture: CalendarDestinationService, @unchecked Sendable {
+    private(set) var writes = 0
+    var snapshot = CalendarEventSnapshot(eventIdentifier: "fictional-event", title: "Fictional reading day", start: Date(timeIntervalSince1970: 1_800_057_600), end: Date(timeIntervalSince1970: 1_800_144_000), isAllDay: true, timeZone: "UTC", location: nil, calendarName: "Fictional read-only calendar", url: nil, notes: nil, isRecurring: false)
+    func availableDestinations() async throws -> [CalendarDestinationInfo] { [.init(id: "fictional-readonly", title: "Fictional read-only calendar", provider: .other, isReadOnly: true, sourceName: nil, timeZone: "UTC")] }
+    func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? { await Task.yield(); return identifier == snapshot.eventIdentifier ? snapshot : nil }
+    func matchingEvents(_ draft: EventDraft, in destination: CalendarDestination) async throws -> [String] { [] }
+    func save(_ draft: EventDraft, to destination: CalendarDestination) async throws -> String { writes += 1; throw CalendarDestinationError.calendarReadOnly }
+    func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String { writes += 1; throw CalendarDestinationError.calendarReadOnly }
+    func delete(identifier: String, in destination: CalendarDestination) async throws { writes += 1; throw CalendarDestinationError.calendarReadOnly }
+}
+
+@MainActor
+final class AgentTaskReviewIntegrationTests: XCTestCase {
+    private func fixture(_ service: any CalendarDestinationService = CalendarDemoService()) -> CalshotModel {
+        CalshotModel(calendarService: service, memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("task-review-fixture-" + UUID().uuidString)), loadsAIConnection: false)
+    }
+    /// A running agent run, as the native executor would see it while a tool is awaited.
+    private func startRun(_ model: CalshotModel) -> UUID {
+        let run = UUID(); model.activeAgentRunID = run; model.agentIsRunning = true; model.agentTypedRunID = run; return run
+    }
+    private func addTasks(_ model: CalshotModel, _ count: Int) throws -> [CalshotTask] {
+        let tasks = (0..<count).map { CalshotTask(title: "Fictional task \($0)", rank: $0) }
+        try model.persistTasks(.init(items: tasks)); return tasks
+    }
+    private func patch(_ task: CalshotTask, _ fields: [String: JSONValue]) -> AgentPreparedTaskMutation.Patch {
+        .init(operationID: UUID(), taskID: task.id, expectedVersion: task.version, fields: fields)
+    }
+    private func request(_ patches: [AgentPreparedTaskMutation.Patch]) -> AgentPreparedTaskMutation {
+        AgentPreparedTaskMutation(id: UUID(), change: .patches(patches))
+    }
+    private func waitFor(_ condition: @MainActor () -> Bool) async throws {
+        for _ in 0..<400 where !condition() { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertTrue(condition(), "Timed out waiting for the native state")
+    }
+    private func grant(_ model: CalshotModel, _ families: [String: Bool], revision: UInt64 = 0) async throws {
+        try await model.saveAgentTaskPermissions(revision: revision, families: families, days: 30)
+    }
+    private func status(_ value: JSONValue) -> String? { value.objectValue?["status"]?.stringValue }
+
+    func testDefaultReviewIsOneTaskOnlyApprovalAndSavesOnceWithoutCalendarState() async throws {
+        let model = fixture(), task = try addTasks(model, 1)[0], run = startRun(model)
+        let call = Task { try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("Renamed after review")])]), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        let review = try XCTUnwrap(model.agentTaskReview)
+        XCTAssertEqual(review.phase, .waiting); XCTAssertEqual(review.rows.count, 1)
+        XCTAssertEqual(review.rows[0].changes.first?.before, "Fictional task 0"); XCTAssertEqual(review.rows[0].changes.first?.after, "Renamed after review")
+        XCTAssertFalse(model.agentIsWaitingForApproval, "A task review must not borrow calendar approval state")
+        XCTAssertEqual(model.taskDocument.items[0].title, "Fictional task 0", "Nothing may save before approval")
+        XCTAssertThrowsError(try model.approveAgentTaskReview(id: review.id, token: "wrong-token", digest: review.digest))
+        XCTAssertThrowsError(try model.approveAgentTaskReview(id: review.id, token: review.token, digest: "wrong-digest"))
+        XCTAssertNotNil(model.agentTaskReview, "A rejected click leaves the pending review usable")
+        try model.approveAgentTaskReview(id: review.id, token: review.token, digest: review.digest)
+        XCTAssertThrowsError(try model.approveAgentTaskReview(id: review.id, token: review.token, digest: review.digest), "Double click")
+        let result = try await call.value
+        XCTAssertEqual(status(result), "saved"); XCTAssertEqual(result.objectValue?["calendarWrites"], .number(0))
+        XCTAssertEqual(result.objectValue?["authorization"]?.stringValue, "taskReview")
+        XCTAssertEqual(model.taskDocument.items[0].title, "Renamed after review"); XCTAssertNil(model.agentTaskReview)
+        XCTAssertEqual(model.agentTaskOutcome?.status, "saved")
+        XCTAssertEqual(try model.taskStore.load().operations?.count, 1)
+    }
+
+    func testSavedExplicitGrantExecutesImmediatelyAndRevocationRestoresReview() async throws {
+        let model = fixture(), task = try addTasks(model, 1)[0], run = startRun(model)
+        try await grant(model, ["edit": true])
+        let immediate = try await model.authorizeAgentTaskChange(request([patch(task, ["notes": .string("Saved under a grant")])]), runID: run)
+        XCTAssertEqual(status(immediate), "saved"); XCTAssertEqual(immediate.objectValue?["authorization"]?.stringValue, "savedPermission")
+        XCTAssertNil(model.agentTaskReview); XCTAssertEqual(model.taskDocument.items[0].notes, "Saved under a grant")
+        // A grant for one family does not cover another.
+        let current = model.taskDocument.items[0]
+        let call = Task { try await model.authorizeAgentTaskChange(request([patch(current, ["completed": .bool(true)])]), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        let review = try XCTUnwrap(model.agentTaskReview)
+        try model.declineAgentTaskReview(id: review.id, token: review.token)
+        let declined = try await call.value
+        XCTAssertEqual(status(declined), "declined"); XCTAssertFalse(model.taskDocument.items[0].completed)
+        // Revocation: the next matching request must ask again.
+        try await grant(model, [:], revision: try XCTUnwrap(model.agentPermissionPolicy).revision)
+        let latest = model.taskDocument.items[0]
+        let asked = Task { try await model.authorizeAgentTaskChange(request([patch(latest, ["notes": .string("After revocation")])]), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        XCTAssertEqual(model.taskDocument.items[0].notes, "Saved under a grant")
+        model.cancelAgentTaskReview()
+        let cancelledAsk = try await asked.value
+        XCTAssertEqual(status(cancelledAsk), "cancelled")
+    }
+
+    func testStopResumesTheAwaitedHookOnceAndInvalidatesTheOldButtons() async throws {
+        let model = fixture(), task = try addTasks(model, 1)[0], run = startRun(model)
+        let call = Task { try await model.authorizeAgentTaskChange(request([patch(task, ["archived": .bool(true)])]), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        let review = try XCTUnwrap(model.agentTaskReview)
+        model.stopAgent()
+        XCTAssertNil(model.agentTaskReview); XCTAssertNil(model.agentTaskReviewContinuation)
+        let stopped = try await call.value
+        XCTAssertEqual(status(stopped), "cancelled")
+        XCTAssertThrowsError(try model.approveAgentTaskReview(id: review.id, token: review.token, digest: review.digest))
+        XCTAssertFalse(model.taskDocument.items[0].deleted)
+    }
+
+    func testSignOutAndAccountChangeCancelThePendingReviewAndCloseTheStore() async throws {
+        let model = fixture(), task = try addTasks(model, 1)[0], run = startRun(model)
+        try await grant(model, ["complete": true])
+        XCTAssertNotNil(model.agentPermissionStore)
+        let call = Task { try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("Needs review")])]), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        model.teardownAgentPermissions(reason: "The account changed.")
+        let torn = try await call.value
+        XCTAssertEqual(status(torn), "cancelled")
+        XCTAssertNil(model.agentPermissionStore); XCTAssertNil(model.agentPermissionPolicy); XCTAssertNil(model.agentTaskReview)
+        XCTAssertEqual(model.taskDocument.items[0].title, "Fictional task 0")
+        // A fresh store for the same canonical account reads the saved device-local grants after the old one closed.
+        let reopened = try await model.openAgentPermissionStore()
+        let policy = try await reopened.snapshot()
+        XCTAssertEqual(policy.grants.map(\.action), [.taskComplete]); XCTAssertEqual(policy.revision, 1)
+    }
+
+    func testStaleRunAtApprovalIsRejectedAndNothingSaves() async throws {
+        let model = fixture(), task = try addTasks(model, 1)[0], run = startRun(model)
+        let call = Task { try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("Stale")])]), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        let review = try XCTUnwrap(model.agentTaskReview)
+        model.activeAgentRunID = UUID() // another conversation took over
+        XCTAssertThrowsError(try model.approveAgentTaskReview(id: review.id, token: review.token, digest: review.digest))
+        let stale = try await call.value
+        XCTAssertEqual(status(stale), "cancelled")
+        XCTAssertEqual(model.taskDocument.items[0].title, "Fictional task 0")
+    }
+
+    func testQuotaOverflowReviewIsApprovableAndRowsReportPartialFailure() async throws {
+        let model = fixture(), tasks = try addTasks(model, 21), firstRun = startRun(model)
+        try await grant(model, ["complete": true])
+        let run = firstRun
+        let tooMany = Task { try await model.authorizeAgentTaskChange(request(tasks.map { patch($0, ["completed": .bool(true)]) }), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        XCTAssertEqual(model.agentTaskReview?.rows.count, 21)
+        // The saved quota bounds unattended execution only; the explicit review can approve the exact larger effect.
+        let large = try XCTUnwrap(model.agentTaskReview)
+        XCTAssertTrue(large.reason.lowercased().contains("limit"))
+        XCTAssertTrue(model.taskDocument.items.allSatisfy { !$0.completed }, "Nothing may save before approval")
+        try model.approveAgentTaskReview(id: large.id, token: large.token, digest: large.digest)
+        let largeResult = try await tooMany.value
+        XCTAssertEqual(status(largeResult), "saved"); XCTAssertEqual(largeResult.objectValue?["rows"]?.arrayValue?.count, 21)
+        XCTAssertTrue(model.taskDocument.items.allSatisfy { $0.completed })
+        for index in model.taskDocument.items.indices { model.taskDocument.items[index].completed = false } // reset the fixture only
+        try model.persistTasks(model.taskDocument)
+        // A row-level failure is reported without claiming all-or-none behaviour.
+        let run2 = startRun(model) // a new run: the earlier run's reviewed effect already used its per-run quota
+        var dated = CalshotTask(title: "Dated fictional deadline", dueDate: "2026-11-10", rank: 30, calendarID: "demo", calendarName: "Demo")
+        dated.resolveCalendarIntent()
+        var doc = model.taskDocument; doc.items.append(dated); try model.persistTasks(doc)
+        model.calendarActions.replace(with: [try dated.deadline(owner: nil)]) // unfinished deadline review blocks edits to that task
+        let current = model.taskDocument.items
+        let rows = [patch(current[0], ["completed": .bool(true)]), patch(current.first { $0.id == dated.id }!, ["completed": .bool(true)])]
+        let result = try await model.authorizeAgentTaskChange(request(rows), runID: run2)
+        XCTAssertEqual(status(result), "partial")
+        let outcomes = try XCTUnwrap(result.objectValue?["rows"]?.arrayValue).compactMap { $0.objectValue?["outcome"]?.stringValue }
+        XCTAssertEqual(outcomes, ["saved", "failed"]); XCTAssertNotNil(result.objectValue?["note"])
+        XCTAssertTrue(model.taskDocument.items.first { $0.id == current[0].id }!.completed)
+        XCTAssertFalse(model.taskDocument.items.first { $0.id == dated.id }!.completed)
+    }
+
+    func testLinkingTheSelectedEventUsesTheKernelWithZeroProviderWritesAndIsIdempotent() async throws {
+        let service = ReadOnlySourceFixture(), model = fixture(service); await model.loadCalendars()
+        let record = try model.memoryStore.recordCommand("Add this event to Tasks"); model.currentMemoryRecordID = record.id
+        let capture = UUID(); model.currentCaptureSessionID = capture
+        model.selectedEventContext = CalshotSelectedEventContext(ownerID: model.account.userID, storeURL: model.taskStore.url, snapshot: service.snapshot, destinationID: "fictional-readonly", fingerprint: try CalshotModel.taskSourceFingerprint(service.snapshot), recordID: record.id, captureID: capture)
+        let run = UUID(); model.bindSelectedEventContext(runID: run); model.currentCaptureSessionID = run
+        model.activeAgentRunID = run; model.agentIsRunning = true; model.agentTypedRunID = run
+        let reference = try XCTUnwrap(model.selectedEventContext?.token)
+        try await grant(model, ["link": true])
+        let first = try await model.authorizeAgentTaskChange(AgentPreparedTaskMutation(id: UUID(), change: .linkSelectedEvent(contextReference: reference)), runID: run)
+        XCTAssertEqual(status(first), "saved"); XCTAssertEqual(model.taskDocument.items.count, 1)
+        XCTAssertEqual(model.taskDocument.items[0].resolvedCalendarIntent, .existing); XCTAssertNil(model.taskDocument.items[0].receipt)
+        let again = try await model.authorizeAgentTaskChange(AgentPreparedTaskMutation(id: UUID(), change: .linkSelectedEvent(contextReference: reference)), runID: run)
+        XCTAssertEqual(status(again), "saved")
+        XCTAssertEqual(again.objectValue?["rows"]?.arrayValue?.first?.objectValue?["outcome"]?.stringValue, "alreadyLinked")
+        XCTAssertEqual(model.taskDocument.items.count, 1); XCTAssertEqual(service.writes, 0)
+        XCTAssertTrue(model.calendarActions.proposals.isEmpty)
+        // A changed source cannot be linked through a stale selection.
+        service.snapshot.title = "Moved fictional day"
+        let stale = try await model.authorizeAgentTaskChange(AgentPreparedTaskMutation(id: UUID(), change: .linkSelectedEvent(contextReference: reference)), runID: run)
+        XCTAssertEqual(status(stale), "failed"); XCTAssertEqual(model.taskDocument.items.count, 1)
+    }
+
+    func testTaskGrantsNeverAuthorizeCalendarWritesOrDeadlines() async throws {
+        let model = fixture(); try await grant(model, ["create": true, "link": true, "edit": true, "complete": true, "archive": true])
+        let store = try await model.openAgentPermissionStore(), policy = try await store.snapshot()
+        XCTAssertTrue(policy.grants.allSatisfy { $0.action.isTask && $0.calendarIDs.isEmpty && !$0.backgroundEnabled })
+        let operation = AgentPermissionOperation(operationID: UUID(), runID: UUID(), ownerID: model.agentPermissionOwnerID, deviceID: CalshotModel.syncDeviceID, action: .calendarCreate, resourceIDs: ["new-event"], expectedVersions: [:], calendarIDs: ["demo"], fields: ["title"], effectDigest: String(repeating: "a", count: 64), hasGuestEffects: false, affectsSeries: false, hasSharingEffects: false)
+        let resources = AgentPermissionResources(ownerID: model.agentPermissionOwnerID, deviceID: CalshotModel.syncDeviceID, versions: [:], writableCalendarIDs: ["demo"], supportedActions: [.calendarCreate], cancelled: false)
+        let decision = try await store.reserve(operation, context: .userRequested(), resources: resources)
+        guard case .requireReview = decision else { return XCTFail("A task grant authorized a calendar write: \(decision)") }
+        // A task-only import under a grant still sends a dated new deadline to the existing calendar review.
+        await model.loadCalendars()
+        let record = try model.memoryStore.recordCommand("Add my deadline"); model.currentMemoryRecordID = record.id
+        let run = startRun(model)
+        _ = try model.createAgentTasks(["tasks": .array([.object(["title": .string("Fictional dated deadline"), "dueDate": .string("2026-11-10"), "yearResolved": .bool(true), "sourceText": .string("Fictional deadline")])]), "calendarIdentifier": .string("demo")])
+        let committed = try await model.commitAgentTaskOnlyImport(runID: run)
+        XCTAssertNil(committed, "A new calendar deadline always keeps its own review"); XCTAssertTrue(model.taskDocument.items.isEmpty)
+    }
+
+    func testTaskOnlyCreateUsesTheGrantElseKeepsTheExistingImportReview() async throws {
+        let model = fixture(); let record = try model.memoryStore.recordCommand("Add tasks"); model.currentMemoryRecordID = record.id
+        let run = startRun(model)
+        let rows: JSONValue = .array([.object(["title": .string("Fictional task-only item"), "sourceText": .string("Fictional line"), "calendarIntent": .string("none")])])
+        _ = try model.createAgentTasks(["tasks": rows])
+        let withoutGrant = try await model.commitAgentTaskOnlyImport(runID: run)
+        XCTAssertNil(withoutGrant, "No grant: the existing in-conversation import review remains")
+        XCTAssertTrue(model.taskDocument.items.isEmpty); XCTAssertNotNil(model.taskImport)
+        try await grant(model, ["create": true])
+        let saved = try await model.commitAgentTaskOnlyImport(runID: run)
+        XCTAssertEqual(saved?.arrayValue?.count, 1); XCTAssertEqual(model.taskDocument.items.map(\.title), ["Fictional task-only item"])
+        XCTAssertNil(model.taskImport); XCTAssertEqual(model.agentTaskOutcome?.status, "saved")
+        XCTAssertEqual(try model.taskStore.load().items.count, 1)
+    }
+
+    func testScreenshotImportCannotUseTheCreateGrantWithoutATypedRequest() async throws {
+        let model = fixture(); model.currentMemoryRecordID = try model.memoryStore.recordCommand("Import fictional screenshot").id
+        let run = startRun(model); model.agentTypedRunID = nil
+        try await grant(model, ["create": true])
+        let rows: JSONValue = .array([.object(["title": .string("Fictional screenshot item"), "sourceText": .string("Fictional capture"), "calendarIntent": .string("none")])])
+        _ = try model.createAgentTasks(["tasks": rows])
+        let blocked = try await model.commitAgentTaskOnlyImport(runID: run)
+        XCTAssertNil(blocked); XCTAssertNotNil(model.taskImport); XCTAssertTrue(model.taskDocument.items.isEmpty)
+        let store = try await model.openAgentPermissionStore()
+        let records = try await store.operationRecords()
+        XCTAssertTrue(records.isEmpty)
+        model.agentTypedRunID = run
+        let saved = try await model.commitAgentTaskOnlyImport(runID: run)
+        XCTAssertEqual(saved?.arrayValue?.count, 1)
+    }
+
+    func testPermissionStoreFailureBlocksMutationAndNeverOverwritesTheSavedFile() async throws {
+        let model = fixture(), task = try addTasks(model, 1)[0], run = startRun(model)
+        let directory = model.memoryStore.locationURL.appendingPathComponent("AgentPermissions", isDirectory: true)
+            .appendingPathComponent(model.agentPermissionOwnerID, isDirectory: true).appendingPathComponent(CalshotModel.syncDeviceID, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let corrupt = Data("fictional corrupt permissions".utf8); let file = directory.appendingPathComponent("agent-permissions.json")
+        try corrupt.write(to: file)
+        let result = try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("Must not save")])]), runID: run)
+        XCTAssertEqual(status(result), "unavailable"); XCTAssertNil(model.agentTaskReview)
+        XCTAssertEqual(model.taskDocument.items[0].title, "Fictional task 0")
+        XCTAssertNotNil(model.agentPermissionError); XCTAssertEqual(try Data(contentsOf: file), corrupt)
+        XCTAssertEqual(model.agentPermissionSnapshot().objectValue?["loaded"], .bool(false))
+    }
+
+    func testSettingsRevisionIsCompareAndSwapAndTheSnapshotOffersNoBackgroundControl() async throws {
+        let model = fixture()
+        try await grant(model, ["edit": true, "link": true])
+        do { try await grant(model, [:], revision: 0); XCTFail("A stale Settings snapshot restored old permissions") } catch {}
+        let snapshot = try XCTUnwrap(model.agentPermissionSnapshot().objectValue)
+        let ids = snapshot["families"]?.arrayValue?.compactMap { $0.objectValue?["id"]?.stringValue }
+        XCTAssertEqual(ids, ["create", "link", "edit", "complete", "archive"])
+        XCTAssertFalse(JSONValue.object(snapshot).jsonString().lowercased().contains("background"))
+        XCTAssertEqual(snapshot["revision"], .number(1))
+    }
+
+    func testWorkspaceStateCarriesTheReviewWithoutCalendarWaitingAndHidesItSignedOut() async throws {
+        let model = fixture(), tasks = try addTasks(model, 12), run = startRun(model)
+        let call = Task { try await model.authorizeAgentTaskChange(request(tasks.map { patch($0, ["completed": .bool(true)]) }), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        let state = try XCTUnwrap(WebWorkspaceState.make(model, imageURL: nil, notice: nil, accounts: [], googleReady: false).objectValue)
+        XCTAssertEqual(state["waitingApproval"], .bool(false))
+        let review = try XCTUnwrap(state["taskReview"]?.objectValue)
+        XCTAssertEqual(review["rows"]?.arrayValue?.count, 12); XCTAssertEqual(review["calendarWrites"], .number(0))
+        XCTAssertNil(state["taskOutcome"])
+        model.cancelAgentTaskReview(); _ = try await call.value
+        let after = WebWorkspaceState.make(model, imageURL: nil, notice: nil, accounts: [], googleReady: false).objectValue
+        XCTAssertEqual(after?["taskOutcome"]?.objectValue?["status"], .string("cancelled"))
+    }
+
+    func testReviewedRequestBeyondTheHourlyWindowSavesWithReceiptsThenSavedGrantsStayBlocked() async throws {
+        let model = fixture(), tasks = try addTasks(model, 100), run = startRun(model)
+        try await grant(model, ["complete": true])
+        let call = Task { try await model.authorizeAgentTaskChange(request(tasks.map { patch($0, ["completed": .bool(true)]) }), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        let review = try XCTUnwrap(model.agentTaskReview)
+        XCTAssertEqual(review.rows.count, 100); XCTAssertTrue(review.reason.lowercased().contains("limit"))
+        try model.approveAgentTaskReview(id: review.id, token: review.token, digest: review.digest)
+        let result = try await call.value
+        XCTAssertEqual(status(result), "saved"); XCTAssertEqual(result.objectValue?["rows"]?.arrayValue?.count, 100)
+        XCTAssertTrue(model.taskDocument.items.allSatisfy(\.completed)); XCTAssertEqual(try model.taskStore.load().operations?.count, 100)
+        // The reviewed effect still counts: all 100 of the hourly window are used, so a saved grant must ask again.
+        var doc = model.taskDocument; doc.items.append(CalshotTask(title: "One more fictional task", rank: 200)); try model.persistTasks(doc)
+        let fresh = try XCTUnwrap(model.taskDocument.items.last), nextRun = startRun(model)
+        let next = Task { try await model.authorizeAgentTaskChange(request([patch(fresh, ["completed": .bool(true)])]), runID: nextRun) }
+        try await waitFor { model.agentTaskReview != nil }
+        XCTAssertTrue(try XCTUnwrap(model.agentTaskReview).reason.lowercased().contains("limit"))
+        model.cancelAgentTaskReview(); _ = try await next.value
+        XCTAssertFalse(model.taskDocument.items.last!.completed)
+    }
+
+    func testScreenshotStartedRunsAlwaysReviewTaskChangesButTypedRunsUseSavedGrants() async throws {
+        let model = fixture(), task = try addTasks(model, 1)[0]
+        let run = UUID(); model.activeAgentRunID = run; model.agentIsRunning = true // never marked as typed: screenshot-started
+        try await grant(model, ["edit": true, "complete": true, "archive": true])
+        let call = Task { try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("From a screenshot")])]), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        XCTAssertTrue(try XCTUnwrap(model.agentTaskReview).reason.contains("screenshot"))
+        XCTAssertEqual(model.taskDocument.items[0].title, "Fictional task 0")
+        model.cancelAgentTaskReview(); let cancelled = try await call.value
+        XCTAssertEqual(status(cancelled), "cancelled")
+        // The user typing the request is what lets a saved grant apply.
+        model.agentTypedRunID = run
+        let typed = try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("Typed request")])]), runID: run)
+        XCTAssertEqual(typed.objectValue?["authorization"]?.stringValue, "savedPermission")
+        XCTAssertEqual(model.taskDocument.items[0].title, "Typed request")
+    }
+
+    func testLedgerReconciliationWaitsForTasksThenSettlesFromTheMatchingReceipt() async throws {
+        let model = fixture(), task = try addTasks(model, 1)[0], run = startRun(model)
+        let plan = try model.agentTaskPlan(request([patch(task, ["title": .string("Recovered title")])]), runID: run)
+        let operation = plan.operations[0], store = try await model.openAgentPermissionStore()
+        let resources = await model.agentTaskResources(plan, runID: run)
+        guard case .allow(let envelope) = try await store.reserve(operation, context: .directTaskSubmission(operation), resources: resources) else { return XCTFail("Not reserved") }
+        try await store.beginDispatch(envelope, resources: resources)
+        _ = try model.mutateTask(taskID: task.id, expectedVersion: task.version, patch: ["title": .string("Recovered title")], context: try model.taskContext(origin: .agent(runID: run)), operationID: operation.operationID)
+        // Simulated restart: the dispatched row survives, and tasks are not loaded yet when the store reopens.
+        model.teardownAgentPermissions(reason: "Simulated restart.")
+        model.taskDataReady = false
+        let reopened = try await model.openAgentPermissionStore()
+        XCTAssertTrue(model.agentPermissionNeedsReconcile)
+        var record = try await reopened.operationRecord(operation.operationID)
+        XCTAssertEqual(record?.status, "dispatched")
+        model.loadTasks()
+        for _ in 0..<200 where record?.status != "succeeded" { try await Task.sleep(nanoseconds: 5_000_000); record = try await reopened.operationRecord(operation.operationID) }
+        XCTAssertEqual(record?.status, "succeeded"); XCTAssertFalse(model.agentPermissionNeedsReconcile)
+    }
+
+    func testSavedPeriodIsKeptUnlessTheUserExplicitlyRenews() async throws {
+        let model = fixture()
+        func expiry(_ action: AgentPermissionAction) -> Date? { model.agentPermissionPolicy?.grants.first { $0.action == action }?.expiresAt }
+        try await model.saveAgentTaskPermissions(revision: 0, families: ["edit": true], days: 7)
+        let sevenDays = try XCTUnwrap(expiry(.taskEdit))
+        try await model.saveAgentTaskPermissions(revision: 1, families: ["edit": true, "complete": true], days: 30)
+        XCTAssertEqual(expiry(.taskEdit), sevenDays, "Turning on another family must not extend an existing grant")
+        XCTAssertGreaterThan(try XCTUnwrap(expiry(.taskComplete)).timeIntervalSinceNow, 29 * 86_400)
+        try await model.saveAgentTaskPermissions(revision: 2, families: ["edit": true, "complete": true], days: 90, renew: true)
+        XCTAssertGreaterThan(try XCTUnwrap(expiry(.taskEdit)).timeIntervalSinceNow, 89 * 86_400)
+        XCTAssertGreaterThan(try XCTUnwrap(expiry(.taskComplete)).timeIntervalSinceNow, 89 * 86_400)
+        try await model.saveAgentTaskPermissions(revision: 3, families: ["complete": true], days: 7)
+        XCTAssertNil(expiry(.taskEdit)); XCTAssertNotNil(expiry(.taskComplete))
+    }
+
+    func testAnAwaitedSaveCannotPublishIntoTheNextStoreAfterTeardown() async throws {
+        let model = fixture()
+        let save = Task { try await model.saveAgentTaskPermissions(revision: 0, families: ["edit": true], days: 30) }
+        for _ in 0..<50 where !model.agentPermissionBusy { await Task.yield() } // the save is now awaiting the store
+        XCTAssertTrue(model.agentPermissionBusy)
+        model.teardownAgentPermissions(reason: "The account changed.")
+        do { try await save.value; XCTFail("A torn-down save completed") } catch {}
+        XCTAssertNil(model.agentPermissionPolicy); XCTAssertNil(model.agentPermissionNotice); XCTAssertFalse(model.agentPermissionBusy)
+        let reopened = try await model.openAgentPermissionStore()
+        let snapshot = try await reopened.snapshot()
+        XCTAssertEqual(snapshot.revision, 0); XCTAssertTrue(snapshot.grants.isEmpty)
+    }
+
+    func testAnUnreadableTaskFileAfterADispatchedWritePausesAllMutationUntilCleanReload() async throws {
+        let model = fixture(); _ = try addTasks(model, 2); let run = startRun(model)
+        try await grant(model, ["edit": true])
+        // The second task has an unfinished deadline review, so its domain write fails; then the task file becomes unreadable.
+        var dated = model.taskDocument.items[1]; dated.dueDate = "2026-11-10"; dated.calendarID = "demo"; dated.calendarName = "Demo"; dated.applyDefaultCalendarIntent()
+        var doc = model.taskDocument; doc.items[1] = dated; try model.persistTasks(doc)
+        model.calendarActions.replace(with: [try dated.deadline(owner: nil)])
+        let corrupt = Data("fictional unreadable task file".utf8); try corrupt.write(to: model.taskStore.url)
+        let current = model.taskDocument.items
+        let result = try await model.authorizeAgentTaskChange(request([patch(current[1], ["title": .string("Cannot save")])]), runID: run)
+        XCTAssertEqual(status(result), "failed")
+        XCTAssertFalse(model.taskDataReady); XCTAssertNotNil(model.taskError); XCTAssertTrue(model.agentPermissionNeedsReconcile)
+        XCTAssertEqual(try Data(contentsOf: model.taskStore.url), corrupt, "The unreadable file must never be overwritten")
+        let store = try await model.openAgentPermissionStore()
+        let unresolved = try await store.operationRecords().filter { $0.status == "unknown" }
+        XCTAssertEqual(unresolved.count, 1)
+        // Nothing may mutate or retry with new identifiers while the outcome is uncertain.
+        let blocked = try await model.authorizeAgentTaskChange(request([patch(current[0], ["title": .string("Also blocked")])]), runID: run)
+        XCTAssertNotEqual(status(blocked), "saved"); XCTAssertEqual(try Data(contentsOf: model.taskStore.url), corrupt)
+    }
+
+    func testDirectAddToTasksUsesTheLedgerAndDomainReceiptWithOneOperationID() async throws {
+        let service = ReadOnlySourceFixture(), model = fixture(service); await model.loadCalendars()
+        let fingerprint = try CalshotModel.taskSourceFingerprint(service.snapshot)
+        let receipt = try await model.linkSelectedEventDirectly(snapshot: service.snapshot, destinationID: "fictional-readonly", expectedFingerprint: fingerprint)
+        XCTAssertEqual(receipt.outcome, "saved"); XCTAssertEqual(model.taskDocument.items.count, 1)
+        let store = try await model.openAgentPermissionStore()
+        let stored = try await store.operationRecord(receipt.operationID)
+        let record = try XCTUnwrap(stored)
+        XCTAssertEqual(record.status, "succeeded"); XCTAssertEqual(record.envelope.operation.action, .taskLink); XCTAssertTrue(record.envelope.operation.calendarIDs.isEmpty)
+        XCTAssertEqual(try model.taskStore.load().operations?.first?.operationID, receipt.operationID)
+        let again = try await model.linkSelectedEventDirectly(snapshot: service.snapshot, destinationID: "fictional-readonly", expectedFingerprint: fingerprint)
+        XCTAssertEqual(again.outcome, "alreadyLinked"); XCTAssertEqual(model.taskDocument.items.count, 1); XCTAssertEqual(service.writes, 0)
+        // A changed source cannot be added from an old selection.
+        service.snapshot.title = "Moved fictional day"
+        do { _ = try await model.linkSelectedEventDirectly(snapshot: service.snapshot, destinationID: "fictional-readonly", expectedFingerprint: "stale"); XCTFail("Stale selection linked") } catch {}
+        XCTAssertEqual(model.taskDocument.items.count, 1)
+    }
+
+    func testExactDirectLinkWorksAfterAutomationQuotaIsExhausted() async throws {
+        let service = ReadOnlySourceFixture(), model = fixture(service); await model.loadCalendars()
+        try await grant(model, ["create": true])
+        let store = try await model.openAgentPermissionStore(), policy = try await store.snapshot()
+        try await store.replaceGrants(policy.grants, expectedRevision: policy.revision,
+            control: .init(nativeOwnerID: model.agentPermissionOwnerID, nativeDeviceID: CalshotModel.syncDeviceID), maxPerRun: 1, maxPerWindow: 1)
+        let pending = AgentPermissionOperation(operationID: UUID(), runID: UUID(), ownerID: model.agentPermissionOwnerID, deviceID: CalshotModel.syncDeviceID,
+            action: .taskCreate, resourceIDs: ["fictional-pending"], expectedVersions: [:], calendarIDs: [], fields: ["title"],
+            effectDigest: String(repeating: "a", count: 64), hasGuestEffects: false, affectsSeries: false, hasSharingEffects: false)
+        let resources = AgentPermissionResources(ownerID: model.agentPermissionOwnerID, deviceID: CalshotModel.syncDeviceID, versions: [:],
+            writableCalendarIDs: [], supportedActions: [.taskCreate], cancelled: false)
+        guard case .allow(let envelope) = try await store.reserve(pending, context: .userRequested(), resources: resources) else { return XCTFail("Fixture reservation failed") }
+        try await store.beginDispatch(envelope, resources: resources); try await store.settle(envelope, outcome: .unknown)
+        let receipt = try await model.linkSelectedEventDirectly(snapshot: service.snapshot, destinationID: "fictional-readonly",
+            expectedFingerprint: CalshotModel.taskSourceFingerprint(service.snapshot))
+        XCTAssertEqual(receipt.outcome, "saved"); XCTAssertEqual(model.taskDocument.items.count, 1); XCTAssertEqual(service.writes, 0)
+        let record = try await store.operationRecord(receipt.operationID), previous = try await store.operationRecord(pending.operationID)
+        XCTAssertEqual(record?.status, "succeeded"); XCTAssertEqual(previous?.status, "unknown")
+    }
+
+    func testDirectAddToTasksIsBlockedWhenThePermissionStoreCannotBeOpened() async throws {
+        let service = ReadOnlySourceFixture(), model = fixture(service); await model.loadCalendars()
+        let directory = model.memoryStore.locationURL.appendingPathComponent("AgentPermissions", isDirectory: true)
+            .appendingPathComponent(model.agentPermissionOwnerID, isDirectory: true).appendingPathComponent(CalshotModel.syncDeviceID, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let corrupt = Data("fictional corrupt permissions".utf8); try corrupt.write(to: directory.appendingPathComponent("agent-permissions.json"))
+        let fingerprint = try CalshotModel.taskSourceFingerprint(service.snapshot)
+        do { _ = try await model.linkSelectedEventDirectly(snapshot: service.snapshot, destinationID: "fictional-readonly", expectedFingerprint: fingerprint); XCTFail("Linked without a readable permission store") } catch {}
+        XCTAssertTrue(model.taskDocument.items.isEmpty); XCTAssertNotNil(model.agentPermissionError)
     }
 }

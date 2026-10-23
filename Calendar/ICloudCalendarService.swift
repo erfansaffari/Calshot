@@ -19,9 +19,13 @@ actor ICloudCalendarService: CalendarDestinationService {
             guard p.count == 3 || p.count == 5, p[0] == "icloud", let account = UUID(uuidString: String(p[1])), let calendar = Self.decode(String(p[2])).flatMap(URL.init(string:)), ICloudCalendarService.allowed(calendar) else { return nil }
             accountID = account; self.calendar = calendar
             if p.count == 5 {
-                guard let raw = Self.decode(String(p[3])), let resource = URL(string: raw), ICloudCalendarService.allowed(resource), resource.absoluteString.hasPrefix(calendar.absoluteString) else { return nil }
+                guard let raw = Self.decode(String(p[3])), let resource = URL(string: raw), ICloudCalendarService.allowed(resource), Self.contains(resource, in: calendar) else { return nil }
                 self.resource = resource; recurrence = Self.decode(String(p[4]))
             }
+        }
+        static func contains(_ resource: URL, in calendar: URL) -> Bool {
+            let parent = resource.deletingLastPathComponent().standardized.absoluteURL
+            return parent == calendar.standardized.absoluteURL && resource.query == nil && resource.fragment == nil
         }
         static func decode(_ value: String) -> String? {
             let base = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
@@ -71,16 +75,20 @@ actor ICloudCalendarService: CalendarDestinationService {
         let (data, response) = try await Self.send(route.calendar, method: "REPORT", body: xml, email: account.email, password: account.accessToken, headers: ["Depth": "1"])
         var events: [CalendarEventSnapshot] = []
         for entry in try DAVResponse.parse(data) {
-            guard let raw = entry.properties["calendar-data"], let resource = URL(string: entry.href, relativeTo: response.url!)?.absoluteURL, Self.allowed(resource) else { throw CalendarDestinationError.invalidDraft("iCloud could not return every matching event") }
+            guard let raw = entry.properties["calendar-data"], let resource = URL(string: entry.href, relativeTo: response.url!)?.absoluteURL, Self.allowed(resource), Route.contains(resource, in: route.calendar) else { throw CalendarDestinationError.invalidDraft("iCloud could not return every matching event") }
             let (originalData, _) = try await Self.send(resource, method: "GET", email: account.email, password: account.accessToken)
             let originals = ICS(String(decoding: originalData, as: UTF8.self)).events
             for var component in ICS(raw).events {
                 let original = originals.first { ICS.sameRecurrence($0.line("RECURRENCE-ID") ?? "", component.line("RECURRENCE-ID") ?? "") } ?? originals.first { !$0.has("RECURRENCE-ID") }
-                if let original { component.set("X-CALSHOT-TIMEZONE", "X-CALSHOT-TIMEZONE:" + original.timeZone) }
+                if let original {
+                    component.set("X-CALSHOT-TIMEZONE", "X-CALSHOT-TIMEZONE:" + original.timeZone)
+                    if !component.has("LAST-MODIFIED") { component.set("LAST-MODIFIED", original.line("LAST-MODIFIED")) }
+                }
                 if component.value("STATUS") == "CANCELLED" { continue }
                 guard !component.has("RRULE") else { throw CalendarDestinationError.invalidDraft("iCloud did not expand a recurring event; this calendar cannot be searched accurately") }
                 var eventRoute = route; eventRoute.resource = resource; eventRoute.recurrence = component.line("RECURRENCE-ID") ?? ""
-                let event = try component.snapshot(route: eventRoute, name: names[route.id] ?? "iCloud")
+                var event = try component.snapshot(route: eventRoute, name: names[route.id] ?? "iCloud")
+                if original?.has("RRULE") == true || original?.has("RDATE") == true { event.isRecurring = true }
                 if event.start < end && event.end > start && (query == nil || query!.isEmpty || event.title.localizedCaseInsensitiveContains(query!) || (event.notes ?? "").localizedCaseInsensitiveContains(query!)) { events.append(event) }
             }
         }
@@ -217,8 +225,24 @@ struct ICS {
                 end = calendar.date(byAdding: .day, value: 1, to: start)!
             }
             else { throw CalendarDestinationError.invalidDraft("iCloud event has no end time") }
-            return .init(eventIdentifier: route.eventID, title: ICS.unescape(value("SUMMARY") ?? "Untitled event"), start: start, end: end, isAllDay: allDay, timeZone: timeZone,
+            var result = CalendarEventSnapshot(eventIdentifier: route.eventID, title: ICS.unescape(value("SUMMARY") ?? "Untitled event"), start: start, end: end, isAllDay: allDay, timeZone: timeZone,
                          location: value("LOCATION").map(ICS.unescape), calendarName: name, url: value("URL").flatMap(URL.init(string:)), notes: value("DESCRIPTION").map(ICS.unescape), externalEventIdentifier: uid, isFree: value("TRANSP")?.uppercased() == "TRANSPARENT")
+            let recurrence = line("RECURRENCE-ID")
+            result.isRecurring = recurrence != nil || has("RRULE") || has("RDATE")
+            if let recurrence, let raw = value("RECURRENCE-ID") {
+                if raw.count == 8 {
+                    // Keep the provider's original date, independent of a moved DTSTART.
+                    let date = String(raw.prefix(4)) + "-" + String(raw.dropFirst(4).prefix(2)) + "-" + String(raw.suffix(2))
+                    result.recurrenceDate = RemoteCalendarService.validatedCalendarDate(date)
+                } else if recurrence.hasSuffix("Z") || recurrence.contains(";TZID=") {
+                    result.originalOccurrenceStart = try? Self.parseDate(recurrence)
+                }
+                // Floating recurrence times have no known instant; leave unresolved.
+            }
+            if let modified = line("LAST-MODIFIED"), modified.hasSuffix("Z") {
+                result.modifiedAt = try? Self.parseDate(modified)
+            }
+            return result
         }
     }
     var lines: [String]

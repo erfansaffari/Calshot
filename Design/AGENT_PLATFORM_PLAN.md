@@ -1,6 +1,6 @@
 # Calshot agent platform plan
 
-Status: proposed, planning only. Prepared 2026-10-23 from the owner's requirements and three GPT-6.1-Sol medium research assignments. This document does not change current permissions, execution ownership or shipped behavior. The completed UI work was separately pushed as `9011dc9`.
+Status: implementation underway. Originally prepared 2026-10-23 from the owner's requirements and three GPT-6.1-Sol medium research assignments; implementation was subsequently authorized. Task linking, calendar intent and device-local task permissions are implemented. Durable sessions/memory, the cloud coordinator and proactivity remain planned. The earlier UI work was pushed as `9011dc9`.
 
 ## 1. Intended product
 
@@ -197,7 +197,7 @@ Safe first-phase assumption: ship 1a only after its local identity/read-access g
 
 Read-only parallelization and deterministic receipts can ship alongside phases 1–3 once their correctness gates pass. Do not delay the concrete linking/permission fixes until the cloud migration.
 
-Use GPT-6.1-Sol medium for orchestration, planning and later implementation assignments; this follow-up authorizes documentation only, not execution of those assignments. Use implementation agents with disjoint file ownership and explicit integration points. Review each phase before starting dependent phases. A planner/coordinator need not stay as an always-running LLM. Keep a separate evaluation/review assignment from implementation.
+The owner subsequently authorized implementation with GPT agents, then Sonnet 5.5 for challenging implementation and review; the original documentation-only restriction no longer applies. Use implementation agents with disjoint file ownership and explicit integration points. Review each phase before starting dependent phases. A planner/coordinator need not stay as an always-running LLM. Keep a separate evaluation/review assignment from implementation.
 
 ## 9. Verification and rollout
 
@@ -241,4 +241,12 @@ Before each phase, amend the applicable project/design/tool contracts deliberate
 
 ## Scope of this planning work
 
-Research and design only. No new architecture, permission behavior, migrations or live-model benchmarks have been implemented or verified. This documentation follow-up resolves nine review findings as proposed normative contracts and acceptance gates; it does not establish private-backend compatibility or test results. Suggested defaults and latency budgets are proposed. No dependency installation, credential migration, backend deployment, DMG release or additional platform shell was performed.
+The original planning commit (`6aa6cd5`) was research and design only; the implementation status below supersedes its implementation and verification limits. Live-model benchmarks remain unrun. This documentation follow-up resolves nine review findings as proposed normative contracts and acceptance gates; it does not establish private-backend compatibility or test results. Suggested defaults and latency budgets are proposed. No dependency installation, credential migration, backend deployment, DMG release or additional platform shell was performed.
+
+## Task linking and permissions delivery — 2026-10-23
+
+Implemented: explicit Tasks-only/publication/source-link intent, device-scoped exact source links, typed task tools, local operation receipts, versioned task sync, device-local saved task grants, task-only conversation/notch review and per-row outcomes. Calendar writes still require their separate review. The explicit Add to Tasks button uses the same permission ledger and may exceed automation quotas for its exact visible effect; it still consumes allowance for subsequent automated actions. Screenshot-started and default screenshot-import runs, including retries, do not inherit typed-request grants. Each bridge submission binds its own immutable prompt before asynchronous dispatch.
+
+Verified: 251 native tests; 130 WebUI tests and a production build; 49 website tests against both pinned and current shared UI, plus 9 supplemental checks and both production builds; SQL rollback fixtures; hosted schema/history/security checks. Browser checks covered 920×650 and 1440×900, and the 560×490 notch with long review rows, partial errors and keyboard focus. Native UI automation could not start its connection; the isolated native fixture was built/launched but its rendering is unverified. Live-model traces, real-provider/EventKit parity and installed legacy-client rendering remain gates. See [verification notes](AGENT_PLATFORM_VERIFICATION.md).
+
+Not delivered: calendar grants/automatic publication, durable multi-session recovery and semantic memory, cloud execution/coordinator, cross-device canonical link registry, background actions, proactive scheduling, additional OS clients or agent task reordering. Local task and permission ledgers retain evidence without pruning; their storage/performance redesign remains separate work. No updated DMG is released by this delivery.

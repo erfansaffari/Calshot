@@ -396,3 +396,44 @@ if (["tasks", "tasks-empty", "tasks-error", "tasks-loading"].includes(scenario |
   }))};
   if (scenario==="tasks-error") preview.tasks.error="Tasks couldn’t sync. Local changes are kept. Try syncing again when connected.";
 }
+
+// Design preview: fictional task-only review, outcome and Settings permissions. No native bridge, no writes.
+const previewPermissions = (): NonNullable<AppState["agentPermissions"]> => ({
+  loaded: true, busy: false, revision: 0, expiresAt: null, limits: { perRun: 20, perWindow: 100, windowMinutes: 60 },
+  families: [
+    { id: "create", label: "Add tasks", detail: "Save tasks you ask for when they have no new calendar deadline.", enabled: false, expired: false },
+    { id: "link", label: "Add calendar events to Tasks", detail: "Link an event you selected. The event itself is never changed.", enabled: false, expired: false },
+    { id: "edit", label: "Edit tasks", detail: "Change a task’s title, date, time or notes.", enabled: false, expired: false },
+    { id: "complete", label: "Complete or reopen tasks", detail: "Mark tasks done, or open them again.", enabled: false, expired: false },
+    { id: "archive", label: "Archive or restore tasks", detail: "Move tasks out of your list, or bring them back.", enabled: false, expired: false },
+  ],
+});
+preview.agentPermissions = previewPermissions();
+export const previewTaskRows = (count: number) => Array.from({ length: count }, (_, i) => ({
+  id: "preview-row-" + i,
+  title: i % 3 === 0 ? "Submit the field report — include observations, illustrations and the full reference list" : "Read chapter " + (i + 1) + " and write discussion notes",
+  note: i === 1 ? "Its linked calendar event isn’t changed." : null,
+  changes: [{ label: "Status", before: "Open", after: "Complete" }],
+}));
+if (["task-review", "task-review-long", "task-review-link", "task-outcome", "task-outcome-partial", "task-permissions"].includes(scenario ?? "")) {
+  preview.proposals = []; preview.waitingApproval = false; preview.canApprove = false; preview.selectedCount = 0;
+  preview.messages = [{ role: "user", content: scenario === "task-review-link" ? "Add this event to Tasks" : "Mark my finished reading tasks complete." }];
+  if (scenario === "task-review" || scenario === "task-review-long") {
+    preview.running = true;
+    preview.taskReview = { id: "preview-review", token: "preview-token", digest: "preview-digest", kind: "complete", phase: "waiting", calendarWrites: 0,
+      reason: "No current permission for this action and invocation.", heading: scenario === "task-review" ? "Mark complete: 2 tasks" : "Mark complete: 12 tasks",
+      rows: previewTaskRows(scenario === "task-review" ? 2 : 12) };
+  }
+  if (scenario === "task-review-link") {
+    preview.running = true;
+    preview.taskReview = { id: "preview-link", token: "preview-token", digest: "preview-digest", kind: "link", phase: "waiting", calendarWrites: 0,
+      reason: "No current permission for this action and invocation.", heading: "Add this event to Tasks",
+      rows: [{ id: "preview-link-row", title: "Studio critique and portfolio review", note: "Your calendar isn’t changed.", changes: [
+        { label: "New task", after: "Studio critique and portfolio review" }, { label: "Event", after: "Fri, Nov 6, 2026 · all day" }, { label: "Linked to", after: "School" }] }] };
+  }
+  if (scenario === "task-outcome") preview.taskOutcome = { id: "preview-outcome", status: "saved", headline: "2 tasks updated", viaSavedPermission: true,
+    rows: previewTaskRows(2).map((r) => ({ id: r.id, title: r.title, status: "saved" })) };
+  if (scenario === "task-outcome-partial") preview.taskOutcome = { id: "preview-outcome", status: "partial", headline: "1 of 3 saved", viaSavedPermission: false,
+    rows: [{ id: "a", title: "Read chapter 1", status: "saved" }, { id: "b", title: "Read chapter 2", status: "failed", message: "Finish or skip this task’s deadline review first." }, { id: "c", title: "Read chapter 3", status: "cancelled", message: "Stopped before this change was saved." }] };
+  if (scenario === "task-permissions") { preview.page = "settings"; preview.settingsSection = "privacy"; }
+}

@@ -115,10 +115,14 @@ export function CalendarPage({
 }) {
   const { anchor, setAnchor, mode, setMode, hidden } = useCalendar();
   const [detailKey, setDetailKey] = useState<string>();
+  const [linkErrors, setLinkErrors] = useState<Record<string, string>>({});
+  const [linking, setLinking] = useState(false);
+  const linkInFlight = useRef(false);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [ask, setAsk] = useState("");
+  const [askSelection, setAskSelection] = useState<{ eventHandle: string; viewToken: string }>();
   const [sending, setSending] = useState(false);
   const [newEvent, setNewEvent] = useState(false);
   const [now, setNow] = useState(() => new Date());
@@ -205,9 +209,27 @@ export function CalendarPage({
       !detailCalendar.isReadOnly &&
       !detailCalendar.unavailable,
   );
+  const taskNotice = detail?.selectionHandle ? state.calendarTaskNotices?.[detail.selectionHandle] : undefined;
+  const canLink = Boolean(!readOnly && detail?.selectionHandle && detail.selectionGeneration && detailCalendar && !detailCalendar.unavailable && !detail?.calendarIdentifier.startsWith("shared:"));
+  const linkSelected = async () => {
+    if (!detail || !canLink || linkInFlight.current) return;
+    const handle = detail.selectionHandle!;
+    linkInFlight.current = true;
+    setLinking(true);
+    setLinkErrors((old) => ({ ...old, [handle]: "" }));
+    try {
+      await command({ action: "linkCalendarEventTask", selectionHandle: handle, selectionGeneration: detail.selectionGeneration });
+    } catch (e) {
+      setLinkErrors((old) => ({ ...old, [handle]: (e as Error).message }));
+    } finally {
+      linkInFlight.current = false;
+      setLinking(false);
+    }
+  };
   const conversionRequest =
     canChange && detail ? allDayConversionRequest(detail) : undefined;
   const askAbout = (text: string) => {
+    setAskSelection(detail?.selectionHandle && detail.selectionGeneration ? { eventHandle: detail.selectionHandle, viewToken: detail.selectionGeneration } : undefined);
     setAsk(text);
     setDetailKey(undefined);
     requestAnimationFrame(() =>
@@ -216,6 +238,12 @@ export function CalendarPage({
         ?.focus(),
     );
   };
+  useEffect(() => {
+    if (askSelection && !events.some((event) => event.selectionHandle === askSelection.eventHandle && event.selectionGeneration === askSelection.viewToken)) {
+      setAskSelection(undefined);
+      setAsk("");
+    }
+  }, [view, idsKey]);
   const color = (id: string) =>
     calendarColor(visibleSources.findIndex((c) => c.id === id));
   const tint = (event: CalendarEvent) =>
@@ -289,7 +317,8 @@ export function CalendarPage({
     setSending(true);
     setError("");
     try {
-      await command({ action: "startCalendarTask", text: text.trim() });
+      await command({ action: "startCalendarTask", text: text.trim(), ...(newEvent ? {} : askSelection || {}) });
+      setAskSelection(undefined);
       setAsk("");
       setNewEvent(false);
       setDetailKey(undefined);
@@ -519,7 +548,7 @@ export function CalendarPage({
                             }
                             style={tint(event)}
                             aria-label={eventLabel(event)}
-                            onClick={() => setDetailKey(eventKey(event))}
+                            onClick={() => { setAskSelection(undefined); setAsk(""); setDetailKey(eventKey(event)); }}
                           >
                             <span className="calendar-event-dot" />
                             <span className="truncate">
@@ -601,7 +630,7 @@ export function CalendarPage({
                             style={tint(event)}
                             aria-label={eventLabel(event)}
                             title={event.title || "Untitled event"}
-                            onClick={() => setDetailKey(eventKey(event))}
+                            onClick={() => { setAskSelection(undefined); setAsk(""); setDetailKey(eventKey(event)); }}
                           >
                             {event.title || "Untitled event"}
                           </button>
@@ -672,7 +701,7 @@ export function CalendarPage({
                               }}
                               aria-label={eventLabel(event)}
                               title={eventLabel(event)}
-                              onClick={() => setDetailKey(eventKey(event))}
+                              onClick={() => { setAskSelection(undefined); setAsk(""); setDetailKey(eventKey(event)); }}
                             >
                               <strong>{event.title || "Untitled event"}</strong>
                               <span>{timeRange(event.start, event.end)}</span>
@@ -783,6 +812,24 @@ export function CalendarPage({
             {detail.notes && <p className="event-notes">{detail.notes}</p>}
             {detail.timeZone && <small>{detail.timeZone}</small>}
             {detail.calendarIdentifier.startsWith("shared:") && <Badge>Shared · Read-only</Badge>}
+            {canLink && (
+              <>
+                {taskNotice?.status === "success" && taskNotice.receipt ? (
+                  <div role="status">
+                    <p>{taskNotice.receipt.outcome === "alreadyLinkedArchived" ? "Already linked to an archived task on this Mac. Open Tasks → Archived to restore it." : taskNotice.receipt.outcome === "alreadyLinked" ? "Already linked to Tasks on this Mac." : "Added to Tasks on this Mac."} The source calendar event stays unchanged.</p>
+                    <button className="button secondary" onClick={() => void command({ action: "navigate", page: "tasks" }).catch((e) => setLinkErrors((old) => ({ ...old, [detail.selectionHandle!]: e.message })))}>View Tasks</button>
+                  </div>
+                ) : (
+                  <button className="button secondary" disabled={blocked || linking || taskNotice?.status === "loading"} onClick={() => void linkSelected()}>
+                    {linking || taskNotice?.status === "loading" ? <Spinner /> : null}
+                    {linking || taskNotice?.status === "loading" ? "Adding to Tasks…" : "Add to Tasks"}
+                  </button>
+                )}
+                {(taskNotice?.status === "error" || linkErrors[detail.selectionHandle!]) && <InlineError message={linkErrors[detail.selectionHandle!] || taskNotice?.message || "Couldn’t add this event to Tasks. Try again."} />}
+                {blocked && <p className="fine-print">Finish or stop the current task before adding this event to Tasks.</p>}
+                <button className="button secondary" disabled={blocked || linking} onClick={() => askAbout("For this selected event, ")}>Ask Calshot about this</button>
+              </>
+            )}
             {canChange && (
               <>
                 <button

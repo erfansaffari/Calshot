@@ -138,6 +138,8 @@ export interface MemoryRecord {
   provider: string;
 }
 export interface CalendarEvent {
+  selectionHandle?: string;
+  selectionGeneration?: string;
   eventIdentifier: string;
   calendarIdentifier: string;
   title: string;
@@ -185,7 +187,29 @@ export interface SoftwareUpdateState {
   status: string; error?: string | null; automaticChecks: boolean; automaticDownloads: boolean;
   lastChecked?: string | null; development: boolean;
 }
+export interface TaskReviewChange { label: string; before?: string | null; after?: string | null }
+export interface TaskReviewRow { id: string; title: string; note?: string | null; changes: TaskReviewChange[] }
+/** Task-only review. Native owns the token and digest; it never carries a calendar write. */
+export interface TaskReview {
+  id: string; token: string; digest: string; kind: "link" | "edit" | "complete" | "archive";
+  heading: string; phase: "waiting" | "applying"; reason: string; calendarWrites: number;
+  error?: string | null; rows: TaskReviewRow[];
+}
+export interface TaskOutcome {
+  id: string; status: "saved" | "partial" | "failed" | "cancelled" | "declined" | "denied" | "unavailable";
+  headline: string; viaSavedPermission: boolean;
+  rows: { id: string; title: string; status: string; message?: string | null }[];
+}
+/** Device-local task action grants for requests the user makes. Calendar changes are not covered. */
+export interface AgentPermissionsState {
+  loaded: boolean; busy: boolean; error?: string | null; notice?: string | null; revision: number;
+  families: { id: string; label: string; detail: string; enabled: boolean; expired: boolean }[];
+  expiresAt?: string | null; limits: { perRun: number; perWindow: number; windowMinutes: number };
+}
 export interface AppState {
+  taskReview?: TaskReview;
+  taskOutcome?: TaskOutcome;
+  agentPermissions?: AgentPermissionsState;
   taskImport?: { id:string; items:CalshotTask[]; selectedInboxIDs:string[] };
   tasks?: TasksState;
   softwareUpdate?: SoftwareUpdateState;
@@ -222,6 +246,7 @@ export interface AppState {
   };
   settingsSection?: "general" | "calendars" | "friends" | "ai" | "privacy";
   calendarView?: CalendarViewState;
+  calendarTaskNotices?: Record<string, { status: "loading" | "success" | "error"; message?: string; receipt?: { operationID: string; taskID: string; taskVersion: string; outcome: string; savedAt: string } }>;
   sharing?: SharingState;
   sidebarExpanded: boolean;
   sidebarWidth?: number;
@@ -302,6 +327,9 @@ declare global {
 }
 
 export interface CalshotTask {
+  calendarIntent?: "none" | "existing" | "new";
+  intentProvenance?: "defaulted" | "explicit" | "suppressed";
+  sourceLink?: { deviceID: string; calendarID: string; eventID: string; occurrenceKey: string; observedStart: string; observedEnd: string; observedAt: string; sourceName: string; calendarName: string };
   id: string; version: string; title: string; dueDate?: string; dueTime?: string; timeZone: string; notes: string;
   completed: boolean; deleted: boolean; rank: number; reminderMinutes?: number; reminderTime?: string; reminderDeviceID?: string;
   calendarID?: string; calendarName?: string; receipt?: {eventIdentifier:string;destinationID:string;calendarName:string};

@@ -278,7 +278,20 @@ function simulate(message: Command) {
       ],
     });
   else if (message.action === "stop")
-    update({ ...state, running: false, waitingApproval: false });
+    update({ ...state, running: false, waitingApproval: false, taskReview: undefined });
+  else if (message.action === "approveTaskChange" || message.action === "cancelTaskChange") {
+    const approved = message.action === "approveTaskChange";
+    update({ ...state, running: false, taskReview: undefined, taskOutcome: {
+      id: crypto.randomUUID(), status: approved ? "saved" : "declined", viaSavedPermission: false,
+      headline: approved ? "Preview: task change saved" : "Nothing changed",
+      rows: approved ? (state.taskReview?.rows || []).slice(0, 12).map((r) => ({ id: r.id, title: r.title, status: "saved" })) : [] } });
+  } else if (message.action === "loadAgentPermissions") return;
+  else if (message.action === "saveAgentPermissions" && state.agentPermissions) {
+    const families = (message.families || {}) as Record<string, boolean>;
+    update({ ...state, agentPermissions: { ...state.agentPermissions, revision: state.agentPermissions.revision + 1,
+      notice: "Preview only. Nothing was saved.", expiresAt: new Date(Date.now() + Number(message.days) * 86400000).toISOString(),
+      families: state.agentPermissions.families.map((f) => ({ ...f, enabled: Boolean(families[f.id]), expired: false })) } });
+  }
   else
     update({
       ...state,

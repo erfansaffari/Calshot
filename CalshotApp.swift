@@ -5,6 +5,20 @@ import ScreenCaptureKit
 import SwiftUI
 import Combine
 
+/// Ephemeral, native-only authority for one selected personal event in a conversation.
+/// Never persisted into history or accepted from model/JavaScript snapshot fields.
+struct CalshotSelectedEventContext {
+    var token = UUID()
+    let ownerID: UUID?
+    let storeURL: URL
+    let snapshot: CalendarEventSnapshot
+    let destinationID: String
+    let fingerprint: String
+    let recordID: UUID
+    var captureID: UUID
+    var runID: UUID?
+}
+
 @main
 struct CalshotApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -131,6 +145,7 @@ final class CalshotModel: ObservableObject {
     @Published var agentStreamingText = ""
     @Published var agentError: String?
     @Published var agentRetryPrompt: String?
+    var agentRetryWasTypedRequest = false
     @Published var agentUseAPIKey = false {
         didSet { if persistsAISelection { UserDefaults.standard.set(agentUseAPIKey, forKey: "agentUseAPIKey") } }
     }
@@ -138,6 +153,26 @@ final class CalshotModel: ObservableObject {
     @Published var agentIsRunning = false
     @Published var agentIsWaitingForApproval = false
     @Published var agentQuestion: AgentQuestion?
+    /// Task-only review inside the conversation. Never shares state with calendar approval.
+    @Published var agentTaskReview: AgentTaskReview?
+    @Published var agentTaskOutcome: AgentTaskOutcome?
+    var agentTaskReviewContinuation: CheckedContinuation<AgentTaskReviewDecision, Never>?
+    /// One store per canonical native account + device directory. Closed on account change.
+    var agentPermissionStore: AgentPermissionStore?
+    var agentPermissionStoreKey: String?
+    var agentPermissionGeneration = UUID()
+    /// The only run whose request the user typed. Screenshot auto-runs never match, so saved grants cannot apply.
+    var agentTypedRunID: UUID?
+    var agentPermissionOpening: (key: String, task: Task<AgentPermissionStore, Error>)?
+    var agentPermissionClosing: Task<Void, Never>?
+    var agentPermissionLiveOperations = Set<UUID>()
+    var agentPermissionNeedsReconcile = false
+    /// Stable per-device location for real accounts; nil derives an isolated folder from the injected store (tests).
+    var agentPermissionBaseURL: URL?
+    @Published var agentPermissionPolicy: AgentPermissionPolicy?
+    @Published var agentPermissionError: String?
+    @Published var agentPermissionNotice: String?
+    @Published var agentPermissionBusy = false
     @Published var agentCommand = ""
     var calendarAgent: CalendarAgent?
     var agentToolExecutor: CalendarAgentToolExecutor?
@@ -233,8 +268,27 @@ final class CalshotModel: ObservableObject {
     @Published var sharingError: String?
     var sharingRPC: ((String, JSONValue, UUID) async throws -> JSONValue)?
     private var calendarObservation: AnyCancellable?
-    var currentMemoryRecordID: UUID?
-    var currentCaptureSessionID: UUID?
+    var selectedEventContext: CalshotSelectedEventContext?
+    var currentMemoryRecordID: UUID? {
+        didSet {
+            if let context = selectedEventContext, context.recordID != currentMemoryRecordID { selectedEventContext = nil }
+        }
+    }
+    var currentCaptureSessionID: UUID? {
+        didSet {
+            if let context = selectedEventContext, context.captureID != currentCaptureSessionID { selectedEventContext = nil }
+        }
+    }
+    /// Called before assigning the new capture/run ID for an intentional continuation.
+    func bindSelectedEventContext(runID: UUID) {
+        guard var context = selectedEventContext else { return }
+        guard context.ownerID == account.userID, context.storeURL == taskStore.url,
+              context.recordID == currentMemoryRecordID, context.captureID == currentCaptureSessionID else {
+            selectedEventContext = nil; return
+        }
+        context.token = UUID(); context.runID = runID; context.captureID = runID
+        selectedEventContext = context
+    }
     private var shortcutSuspendedForSelection = false
     private var currentCaptureIsQuick = false
     var isAppendingCapture = false
@@ -246,6 +300,9 @@ final class CalshotModel: ObservableObject {
         account = CalshotAccountService(enabled: loadsAIConnection)
         persistsCalendarSelection = loadsAIConnection
         persistsAISelection = loadsAIConnection
+        if loadsAIConnection, let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) {
+            agentPermissionBaseURL = support.appendingPathComponent("Calshot", isDirectory: true).appendingPathComponent("AgentPermissions", isDirectory: true)
+        }
         if loadsAIConnection { agentUseAPIKey = UserDefaults.standard.bool(forKey: "agentUseAPIKey") }
         self.agentClient = agentClient
         self.calendarService = calendarService
@@ -265,7 +322,7 @@ final class CalshotModel: ObservableObject {
         calendarObservation = calendarActions.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         accountObservation = account.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         if loadsAIConnection { clearTaskSession() } else { loadTasks() }
-        account.onSignedOut = { [weak self] in self?.clearTaskSession() }
+        account.onSignedOut = { [weak self] in self?.selectedEventContext = nil; self?.teardownAgentPermissions(reason: "You signed out."); self?.clearTaskSession() }
         account.onShowWindow = { [weak self] in self?.openPanel() }
         account.onAuthenticated = { [weak self] provider in
             Task { @MainActor in
@@ -274,6 +331,7 @@ final class CalshotModel: ObservableObject {
                     self.clearTaskSession()
                     self.cancelCalendarConnection()
                     self.stopAgent(); self.analysisTask?.cancel(); self.ocrTask?.cancel()
+                    self.teardownAgentPermissions(reason: "The account changed.")
                     self.activeAgentRunID = nil; self.currentCaptureSessionID = UUID(); self.currentMemoryRecordID = nil
                     self.image = nil; self.recognizedText = ""; self.agentMessages = []; self.agentTranscriptPrefix = []
                     self.agentSummary = nil; self.agentStreamingText = ""; self.agentError = nil; self.agentStatus = nil

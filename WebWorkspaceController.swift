@@ -35,6 +35,19 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
     private var settingsSection = "general"
     private var calendarViewRequestID = UUID()
     private var lastFriendAccessToken = ""
+    /// Authority stays native: JavaScript receives only a handle and view generation.
+    private struct CalendarTaskSelection {
+        let snapshot: CalendarEventSnapshot
+        let calendarID: String
+        let fingerprint: String
+        let ownerID: UUID?
+        let storeURL: URL
+        let taskSessionID: UUID
+        let captureID: UUID?
+    }
+    private var calendarTaskSelections: [String: CalendarTaskSelection] = [:]
+    private var calendarTaskLinkBusy = false
+    private(set) var calendarTaskNotices: [String: JSONValue] = [:]
     private(set) var calendarView: JSONValue = .object(["loaded": .bool(false), "loading": .bool(false), "events": .array([]), "errors": .array([])])
 
     init(model: CalshotModel, loadsResources: Bool = true, isNotch: Bool = false) {
@@ -87,13 +100,19 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         let calendars = model.readableCalendars.filter { identifiers.contains($0.id) }
         let shared = model.friendBrowserSources.filter { identifiers.map { $0.lowercased() }.contains($0.id.lowercased()) }
         guard calendars.count + shared.count == identifiers.count else { throw CalendarToolArgumentError("A calendar changed. Refresh your calendars and try again.") }
+        if !model.taskDataReady { model.loadTasks() }
         let owner = model.account.userID
+        let storeURL = model.taskStore.url
+        let taskSessionID = model.taskSessionID
+        let captureID = model.currentCaptureSessionID
         let accessToken = model.friendAccessToken
         let id = UUID(); calendarViewRequestID = id
+        calendarTaskSelections = [:]; calendarTaskNotices = [:]
         calendarView = .object(["loading": .bool(true), "loaded": .bool(false), "start": .string(ISO8601DateFormatter().string(from: start)), "end": .string(ISO8601DateFormatter().string(from: end)), "events": .array([]), "errors": .array([])])
         publish()
         var events: [JSONValue] = [], errors: [JSONValue] = []
         var truncated = false
+        var selections: [String: CalendarTaskSelection] = [:]
         for calendar in calendars {
             guard calendarViewRequestID == id else { return }
             do {
@@ -108,6 +127,13 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                     row["calendarIdentifier"] = .string(calendar.id)
                     row["calendarName"] = .string(calendar.title)
                     row["sourceName"] = .string(calendar.sourceName ?? calendar.provider.rawValue.capitalized)
+                    let handle = UUID().uuidString
+                    row["selectionHandle"] = .string(handle)
+                    row["selectionGeneration"] = .string(id.uuidString)
+                    selections[handle] = CalendarTaskSelection(snapshot: event, calendarID: calendar.id,
+                        fingerprint: try CalshotModel.taskSourceFingerprint(event), ownerID: owner,
+                        storeURL: storeURL, taskSessionID: taskSessionID,
+                        captureID: captureID)
                     events.append(.object(row))
                 }
             } catch {
@@ -125,9 +151,61 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 errors.append(.object(["calendarIdentifier": .string(source.id), "calendarName": .string(source.share.personName + " · " + source.calendar.name), "message": .string(error.localizedDescription)]))
             }
         }
-        guard calendarViewRequestID == id, model.account.userID == owner, model.friendAccessToken == accessToken else { return }
+        guard calendarViewRequestID == id, model.account.userID == owner, model.friendAccessToken == accessToken,
+              model.taskStore.url == storeURL, model.taskSessionID == taskSessionID, model.currentCaptureSessionID == captureID else { return }
         if events.count > 3000 { truncated = true }
+        let visible = Array(events.prefix(3000))
+        let handles = Set(visible.compactMap { $0.objectValue?["selectionHandle"]?.stringValue })
+        calendarTaskSelections = selections.filter { handles.contains($0.key) }
         calendarView = .object(["loading": .bool(false), "loaded": .bool(true), "start": .string(ISO8601DateFormatter().string(from: start)), "end": .string(ISO8601DateFormatter().string(from: end)), "events": .array(Array(events.prefix(3000))), "errors": .array(errors), "truncated": .bool(truncated)])
+    }
+    private func resolveCalendarTaskSelection(handle: String?, generation: String?) throws -> CalendarTaskSelection {
+        guard let handle, generation == calendarViewRequestID.uuidString,
+              let selection = calendarTaskSelections[handle],
+              selection.ownerID == model.account.userID, selection.storeURL == model.taskStore.url,
+              selection.taskSessionID == model.taskSessionID, selection.captureID == model.currentCaptureSessionID,
+              model.readableCalendars.contains(where: { $0.id == selection.calendarID && !$0.id.hasPrefix("unavailable:") }),
+              !selection.calendarID.hasPrefix("shared:"), !selection.calendarID.hasPrefix("friend:") else {
+            throw CalendarToolArgumentError("This event selection changed. Refresh Calendar and select it again.")
+        }
+        return selection
+    }
+    /// Exact, direct task-only mutation. This route never prepares or approves a calendar write.
+    func linkCalendarEventTask(_ body: [String: Any]) async throws {
+        guard !isNotch, model.workspaceSelection == .calendars else {
+            throw CalendarToolArgumentError("Add events to Tasks from Calendar.")
+        }
+        guard Set(body.keys).isSubset(of: ["id", "action", "selectionHandle", "selectionGeneration"]) else {
+            throw CalendarToolArgumentError("Use the current native event selection to add to Tasks.")
+        }
+        guard let handle = body["selectionHandle"] as? String else {
+            throw CalendarToolArgumentError("Choose the current calendar event first.")
+        }
+        let selection = try resolveCalendarTaskSelection(handle: handle,
+            generation: body["selectionGeneration"] as? String)
+        try requireIdle()
+        guard model.agentQuestion == nil, !model.agentIsWaitingForApproval, !model.calendarActions.isCheckingDuplicates else {
+            throw CalendarToolArgumentError("Finish or stop the current task first.")
+        }
+        if !model.taskDataReady { model.loadTasks() }
+        _ = try model.taskContext(origin: .workspace)
+        calendarTaskLinkBusy = true
+        calendarTaskNotices[handle] = .object(["status": .string("loading")])
+        publish()
+        defer { calendarTaskLinkBusy = false; publish() }
+        do {
+            let receipt = try await model.linkSelectedEventDirectly(snapshot: selection.snapshot, destinationID: selection.calendarID,
+                expectedFingerprint: selection.fingerprint)
+            // Do not expose a prior owner's receipt if the account changed during the native read.
+            guard selection.ownerID == model.account.userID, selection.storeURL == model.taskStore.url,
+                  body["selectionGeneration"] as? String == calendarViewRequestID.uuidString else { return }
+            calendarTaskNotices[handle] = .object(["status": .string("success"), "receipt": WebWorkspaceState.encoded(receipt)])
+        } catch {
+            if selection.ownerID == model.account.userID, body["selectionGeneration"] as? String == calendarViewRequestID.uuidString {
+                calendarTaskNotices[handle] = .object(["status": .string("error"), "message": .string(error.localizedDescription)])
+            }
+            throw error
+        }
     }
     private func browseEvents(start: Date, end: Date, calendarID: String, depth: Int = 0) async throws -> (events: [CalendarEventSnapshot], truncated: Bool) {
         let events = try await model.calendarService.searchEvents(query: nil, start: start, end: end, in: .resolve(identifier: calendarID))
@@ -154,6 +232,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         if lastFriendAccessToken != friendToken {
             lastFriendAccessToken = friendToken
             calendarViewRequestID = UUID()
+            calendarTaskSelections = [:]; calendarTaskNotices = [:]
             calendarView = .object(["loaded": .bool(false), "loading": .bool(false), "events": .array([]), "errors": .array([])])
         }
         if !duplicateCheckRunning, !model.isSaving, !model.calendarActions.isCheckingDuplicates,
@@ -171,6 +250,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         var viewState = WebWorkspaceState.make(model, imageURL: assets.currentURL, notice: notice, accounts: accounts, googleReady: googleReady, comparisons: comparisons).objectValue ?? [:]
         viewState["settingsSection"] = .string(settingsSection)
         viewState["calendarView"] = calendarView
+        viewState["calendarTaskNotices"] = model.account.canUseWorkspace ? .object(calendarTaskNotices) : .object([:])
         let snapshot = JSONValue.object(viewState).jsonString()
         guard snapshot != lastSnapshot else { return }
         lastSnapshot = snapshot
@@ -189,10 +269,11 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         Task { try? await webView.callAsyncJavaScript("window.__calshotReply(reply)", arguments: ["reply": ["id": id, "ok": error == nil, "error": error ?? ""]], in: nil, contentWorld: .page) }
     }
     private func requireIdle() throws {
-        guard !model.isSaving, !model.isCapturing, !model.agentIsRunning, !model.isRecognizing else { throw CalendarToolArgumentError("Finish or stop the current task first.") }
+        guard !calendarTaskLinkBusy, !model.isSaving, !model.isCapturing, !model.agentIsRunning, !model.isRecognizing else { throw CalendarToolArgumentError("Finish or stop the current task first.") }
     }
     private func resetConversation() {
         model.analysisTask?.cancel(); model.analysisTask = nil; model.ocrTask?.cancel(); model.ocrTask = nil
+        model.selectedEventContext = nil
         model.activeAgentRunID = nil; model.agentCommand = ""
         comparisons = [:]; model.currentCaptureSessionID = UUID(); model.currentMemoryRecordID = nil
         model.image = nil; model.previousCaptureImage = nil; model.recognizedText = ""
@@ -200,6 +281,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         model.agentMessages = []; model.agentTranscriptPrefix = []
         model.agentSummary = nil; model.agentStreamingText = ""; model.agentError = nil; model.agentStatus = nil; model.status = nil
         model.agentRetryPrompt = nil; model.calendarActions.replace(with: []); model.workspaceSelection = .chat
+        model.cancelAgentTaskReview(reason: "New task."); model.agentTaskOutcome = nil
     }
     private func requireReview(_ body: [String: Any]) throws {
         guard !model.agentIsRunning || model.agentIsWaitingForApproval else { throw CalendarToolArgumentError("Wait for Calshot to finish preparing this review.") }
@@ -295,6 +377,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             if page == .settings && settingsSection == "friends" { Task { await model.refreshSharing() } }
             if page == .tasks { model.loadTasks(); Task { await model.syncTasks() } }
             if page == .library { model.refreshMemory() }
+            if page == .settings && ["privacy", "ai"].contains(settingsSection) && !isNotch { Task { _ = try? await model.openAgentPermissionStore() } }
             if page == .calendars || (page == .settings && settingsSection == "calendars") { Task { await model.loadCalendars(); refreshAccounts() } }
         case "saveTask":
             guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Manage tasks on the Tasks page.") }
@@ -315,6 +398,35 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         case "taskNotificationSettings":
             guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Open Tasks first.") }
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
+        case "approveTaskChange", "cancelTaskChange":
+            // Task-only review. Allowed in the notch; never prepares or approves a calendar write.
+            guard Set(body.keys).isSubset(of: ["id", "action", "reviewID", "token", "digest"]),
+                  let reviewID = (body["reviewID"] as? String).flatMap(UUID.init(uuidString:)), let token = body["token"] as? String else {
+                throw CalendarToolArgumentError("This task review is no longer current.")
+            }
+            if action == "approveTaskChange" {
+                guard let digest = body["digest"] as? String else { throw CalendarToolArgumentError("This task review is no longer current.") }
+                try model.approveAgentTaskReview(id: reviewID, token: token, digest: digest)
+            } else { try model.declineAgentTaskReview(id: reviewID, token: token) }
+        case "loadAgentPermissions":
+            guard !isNotch, model.workspaceSelection == .settings else { throw CalendarToolArgumentError("Task permissions are in Settings.") }
+            _ = try await model.openAgentPermissionStore()
+        case "saveAgentPermissions":
+            guard !isNotch, model.workspaceSelection == .settings else { throw CalendarToolArgumentError("Change task permissions in Settings.") }
+            try requireIdle()
+            guard Set(body.keys).isSubset(of: ["id", "action", "revision", "families", "days", "renew"]),
+                  let revisionNumber = body["revision"] as? NSNumber, CFGetTypeID(revisionNumber) != CFBooleanGetTypeID(), revisionNumber.int64Value >= 0,
+                  let days = body["days"] as? Int, let raw = body["families"] as? [String: Any] else {
+                throw CalendarToolArgumentError("Choose valid task permissions.")
+            }
+            var families: [String: Bool] = [:]
+            for (key, value) in raw {
+                guard let flag = value as? Bool, CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID() else { throw CalendarToolArgumentError("Choose valid task permissions.") }
+                families[key] = flag
+            }
+            let renew = (body["renew"] as? Bool) == true && CFGetTypeID((body["renew"] ?? false) as CFTypeRef) == CFBooleanGetTypeID()
+            try await model.saveAgentTaskPermissions(revision: UInt64(revisionNumber.int64Value), families: families, days: days, renew: renew)
+        case "linkCalendarEventTask": try await linkCalendarEventTask(body)
         case "loadCalendarEvents": try await loadCalendarView(body)
         case "dismissNotice": notice = nil
         case "capture":
@@ -323,17 +435,45 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             Task { await model.capture(quick: isNotch, appendToBatch: body["append"] as? Bool == true, askAfterCapture: isNotch) }
         case "startCalendarTask":
             guard !isNotch, model.workspaceSelection == .calendars else { throw CalendarToolArgumentError("Start calendar questions from Calendar.") }
+            guard Set(body.keys).isSubset(of: ["id", "action", "text", "eventHandle", "viewToken"]) else { throw CalendarToolArgumentError("Unsupported calendar question fields.") }
             let text = (body["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, text.count <= 8000 else { throw CalendarToolArgumentError("Enter a message up to 8,000 characters.") }
             try requireIdle()
             guard model.agentQuestion == nil, !model.agentIsWaitingForApproval, !model.calendarActions.isCheckingDuplicates else { throw CalendarToolArgumentError("Finish or stop the current task first.") }
+            let selection: CalendarTaskSelection?
+            if body["eventHandle"] != nil || body["viewToken"] != nil {
+                selection = try resolveCalendarTaskSelection(handle: body["eventHandle"] as? String, generation: body["viewToken"] as? String)
+            } else { selection = nil }
+            let record = try selection.map { _ in try model.memoryStore.recordCommand(text) }
             resetConversation()
-            model.taskUsesNotch = false; model.agentCommand = text
+            if let selection, let record, let captureID = model.currentCaptureSessionID {
+                model.currentMemoryRecordID = record.id
+                model.selectedEventContext = CalshotSelectedEventContext(ownerID: selection.ownerID, storeURL: selection.storeURL,
+                    snapshot: selection.snapshot, destinationID: selection.calendarID, fingerprint: selection.fingerprint,
+                    recordID: record.id, captureID: captureID)
+                model.refreshMemory()
+            }
+            model.taskUsesNotch = false
             let sessionID = model.currentCaptureSessionID
             Task { [weak model] in
                 guard let model, model.currentCaptureSessionID == sessionID else { return }
-                await model.startAgentCommand(expectedSessionID: sessionID)
+                await model.startAgentCommand(prompt: text, expectedSessionID: sessionID)
             }
+        case "importCapturedScreenshot":
+            guard isNotch, model.image != nil, model.currentCaptureSessionID != nil,
+                  Set(body.keys).isSubset(of: ["id", "action"]) else {
+                throw CalendarToolArgumentError("Capture a screenshot in the notch before importing it.")
+            }
+            try requireIdle()
+            guard model.agentQuestion == nil, !model.agentIsWaitingForApproval, model.agentTaskReview == nil else {
+                throw CalendarToolArgumentError("Finish or stop the current task first.")
+            }
+            model.taskUsesNotch = true
+            let sessionID = model.currentCaptureSessionID
+            Task { [weak model] in
+                await model?.startAgentCommand(prompt: CalendarAgent.screenshotPrompt, expectedSessionID: sessionID, isTypedRequest: false)
+            }
+            onNotchCollapse?()
         case "send":
             let text = (body["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, text.count <= 8000 else { throw CalendarToolArgumentError("Enter a message up to 8,000 characters.") }
@@ -341,8 +481,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 guard body["questionID"] as? String == question.id.uuidString else { throw CalendarToolArgumentError("This question changed. Answer the current question.") }
                 model.answerAgentQuestion(text)
             } else {
-                try requireIdle(); model.taskUsesNotch = isNotch; model.agentCommand = text
-                Task { await model.startAgentCommand() }
+                try requireIdle(); model.taskUsesNotch = isNotch
+                Task { await model.startAgentCommand(prompt: text) }
                 if isNotch { onNotchCollapse?() }
             }
         case "answer", "cancelQuestion":

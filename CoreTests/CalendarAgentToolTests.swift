@@ -17,20 +17,24 @@ private actor ToolCalendarService: CalendarDestinationService {
     var events: [CalendarEventSnapshot]
     var failingTitles: Set<String> = []
     var savedTitles: [String] = []
+    var otherWrites = 0
+    var searches = 0
     init(events: [CalendarEventSnapshot] = []) { self.events = events }
     func availableDestinations() async throws -> [CalendarDestinationInfo] { [] }
     func matchingEvents(_ draft: EventDraft, in destination: CalendarDestination) async throws -> [String] { [] }
-    func searchEvents(query: String?, start: Date, end: Date, in destination: CalendarDestination) async throws -> [CalendarEventSnapshot] { events }
+    func searchEvents(query: String?, start: Date, end: Date, in destination: CalendarDestination) async throws -> [CalendarEventSnapshot] { searches += 1; return events }
     func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? { events.first { $0.eventIdentifier == identifier } }
     func save(_ draft: EventDraft, to destination: CalendarDestination) async throws -> String {
         if failingTitles.contains(draft.title) { throw CalendarDestinationError.calendarUnavailable }
         savedTitles.append(draft.title)
         return "saved-" + draft.title
     }
-    func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String { identifier }
-    func delete(identifier: String, in destination: CalendarDestination) async throws { events.removeAll { $0.eventIdentifier == identifier } }
+    func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String { otherWrites += 1; return identifier }
+    func delete(identifier: String, in destination: CalendarDestination) async throws { otherWrites += 1; events.removeAll { $0.eventIdentifier == identifier } }
     func fail(_ titles: Set<String>) { failingTitles = titles }
     func count() -> Int { savedTitles.count }
+    func providerWriteCount() -> Int { savedTitles.count + otherWrites }
+    func searchCount() -> Int { searches }
 }
 
 @MainActor
@@ -56,6 +60,111 @@ final class CalendarAgentToolTests: XCTestCase {
                                   screenText: { "Syllabus Fall 2026" }, sourceContext: { "Syllabus Fall 2026" },
                                   onApproval: { if $0 { approval?.send() } },
                                   onQuestion: { if $0 != nil { question?.send() } })
+    }
+
+    func testTaskMutationToolsRequireBothNativeHooks() async throws {
+        let service = ToolCalendarService(); let tools = executor(service, CalendarActionCoordinator(service: service))
+        let session = UUID(); tools.activate(sessionID: session)
+        XCTAssertFalse(tools.availableToolNames.contains("link_event_to_task"))
+        tools.prepareTaskMutation = { _, _ in .object(["status": .string("prepared")]) }
+        XCTAssertFalse(tools.availableToolNames.contains("update_tasks"))
+        let result = try decode(await tools.execute(name: "link_event_to_task", arguments: .object(["contextReference": .string(UUID().uuidString)]), sessionID: session))
+        XCTAssertEqual(result["status"] as? String, "needsAuthorization")
+        XCTAssertEqual(result["saved"] as? Bool, false)
+        tools.authorizeTaskMutation = { _, _ in .object(["status": .string("cancelled")]) }
+        XCTAssertTrue(tools.availableToolNames.contains("update_tasks"))
+        XCTAssertTrue(tools.availableToolNames.contains("link_event_to_task"))
+    }
+
+    func testExactSelectedEventLinkTraceHasNoCalendarWritesAndNoModelAuthority() async throws {
+        let service = ToolCalendarService(events: [snapshot("source", title: "Fictional timed meeting")])
+        let coordinator = CalendarActionCoordinator(service: service)
+        let tools = executor(service, coordinator)
+        let run = UUID(), reference = UUID(), taskID = UUID(); tools.activate(sessionID: run)
+        var prepared: AgentPreparedTaskMutation?
+        var authorized = 0
+        tools.selectedTaskContext = { receivedRun in
+            XCTAssertEqual(receivedRun, run)
+            return .object(["contextReference": .string(reference.uuidString), "title": .string("Fictional timed meeting"), "isAllDay": .bool(false)])
+        }
+        tools.prepareTaskMutation = { change, receivedRun in
+            XCTAssertEqual(receivedRun, run)
+            XCTAssertEqual(change.change, .linkSelectedEvent(contextReference: reference)); prepared = change
+            return .object(["status": .string("prepared")])
+        }
+        tools.authorizeTaskMutation = { change, receivedRun in
+            XCTAssertEqual(receivedRun, run); XCTAssertEqual(change, prepared); authorized += 1
+            // Fictional native approval hook: no provider is called by task-only linking.
+            return .object(["taskReceipts": .array([.object(["taskID": .string(taskID.uuidString), "outcome": .string("saved")])]), "calendarWrites": .number(0)])
+        }
+        let selected = try decode(await tools.execute(name: "get_selected_event_context", arguments: .object([:]), sessionID: run))
+        XCTAssertEqual(selected["isAllDay"] as? Bool, false)
+        for key in ["ownerID", "storeURL", "eventIdentifier", "destinationID", "approved"] {
+            let rejected = try decode(await tools.execute(name: "link_event_to_task", arguments: .object(["contextReference": .string(reference.uuidString), key: .string("fabricated")]), sessionID: run))
+            XCTAssertNotNil(rejected["error"])
+        }
+        XCTAssertEqual(authorized, 0)
+        let result = try decode(await tools.execute(name: "link_event_to_task", arguments: .object(["contextReference": .string(reference.uuidString)]), sessionID: run))
+        XCTAssertEqual(authorized, 1); XCTAssertEqual(result["calendarWrites"] as? Int, 0)
+        XCTAssertTrue(coordinator.proposals.isEmpty)
+        let writes = await service.providerWriteCount(); XCTAssertEqual(writes, 0)
+        let searches = await service.searchCount(); XCTAssertEqual(searches, 0)
+        let source = try await service.event(identifier: "source", in: .resolve(identifier: "school"))
+        XCTAssertEqual(source?.isAllDay, false); XCTAssertEqual(source?.title, "Fictional timed meeting")
+    }
+
+    func testTaskReadsIncludeVersionsArchivedRowsAndMissingTargets() async throws {
+        let service = ToolCalendarService(), id = UUID(), version = UUID(), archived = UUID(), absent = UUID()
+        let tools = executor(service, CalendarActionCoordinator(service: service)), session = UUID(); tools.activate(sessionID: session)
+        tools.listTasks = { .array([
+            .object(["id": .string(id.uuidString), "version": .string(version.uuidString), "archived": .bool(false)]),
+            .object(["id": .string(archived.uuidString), "version": .string(UUID().uuidString), "archived": .bool(true)])]) }
+        let active = try decode(await tools.execute(name: "list_tasks", arguments: .object([:]), sessionID: session))
+        XCTAssertEqual((active["tasks"] as? [[String: Any]])?.count, 1)
+        let all = try decode(await tools.execute(name: "list_tasks", arguments: .object(["includeArchived": .bool(true)]), sessionID: session))
+        XCTAssertEqual((all["tasks"] as? [[String: Any]])?.count, 2)
+        let exact = try decode(await tools.execute(name: "get_tasks", arguments: .object(["taskIDs": .array([.string(id.uuidString), .string(absent.uuidString)])]), sessionID: session))
+        XCTAssertEqual((exact["tasks"] as? [[String: Any]])?.first?["version"] as? String, version.uuidString)
+        XCTAssertEqual(exact["missingTaskIDs"] as? [String], [absent.uuidString])
+    }
+
+    func testTaskPatchesPreserveOmissionsRequireVersionsAndRejectAuthority() throws {
+        let service = ToolCalendarService()
+        let tools = executor(service, CalendarActionCoordinator(service: service))
+        let id = UUID(), version = UUID()
+        let fields: [String: JSONValue] = ["tasks": .array([.object(["taskID": .string(id.uuidString), "expectedVersion": .string(version.uuidString), "patch": .object(["notes": .null])])])]
+        let request = try tools.prepareTaskMutationArguments(name: "update_tasks", fields: fields)
+        guard case .patches(let patches) = request.change else { return XCTFail("Expected patches") }
+        XCTAssertEqual(patches.first?.taskID, id); XCTAssertEqual(patches.first?.expectedVersion, version)
+        XCTAssertEqual(patches.first?.fields, ["notes": .null])
+        for patch: [String: JSONValue] in [["ownerID": .string("fake")], ["calendarIntent": .string("existing")], ["receipt": .object([:])], ["completed": .bool(true)], ["title": .null], ["dueDate": .string("11-02")], ["dueTime": .string("25:00")]] {
+            XCTAssertThrowsError(try tools.prepareTaskMutationArguments(name: "update_tasks", fields: ["tasks": .array([.object(["taskID": .string(id.uuidString), "expectedVersion": .string(version.uuidString), "patch": .object(patch)])])]))
+        }
+        XCTAssertThrowsError(try tools.prepareTaskMutationArguments(name: "update_tasks", fields: ["tasks": .array([.object(["taskID": .string(id.uuidString), "patch": .object(["title": .string("Fictional")])])])]))
+    }
+
+    func testTaskSourcePreflightFailureNeverCallsAuthorization() async throws {
+        let service = ToolCalendarService()
+        let tools = executor(service, CalendarActionCoordinator(service: service))
+        let run = UUID(); tools.activate(sessionID: run)
+        var calls = 0
+        tools.prepareTaskMutation = { _, _ in throw CalendarToolArgumentError("The source event changed or is unavailable.") }
+        tools.authorizeTaskMutation = { _, _ in calls += 1; return .object([:]) }
+        let result = try decode(await tools.execute(name: "link_event_to_task", arguments: .object(["contextReference": .string(UUID().uuidString)]), sessionID: run))
+        XCTAssertNotNil(result["error"]); XCTAssertEqual(calls, 0)
+    }
+
+    func testStopPreventsTaskAuthorizationAfterPreflight() async throws {
+        let service = ToolCalendarService()
+        let tools = executor(service, CalendarActionCoordinator(service: service))
+        let run = UUID(), started = ToolSignal(), finish = ToolSignal(); tools.activate(sessionID: run)
+        var calls = 0
+        tools.prepareTaskMutation = { _, _ in started.send(); await finish.wait(); return .object([:]) }
+        tools.authorizeTaskMutation = { _, _ in calls += 1; return .object([:]) }
+        let pending = Task { await tools.execute(name: "link_event_to_task", arguments: .object(["contextReference": .string(UUID().uuidString)]), sessionID: run) }
+        await started.wait(); tools.cancelPending(sessionID: run); finish.send()
+        let result = await pending.value
+        XCTAssertEqual(try decode(result)["cancelled"] as? Bool, true); XCTAssertEqual(calls, 0)
     }
 
     func testFriendReadsAreBoundedAndNeverAuthorizeWriteTargets() async throws {

@@ -71,7 +71,7 @@ final class CalendarAgent: ObservableObject {
             streamingText = ""
             var streamed = ""
             let response = try await client.turn(conversation: conversation, imageDataURL: index == 0 ? imageDataURL : nil,
-                instructions: instructions, tools: Self.tools) { [weak self] delta in
+                instructions: instructions, tools: Self.tools.filter { executor.availableToolNames.contains($0.objectValue?["name"]?.stringValue ?? "") }) { [weak self] delta in
                 guard let self, self.currentSessionID == sessionID, self.isRunning else { return }
                 streamed += delta; self.streamingText = streamed; self.status = "Responding"
             }
@@ -90,7 +90,7 @@ final class CalendarAgent: ObservableObject {
                 if ["list_friends", "search_friend_events"].contains(call.name) { usesSharedCalendars = true }
                 record(.init(role: "assistant", toolName: call.name, arguments: call.arguments, callID: call.callID))
                 let result: String
-                if !Self.toolNames.contains(call.name) {
+                if !executor.availableToolNames.contains(call.name) {
                     result = #"{"error":"Unknown tool."}"#
                 } else if call.arguments.utf8.count > 128_000 {
                     result = #"{"error":"Tool arguments are too large."}"#
@@ -131,6 +131,8 @@ final class CalendarAgent: ObservableObject {
         switch name {
         case "list_friends", "search_friend_events": return "Checking shared friend calendars"
         case "search_events": return "Searching connected calendars"
+        case "list_tasks", "get_tasks": return "Reading Tasks"
+        case "get_selected_event_context": return "Reading the selected event"
         case "read_screen_text": return "Reading the screenshot text"
         case "ask_user": return "Waiting for your answer"
         case "update_event": return "Updating 1 event · Waiting for approval"
@@ -138,7 +140,7 @@ final class CalendarAgent: ObservableObject {
         default: return "Waiting for approval"
         }
     }
-    static let toolNames: Set<String> = ["list_tasks", "create_tasks", "list_friends", "search_friend_events", "search_events", "read_screen_text", "ask_user", "create_events", "update_event", "delete_event", "move_events"]
+    static let toolNames: Set<String> = ["list_tasks", "get_tasks", "get_selected_event_context", "link_event_to_task", "update_tasks", "set_task_completion", "set_task_archived", "create_tasks", "list_friends", "search_friend_events", "search_events", "read_screen_text", "ask_user", "create_events", "update_event", "delete_event", "move_events"]
     static let screenshotPrompt = "Read the screenshot and prepare calendar actions for every relevant dated item: appointments, meetings, classes, shifts, exams, deadlines, trips, reservations, reminders and other scheduled activities. Follow any user filters. Use visible headings and surrounding context to understand the dates. Include all new items in one review, preserving unresolved details without guessing."
     static let instructions = """
     You are Calshot, a practical calendar assistant for the user's connected calendars. Turn the user's request into a useful answer or a concrete calendar review with the fewest necessary interruptions. Be concise and specific. Act only within the user's requested scope.
@@ -161,6 +163,11 @@ final class CalendarAgent: ObservableObject {
     If competing search matches still cannot be distinguished, ask which event before changing one. If a tool requires clarification, follow it rather than retrying the same rejected action. A clearly requested group can use move_events as a batch; update_event and delete_event each target one searched event. Never guess identifiers or override native validation.
     For an explicitly named destination, match returned calendar names together with source/account and writable status. If exactly one eligible calendar matches, pass its calendarIdentifier and do not ask again. Ask only if eligible matches remain ambiguous; if it is unavailable or read-only, explain that and ask for a writable alternative. With no destination specified, pass null for creates to reuse the app destination. Do not perform a search solely to make the user reselect that default.
 
+    TASKS AND EXISTING EVENTS
+    Read list_tasks/get_tasks for current task IDs and versions, including archived tasks when requested. Omitted patch fields remain unchanged; null clears only supported optional fields. Never invent versions, source references or authority fields. Task changes and calendar publication are separate operations: completing/archiving a linked task never changes its source event. A task change (link, edit, complete, archive) either saves immediately because the user granted that action in Settings, or opens a short task-only review in the conversation. Trust only the returned status and per-row receipts: saved, partial, failed, cancelled and declined are different outcomes. Do not re-propose a declined or cancelled change unless asked, and never claim a prepared change was saved. Rows apply independently; report which saved and which did not.
+    For “add this event to Tasks”, read get_selected_event_context and use link_event_to_task with its opaque contextReference when available. This operation links the exact native selection and performs zero calendar writes. Never use create_events, create_tasks, a title search or a new deadline as a substitute. If the linking capability is unavailable, explain that conversation linking is unavailable and direct the user to the selected event’s Add to Tasks control. Do not claim a prepared change was saved. needsAuthorization, unavailable, stale, denied and cancelled are not success receipts.
+    For explicitly tasks-only creation set calendarIntent to none, preserving any supported due date/time. Use new only when a new published deadline is intended; null preserves the native default. Existing meetings keep their original timed/all-day semantics. Never apply a generic all-day rule to source events.
+
     SCREENSHOT IMPORTS
     Extract every relevant dated or scheduled activity, not just due dates: appointments, meetings, classes, shifts, exams, assignment deadlines, trips, reservations, releases, registration windows, reminders and personal plans. Assignments, homework, submissions and actionable deadlines belong in Tasks via create_tasks; appointments, classes, shifts and scheduled exams use create_events. Follow the user's filters, such as "only exams". Read the entire visible screenshot, including headings, table columns, year/term labels and surrounding messages; use read_screen_text if a row is unclear. You cannot read hidden rows, scroll a webpage, open source links or see another screenshot unless it was provided.
     A date must describe a meaningful activity or milestone. Ignore incidental dates in device chrome, copyright notices, document metadata and examples unless requested. Keep distinct activities separate and do not discard relevant past events. Preserve supported times, locations and links. Put new events for one destination together in one create_events call, within its 100-row limit. Do not silently drop rows or promise a single combined review across unsupported operations or destinations.
@@ -168,7 +175,7 @@ final class CalendarAgent: ObservableObject {
 
     TASKS AND DEADLINES
     Use create_tasks for requested to-dos, assignments and actionable deadlines, including those imported from screenshots. The tool stages tasks and dated calendar deadlines in one native approval. Nothing is saved until the user approves. Be explicit about this distinction: a task-save receipt is not a calendar-write receipt. Keep date-only tasks date-only; never ask for a start time or duration to create them. Dated tasks use all-day free calendar entries; an explicit due time remains in the title and notes, rather than reserving work time. Never create both a separate event and task for the same deadline. Scheduled exams/classes remain events unless the user asks for a related preparation task.
-    Pass dueDate YYYY-MM-DD, optional dueTime HH:mm, timezone and source evidence. Set yearResolved true only when a full year is explicit, confirmed or deterministically resolved from the supplied clock. Unresolved dates/years remain null or yearResolved false; preserve their wording in sourceText and notes. Undated tasks stay in Inbox without a calendar write. Group up to 100 tasks per call. Do not silently add reminder alarms; users choose them in Tasks. Use list_tasks to answer questions about the current task list or avoid recreating items. Completing, ordering and editing tasks is available on the Tasks page; do not promise smart planning, web editing or unsupported task tools.
+    Pass dueDate YYYY-MM-DD, optional dueTime HH:mm, timezone and source evidence. Set yearResolved true only when a full year is explicit, confirmed or deterministically resolved from the supplied clock. Unresolved dates/years remain null or yearResolved false; preserve their wording in sourceText and notes. Undated tasks stay in Inbox without a calendar write. Group up to 100 tasks per call. Do not silently add reminder alarms; users choose them in Tasks. Use list_tasks to answer questions about the current task list or avoid recreating items. Ordering tasks and smart planning are only on the Tasks page; do not promise web editing or unsupported task tools. Task-only creation may save at once when the user has saved permission for it; otherwise the existing import review opens.
 
     FRIEND CALENDARS
     Friend sharing is read-only and one-way. Use list_friends to resolve the current friend account ID, then search_friend_events with an explicit date range for each question about a friend. Ask which person only when the listed identities are ambiguous. Never reuse prior conversation or old tool output as current access or calendar data; recheck each follow-up. Inspect permission, stale, complete, error, truncated and coverage range. Never describe missing, failed, stale or incomplete data as free time. Busy access hides titles: do not infer or search for hidden details. Distinguish the user's calendars from the friend's named shared calendars. Do not suggest editing a friend's events or copying them unless specifically requested; copies to the user's calendar still need normal review and approval.
@@ -193,6 +200,11 @@ final class CalendarAgent: ObservableObject {
         func tool(_ name: String, _ description: String, _ fields: [String: JSONValue]) -> JSONValue {
             .object(["type": .string("function"), "name": .string(name), "description": .string(description), "strict": .bool(true), "parameters": object(fields)])
         }
+        func taskPatchTool(_ name: String, fields: [String: JSONValue]) -> JSONValue {
+            let patch: JSONValue = .object(["type": .string("object"), "properties": .object(fields), "additionalProperties": .bool(false)])
+            let row = object(["taskID": string, "expectedVersion": string, "patch": patch])
+            return .object(["type": .string("function"), "name": .string(name), "description": .string("Request exact versioned task changes for native authorization. Omitted fields stay unchanged. No calendar publication. Only task-operation receipts prove success."), "strict": .bool(false), "parameters": object(["tasks": .object(["type": .string("array"), "minItems": .number(1), "maxItems": .number(100), "items": row])])])
+        }
         let draft: [String: JSONValue] = ["title": string, "date": nullableString, "startTime": nullableString, "endTime": nullableString,
             "allDay": nullableBool, "timeZone": nullableString, "location": nullableString, "url": nullableString, "notes": nullableString,
             "evidence": nullableString, "yearInferred": nullableBool, "dateAmbiguous": nullableBool]
@@ -200,8 +212,14 @@ final class CalendarAgent: ObservableObject {
         changes.removeValue(forKey: "evidence"); changes.removeValue(forKey: "yearInferred"); changes.removeValue(forKey: "dateAmbiguous")
         changes["title"] = nullableString; changes["eventIdentifier"] = string
         return [
-            tool("list_tasks", "Read the current account’s task list, completion and linked deadline status. A task deadline does not reserve work time.", [:]),
-            tool("create_tasks", "Propose 1–100 requested tasks and their dated deadlines together for explicit native approval. Nothing is saved before approval. Undated tasks stay in Inbox. Exact due times remain metadata on all-day free deadlines. Never invent a missing year; preserve evidence. Task storage receipts and calendar receipts are separate. No reminder alarms are enabled by this tool.", ["calendarIdentifier": nullableString, "tasks": .object(["type": .string("array"), "maxItems": .number(100), "minItems": .number(1), "items": object(["title": string, "dueDate": nullableString, "dueTime": nullableString, "timeZone": nullableString, "notes": nullableString, "sourceText": string, "yearResolved": .object(["type": .string("boolean")])])])]),
+            tool("list_tasks", "Read current tasks and versions, including archived items for explicit restore requests. A task deadline does not reserve work time.", ["includeArchived": nullableBool]),
+            tool("get_tasks", "Read 1–100 exact current task IDs and versions, including archived tasks. Missing IDs are reported individually.", ["taskIDs": .object(["type": .string("array"), "minItems": .number(1), "maxItems": .number(100), "items": string])]),
+            tool("get_selected_event_context", "Read the current native selected event as display facts plus an opaque contextReference. Display fields confer no authority. Absence never authorizes a fabricated reference or title-based substitute.", [:]),
+            tool("link_event_to_task", "Request a task linked to the exact native selected context with explicit native task authorization. Zero calendar writes; never publishes a deadline. Success requires a task-operation receipt.", ["contextReference": string]),
+            taskPatchTool("update_tasks", fields: ["title": string, "dueDate": nullableString, "dueTime": nullableString, "timeZone": string, "notes": nullableString]),
+            taskPatchTool("set_task_completion", fields: ["completed": .object(["type": .string("boolean")])]),
+            taskPatchTool("set_task_archived", fields: ["archived": .object(["type": .string("boolean")])]),
+            tool("create_tasks", "Propose 1–100 requested tasks, optionally with new deadlines, together for explicit native approval. Nothing is saved before approval. Undated tasks stay in Inbox. calendarIntent none preserves dates as task-only metadata with zero provider writes; new publishes an all-day free deadline after approval; null uses the native default. Exact due times remain task metadata. Never invent a missing year; preserve evidence. Task storage receipts and calendar receipts are separate. No reminder alarms are enabled by this tool.", ["calendarIdentifier": nullableString, "tasks": .object(["type": .string("array"), "maxItems": .number(100), "minItems": .number(1), "items": object(["title": string, "dueDate": nullableString, "dueTime": nullableString, "timeZone": nullableString, "notes": nullableString, "sourceText": string, "yearResolved": .object(["type": .string("boolean")]), "calendarIntent": .object(["type": .array([.string("string"), .string("null")]), "enum": .array([.string("none"), .string("new"), .null])])])])]),
             tool("list_friends", "List current friends who have shared calendars with this account. Returns canonical friend IDs for read-only questions. Always call before asking about a friend.", [:]),
             tool("search_friend_events", "Read a listed friend's shared calendars after checking current server permissions. Explicit ISO dates required, up to 63 days. Inspect per-calendar stale, complete, error and coverage before discussing availability. Never provides writable event targets.", ["friendID": string, "query": nullableString, "start": string, "end": string]),
             tool("search_events", "Search connected readable calendars using a relevant query and ISO-8601 timestamps including timezone offsets. Inspect partial/errors/truncation. Omitted dates use 7 days ago through 120 days ahead; at most 40 events. Returned calendar metadata resolves named writable destinations.", ["query": nullableString, "start": nullableString, "end": nullableString]),

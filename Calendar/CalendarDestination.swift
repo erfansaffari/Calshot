@@ -60,6 +60,15 @@ public struct CalendarEventSnapshot: Codable, Sendable {
     public var notes: String?
     public var externalEventIdentifier: String? = nil
     public var isFree: Bool? = nil
+    /// Provider-supplied original timed occurrence, never the mutable current start.
+    /// All-day original anchors use recurrenceDate instead. IDs remain device scoped.
+    public var originalOccurrenceStart: Date? = nil
+    /// Original all-day calendar date (yyyy-MM-dd), without an invented due time.
+    public var recurrenceDate: String? = nil
+    /// nil means the provider did not establish whether this event repeats.
+    public var isRecurring: Bool? = nil
+    /// Provider modification time; absence does not imply an unchanged source.
+    public var modifiedAt: Date? = nil
 
     public var draft: EventDraft {
         EventDraft(title: title, startDate: start, endDate: end, isAllDay: isAllDay,
@@ -72,7 +81,11 @@ protocol CalendarDestinationService: Sendable {
     func availableDestinations() async throws -> [CalendarDestinationInfo]
     func matchingEvents(_ draft: EventDraft, in destination: CalendarDestination) async throws -> [String]
     func searchEvents(query: String?, start: Date, end: Date, in destination: CalendarDestination) async throws -> [CalendarEventSnapshot]
+    /// Resolve an exact event in this readable calendar, including read-only sources.
+    /// Implementations must reject other accounts/calendars; this confers no write authority.
     func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot?
+    /// Revalidate a selected occurrence. Identifier-only EventKit reads return a series' first occurrence.
+    func event(matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws -> CalendarEventSnapshot?
     func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String
     func delete(identifier: String, in destination: CalendarDestination) async throws
     func save(_ draft: EventDraft, to destination: CalendarDestination) async throws -> String
@@ -81,6 +94,9 @@ protocol CalendarDestinationService: Sendable {
 extension CalendarDestinationService {
     func searchEvents(query: String?, start: Date, end: Date, in destination: CalendarDestination) async throws -> [CalendarEventSnapshot] { throw CalendarDestinationError.calendarUnavailable }
     func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? { throw CalendarDestinationError.calendarUnavailable }
+    func event(matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? {
+        try await event(identifier: selected.eventIdentifier, in: destination)
+    }
     func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String { throw CalendarDestinationError.calendarUnavailable }
     func delete(identifier: String, in destination: CalendarDestination) async throws { throw CalendarDestinationError.calendarUnavailable }
 }

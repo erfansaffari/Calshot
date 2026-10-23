@@ -22,6 +22,7 @@ import { command, useAppState } from "./bridge";
 import type { AppState, Page } from "./types";
 import { Badge, Empty, InlineError, Modal, Spinner } from "./components/ui";
 import { Review } from "./components/Review";
+import { TaskChangeReview, TaskOutcomeCard } from "./components/TaskChangeReview";
 import { Question } from "./components/Question";
 import { HomeTasks } from "./components/HomeTasks";
 import { AccountScreen } from "./views/AccountScreen";
@@ -49,6 +50,8 @@ function App() {
       state.proposals.length ||
       state.running ||
       state.agentError ||
+      state.taskReview ||
+      state.taskOutcome ||
       state.status,
     ),
     assistant = state.page === "chat" || state.page === "capture";
@@ -72,6 +75,8 @@ function App() {
     state.streaming,
     state.question?.id,
     state.waitingApproval,
+    state.taskReview?.id,
+    state.taskOutcome?.id,
     state.proposals.length,
     source,
     state.ready,
@@ -261,7 +266,7 @@ function App() {
                           <h3>Let Calshot see your calendars</h3>
                           <p className="fine-print">
                             Use calendars already on this Mac or connect an
-                            account. Nothing changes without your approval.
+                            account. Calendar changes always need your approval.
                           </p>
                           <button
                             className="text-button"
@@ -309,6 +314,7 @@ function App() {
                         <p className="step" role="status">
                           {state.running &&
                           !state.question &&
+                          !state.taskReview &&
                           !state.waitingApproval ? (
                             <Spinner />
                           ) : (
@@ -322,6 +328,12 @@ function App() {
                           key={state.question.id}
                           question={state.question}
                         />
+                      )}
+                      {state.taskReview && (
+                        <TaskChangeReview key={state.taskReview.id} review={state.taskReview} />
+                      )}
+                      {state.taskOutcome && !state.taskReview && (
+                        <TaskOutcomeCard key={state.taskOutcome.id} outcome={state.taskOutcome} />
                       )}
                       {(state.proposals.length > 0 || state.taskImport) && <Review state={state} />}
                       {state.summary &&
@@ -382,7 +394,11 @@ function App() {
                     <span>
                       {state.question
                         ? "Waiting for your answer — choose above or type below"
-                        : state.waitingApproval
+                        : state.taskReview
+                          ? state.taskReview.phase === "applying"
+                            ? "Saving the task change…"
+                            : "Waiting for your review of the task change"
+                          : state.waitingApproval
                           ? "Waiting for your approval"
                           : state.saving
                             ? "Saving approved changes…"
@@ -390,7 +406,7 @@ function App() {
                               ? "Reading the screenshot…"
                               : state.running
                                 ? "Calshot is working…"
-                                : "Nothing changes without your approval"}
+                                : "Calendar changes need your approval"}
                     </span>
                     {(state.running || state.saving) && (
                       <button
@@ -427,7 +443,7 @@ function App() {
                       placeholder={
                         state.question
                           ? "Type your answer…"
-                          : state.waitingApproval
+                          : state.taskReview || state.waitingApproval
                             ? "Review the proposed changes above…"
                             : "Ask a question or tell Calshot what to do…"
                       }

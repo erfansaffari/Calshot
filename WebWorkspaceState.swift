@@ -24,6 +24,12 @@ enum WebWorkspaceState {
         func flag(_ key: String, _ value: Bool) { state[key] = .bool(value) }
         state["tasks"] = .object(["items": encoded(model.taskDocument.items), "token": .string(model.tasksToken), "loaded": .bool(model.taskDataReady), "busy": .bool(model.taskSyncBusy), "error": model.taskError.map(JSONValue.string) ?? .null, "reminderError": model.taskReminderError.map(JSONValue.string) ?? .null, "conflict": .bool(model.taskConflict), "deviceID": .string(CalshotModel.syncDeviceID)])
         state["softwareUpdate"] = model.softwareUpdates.snapshot
+        // Device-local task-only review/outcome and Settings permissions. None of this is account-synced.
+        let taskReview = model.agentTaskReviewSnapshot()
+        if taskReview != .null { state["taskReview"] = taskReview }
+        let taskOutcome = model.agentTaskOutcomeSnapshot()
+        if taskOutcome != .null { state["taskOutcome"] = taskOutcome }
+        state["agentPermissions"] = model.agentPermissionSnapshot()
         state["sidebarWidth"] = .number(model.sidebarWidth)
         flag("sidebarExpanded", model.sidebarExpanded); flag("ready", true); flag("native", true); string("page", model.workspaceSelection.rawValue)
         string("status", model.status); string("notice", notice); string("imageURL", imageURL)
@@ -113,6 +119,7 @@ enum WebWorkspaceState {
         if model.account.requiresLogin {
             for key in ["messages", "proposals", "calendars", "accounts", "memory"] { state[key] = .array([]) }
             state.removeValue(forKey: "tasks"); state.removeValue(forKey: "taskImport")
+            for key in ["taskReview", "taskOutcome", "agentPermissions"] { state.removeValue(forKey: key) }
             for key in ["imageURL", "summary", "question", "agentError", "status", "notice", "agentStatus"] { state.removeValue(forKey: key) }
             state["ocr"] = .string(""); state["streaming"] = .string(""); state["canApprove"] = .bool(false)
             state["waitingApproval"] = .bool(false); state["running"] = .bool(false)

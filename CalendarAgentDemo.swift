@@ -10,6 +10,23 @@ final class CalendarAgentDemoClient: CalendarAgentModelClient {
         let content = conversation.first?.value.objectValue?["content"]
         let command = (content?.stringValue ?? content?.arrayValue?.compactMap { $0.objectValue?["text"]?.stringValue }.joined(separator: "\n") ?? "").lowercased()
         let results = toolResults(in: conversation)
+        if command.contains("complete"), command.contains("task") {
+            if let receipt = results["set_task_completion"] {
+                let status = receipt.objectValue?["status"]?.stringValue ?? "unavailable"
+                let saved = receipt.objectValue?["rows"]?.arrayValue?.filter { $0.objectValue?["outcome"]?.stringValue == "saved" }.count ?? 0
+                return finish("Offline task fixture: \(status), \(saved) saved task receipts. No calendar writes.", onText: onText)
+            }
+            if let rows = results["list_tasks"]?.objectValue?["tasks"]?.arrayValue {
+                let count = command.contains("all") ? 100 : 1
+                let patches = rows.filter { $0.objectValue?["completed"] != .bool(true) && $0.objectValue?["archived"] != .bool(true) }.prefix(count).compactMap { row -> JSONValue? in
+                    guard let id = row.objectValue?["id"]?.stringValue, let version = row.objectValue?["version"]?.stringValue else { return nil }
+                    return .object(["taskID": .string(id), "expectedVersion": .string(version), "patch": .object(["completed": .bool(true)])])
+                }
+                guard !patches.isEmpty else { return finish("The offline fixture has no open tasks.", onText: onText) }
+                return call("set_task_completion", arguments: .object(["tasks": .array(patches)]))
+            }
+            return call("list_tasks", arguments: .object(["includeArchived": .bool(false)]))
+        }
         if command.contains("question layout") {
             if results["ask_user"] != nil { return finish("Answer received. This layout test did not change any calendars.", onText: onText) }
             return call("ask_user", arguments: .object([

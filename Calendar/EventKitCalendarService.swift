@@ -101,15 +101,41 @@ actor EventKitCalendarService: CalendarDestinationService {
 
     func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? {
         try await ensureFullAccess()
-        let calendar = try writableCalendar(destination)
-        guard let event = store.event(withIdentifier: identifier), event.calendar.calendarIdentifier == calendar.calendarIdentifier else { return nil }
+        let calendar = try readableCalendar(destination)
+        guard let event = store.event(withIdentifier: identifier), Self.belongsToCalendar(event, calendar: calendar) else { return nil }
         return snapshot(event)
+    }
+
+    func event(matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? {
+        guard selected.isRecurring == true else { return try await event(identifier: selected.eventIdentifier, in: destination) }
+        try await ensureFullAccess()
+        let calendar = try readableCalendar(destination)
+        guard selected.start.timeIntervalSince1970.isFinite, selected.end.timeIntervalSince1970.isFinite,
+              selected.end > selected.start, selected.end.timeIntervalSince(selected.start) <= 366 * 86400 else {
+            throw CalendarDestinationError.invalidDraft("The selected occurrence has an invalid date range.")
+        }
+        // EventKit's identifier lookup resolves the first occurrence. Search the selected interval
+        // instead, with no title or duration inference and no 40-result presentation cap.
+        let predicate = store.predicateForEvents(withStart: selected.start.addingTimeInterval(-1),
+                                                end: selected.end.addingTimeInterval(1), calendars: [calendar])
+        let candidates = store.events(matching: predicate).filter { Self.belongsToCalendar($0, calendar: calendar) }.map(snapshot)
+        return Self.exactOccurrence(selected, candidates: candidates)
+    }
+
+    nonisolated static func exactOccurrence(_ selected: CalendarEventSnapshot, candidates: [CalendarEventSnapshot]) -> CalendarEventSnapshot? {
+        guard selected.isRecurring == true,
+              (selected.recurrenceDate != nil) != (selected.originalOccurrenceStart != nil) else { return nil }
+        let matches = candidates.filter {
+            $0.eventIdentifier == selected.eventIdentifier && $0.isRecurring == true &&
+            $0.recurrenceDate == selected.recurrenceDate && $0.originalOccurrenceStart == selected.originalOccurrenceStart
+        }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String {
         try await ensureFullAccess()
         let calendar = try writableCalendar(destination)
-        guard let event = store.event(withIdentifier: identifier), event.calendar.calendarIdentifier == calendar.calendarIdentifier else {
+        guard let event = store.event(withIdentifier: identifier), Self.belongsToCalendar(event, calendar: calendar) else {
             throw CalendarDestinationError.calendarUnavailable
         }
         let (start, end) = try validatedDates(draft)
@@ -134,25 +160,57 @@ actor EventKitCalendarService: CalendarDestinationService {
     func delete(identifier: String, in destination: CalendarDestination) async throws {
         try await ensureFullAccess()
         let calendar = try writableCalendar(destination)
-        guard let event = store.event(withIdentifier: identifier), event.calendar.calendarIdentifier == calendar.calendarIdentifier else {
+        guard let event = store.event(withIdentifier: identifier), Self.belongsToCalendar(event, calendar: calendar) else {
             throw CalendarDestinationError.calendarUnavailable
         }
         try store.remove(event, span: .thisEvent, commit: true)
     }
 
-    private func writableCalendar(_ destination: CalendarDestination) throws -> EKCalendar {
+    private func readableCalendar(_ destination: CalendarDestination) throws -> EKCalendar {
         guard case .eventKit(let identifier) = destination, let calendar = store.calendar(withIdentifier: identifier) else {
             throw CalendarDestinationError.calendarUnavailable
         }
+        return calendar
+    }
+
+    private func writableCalendar(_ destination: CalendarDestination) throws -> EKCalendar {
+        let calendar = try readableCalendar(destination)
         guard calendar.allowsContentModifications else { throw CalendarDestinationError.calendarReadOnly }
         return calendar
     }
 
+    /// Compare native identifiers, never titles or transport aliases.
+    static func belongsToCalendar(_ event: EKEvent, calendar: EKCalendar) -> Bool {
+        event.calendar?.calendarIdentifier == calendar.calendarIdentifier &&
+        event.calendar?.source?.sourceIdentifier == calendar.source?.sourceIdentifier
+    }
+
     private func snapshot(_ event: EKEvent) -> CalendarEventSnapshot {
-        CalendarEventSnapshot(eventIdentifier: event.eventIdentifier ?? event.calendarItemIdentifier,
+        var result = CalendarEventSnapshot(eventIdentifier: event.eventIdentifier ?? event.calendarItemIdentifier,
                               title: event.title ?? "", start: event.startDate, end: event.endDate,
                               isAllDay: event.isAllDay, timeZone: event.timeZone?.identifier,
                               location: event.location, calendarName: event.calendar.title, url: event.url, notes: event.notes, externalEventIdentifier: event.calendarItemExternalIdentifier, isFree: event.availability == .notSupported ? nil : event.availability == .free)
+        result.isRecurring = event.hasRecurrenceRules || event.isDetached || event.occurrenceDate != nil
+        result.modifiedAt = event.lastModifiedDate
+        if let original = event.occurrenceDate {
+            if event.isAllDay {
+                // A detached exception may have changed from timed to all-day.
+                // EventKit does not expose the original value type in that case.
+                if !event.isDetached {
+                    let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+                    // EventKit documents floating/all-day occurrenceDate in the
+                    // process default timezone, even when event.timeZone is nil.
+                    formatter.calendar = Calendar(identifier: .gregorian); formatter.timeZone = NSTimeZone.default
+                    formatter.dateFormat = "yyyy-MM-dd"
+                    result.recurrenceDate = formatter.string(from: original)
+                }
+            } else if !event.isDetached, event.timeZone != nil {
+                result.originalOccurrenceStart = original
+            }
+            // Detached exceptions do not expose the original all-day/timed type.
+            // Leave their typed anchor unknown rather than reinterpret a floating date.
+        }
+        return result
     }
 
     private func ensureFullAccess() async throws {

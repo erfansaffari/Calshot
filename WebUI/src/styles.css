@@ -1722,6 +1722,7 @@ details p {
 .task-editor label, .task-form-grid > label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-weight: 500; }
 .task-editor label input, .task-editor label textarea { margin-top: 0; }
 .task-editor input, .task-editor select, .task-editor textarea { width: 100%; min-width: 0; }
+.task-editor select { color: var(--text); background: var(--surface); border: 1px solid var(--input-border); border-radius: 8px; padding: 8px 10px; font: inherit; }
 .task-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .task-more { display: inline-flex; align-items: center; gap: 4px; justify-self: start; font-size: 12px; font-weight: 550; color: var(--accent); padding: 2px 0; border-radius: 4px; }
 .task-more svg { transition: transform .15s ease; }
@@ -1747,4 +1748,131 @@ details p {
   .tasks-page .page-title { flex-direction: column; }
   .task-row { flex-wrap: wrap; }
   .task-actions { flex-basis: 100%; justify-content: flex-start; padding-left: 26px; }
+}
+
+/* Task-only review and result: shared by the workspace conversation and the compact notch. */
+.task-review,
+.task-outcome {
+  padding: 16px;
+}
+.task-review:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+.task-review h2 {
+  font-size: 15px;
+  margin: 8px 0 4px;
+  overflow-wrap: anywhere;
+}
+.task-review-rows {
+  list-style: none;
+  margin: 10px 0;
+  padding: 0;
+  /* The whole card (header, rows, footer) must fit the conversation at compact heights; rows scroll inside. */
+  max-height: max(112px, min(280px, calc(100dvh - 450px)));
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+.task-review-rows:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+.task-review-rows li {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.task-review-rows li:last-child {
+  border-bottom: 0;
+}
+.task-review-rows strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.task-review-rows p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.task-review-rows small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+.task-review-label {
+  color: var(--muted);
+  margin-right: 4px;
+}
+.task-review-before {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.task-review-after {
+  font-weight: 560;
+}
+.task-review footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.task-outcome header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.task-outcome header small {
+  margin-left: auto;
+  color: var(--muted);
+}
+.task-outcome.is-ok header svg {
+  color: var(--success);
+}
+.task-outcome.is-problem header svg {
+  color: var(--danger);
+}
+.task-outcome ul {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+.task-outcome li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.task-outcome li > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.task-outcome li > small {
+  color: var(--muted);
+}
+.task-outcome li.row-failed > small {
+  color: var(--danger);
+}
+.task-outcome li > p {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+.agent-permissions .permissions-save > div:first-child {
+  min-height: 20px;
+}
+.notch-details .task-review-rows {
+  max-height: max(80px, min(230px, calc(100dvh - 350px)));
 }

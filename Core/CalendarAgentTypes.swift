@@ -72,6 +72,30 @@ protocol CalendarAgentModelClient {
 }
 @MainActor
 protocol CalendarAgentToolExecuting: AnyObject {
+    var availableToolNames: Set<String> { get }
     func execute(name: String, arguments: JSONValue, sessionID: UUID) async -> String
     func cancelPending(sessionID: UUID)
+}
+
+// Test/model clients retain the default catalog. The native executor narrows it to wired capabilities.
+extension CalendarAgentToolExecuting {
+    var availableToolNames: Set<String> { CalendarAgent.toolNames }
+}
+
+/// Requested task changes only. These values confer no approval and contain no provider-write command.
+/// The runtime, never the model, assigns batch/operation IDs. Native authorization must bind the
+/// exact request, run, owner/store and current versions, then revalidate before each domain call.
+struct AgentPreparedTaskMutation: Sendable, Equatable {
+    enum Change: Sendable, Equatable {
+        case linkSelectedEvent(contextReference: UUID)
+        case patches([Patch])
+    }
+    struct Patch: Sendable, Equatable {
+        let operationID: UUID
+        let taskID: UUID
+        let expectedVersion: UUID
+        let fields: [String: JSONValue]
+    }
+    let id: UUID
+    let change: Change
 }

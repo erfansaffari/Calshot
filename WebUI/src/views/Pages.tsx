@@ -17,6 +17,7 @@ import type { AppState } from "../types";
 import { command } from "../bridge";
 import { SoftwareUpdates } from "./SoftwareUpdates";
 import { FriendsSettings } from "./FriendsSettings";
+import { AgentTaskPermissions } from "../components/AgentTaskPermissions";
 import {
   Badge,
   Empty,
@@ -1010,6 +1011,7 @@ export function SettingsPage({ state }: { state: AppState }) {
             </div>
           </section>
         )}
+        {tab === "privacy" && <AgentTaskPermissions state={state} />}
         {tab === "privacy" && (
           <section>
             <h2 className="section-label">Privacy & storage</h2>

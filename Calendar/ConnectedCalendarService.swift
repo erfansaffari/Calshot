@@ -40,6 +40,7 @@ actor ConnectedCalendarService: CalendarDestinationService {
     func matchingEvents(_ draft: EventDraft, in destination: CalendarDestination) async throws -> [String] { try await transport(destination).matchingEvents(draft, in: destination) }
     func searchEvents(query: String?, start: Date, end: Date, in destination: CalendarDestination) async throws -> [CalendarEventSnapshot] { try await transport(destination).searchEvents(query: query, start: start, end: end, in: destination) }
     func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? { try await transport(destination).event(identifier: identifier, in: destination) }
+    func event(matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? { try await transport(destination).event(matching: selected, in: destination) }
     func save(_ draft: EventDraft, to destination: CalendarDestination) async throws -> String { try await transport(destination).save(draft, to: destination) }
     func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String { try await transport(destination).update(draft, identifier: identifier, in: destination) }
     func delete(identifier: String, in destination: CalendarDestination) async throws { try await transport(destination).delete(identifier: identifier, in: destination) }

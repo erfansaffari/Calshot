@@ -11,6 +11,26 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
     var taskImportReceipts: ((JSONValue) -> JSONValue)?
     var finishTaskImport: (() -> Void)?
     var listTasks: (() throws -> JSONValue)?
+    var selectedTaskContext: ((UUID) throws -> JSONValue)?
+    /// Pure preflight; must never save a task or invoke a provider write.
+    var prepareTaskMutation: ((AgentPreparedTaskMutation, UUID) async throws -> JSONValue)?
+    /// Native approval/policy integration owns authorization, fresh preflight and domain execution.
+    /// Chat text and model-supplied identifiers are never an authorization decision.
+    var authorizeTaskMutation: ((AgentPreparedTaskMutation, UUID) async throws -> JSONValue)?
+    /// Resume/cancel native pending task review; preserve receipts for already-dispatched writes.
+    var cancelTaskMutation: ((UUID) -> Void)?
+    /// Task-only creation under a saved explicit grant. Returns nil when the user must review the import
+    /// (no matching grant or a dated deadline needs its own calendar review). Never approves calendar writes.
+    var commitTaskOnlyImport: ((UUID) async throws -> JSONValue?)?
+    var availableToolNames: Set<String> {
+        var names = CalendarAgent.toolNames
+        if listTasks == nil { names.subtract(["list_tasks", "get_tasks"]) }
+        if selectedTaskContext == nil { names.remove("get_selected_event_context") }
+        if prepareTaskMutation == nil || authorizeTaskMutation == nil {
+            names.subtract(["link_event_to_task", "update_tasks", "set_task_completion", "set_task_archived"])
+        }
+        return names
+    }
     var createTasks: (([String: JSONValue]) throws -> (saved: JSONValue, proposals: [CalendarActionProposal]))?
     var listFriends: (() async throws -> JSONValue)?
     var searchFriend: (([String: JSONValue]) async throws -> JSONValue)?
@@ -27,6 +47,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
     private let onQuestion: (AgentQuestion?) -> Void
     private let onStep: (String) -> Void
     private var sessionID: UUID?
+    private var sessionCancelled = false
     private var searched: [String: String] = [:]
     private var ambiguousTargets = Set<String>()
     private var cancelledTargets = Set<String>()
@@ -51,24 +72,61 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
 
     func activate(sessionID: UUID) {
         if let old = self.sessionID { cancelPending(sessionID: old) }
-        self.sessionID = sessionID
+        self.sessionID = sessionID; sessionCancelled = false
         searched = [:]; ambiguousTargets = []; cancelledTargets = []; confirmedAnswers = []
     }
 
     func execute(name: String, arguments: JSONValue, sessionID: UUID) async -> String {
-        guard self.sessionID == sessionID else { return #"{"cancelled":true}"# }
+        guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
         do {
             guard let fields = arguments.objectValue else { throw CalendarToolArgumentError("Arguments must be an object.") }
             switch name {
             case "list_tasks":
+                try CalendarToolDraftMapper.keys(fields, allowed: ["includeArchived"])
+                if let flag = fields["includeArchived"], flag != .null, flag.boolValue == nil { throw CalendarToolArgumentError("includeArchived must be a boolean.") }
+                let rows = try currentTasks()
+                return JSONValue.object(["tasks": .array(rows.filter { fields["includeArchived"] == .bool(true) || $0.objectValue?["archived"] != .bool(true) })]).jsonString()
+            case "get_tasks":
+                try CalendarToolDraftMapper.keys(fields, allowed: ["taskIDs"])
+                guard let ids = fields["taskIDs"]?.arrayValue, !ids.isEmpty, ids.count <= 100 else { throw CalendarToolArgumentError("Provide 1–100 task IDs.") }
+                let requested = try ids.map { value -> UUID in
+                    guard let id = value.stringValue.flatMap(UUID.init(uuidString:)) else { throw CalendarToolArgumentError("Use task IDs returned by a current task read.") }
+                    return id
+                }
+                guard Set(requested).count == requested.count else { throw CalendarToolArgumentError("Each task must occur once.") }
+                let rows = try currentTasks()
+                return JSONValue.object(["tasks": .array(rows.filter { row in row.objectValue?["id"]?.stringValue.flatMap(UUID.init(uuidString:)).map { requested.contains($0) } ?? false }),
+                    "missingTaskIDs": .array(requested.filter { id in !rows.contains { $0.objectValue?["id"]?.stringValue.flatMap(UUID.init(uuidString:)) == id } }.map { .string($0.uuidString) })]).jsonString()
+            case "get_selected_event_context":
                 try CalendarToolDraftMapper.keys(fields, allowed: [])
-                guard let listTasks else { throw CalendarToolArgumentError("Tasks are unavailable.") }
-                return try listTasks().jsonString()
+                guard let selectedTaskContext else { throw CalendarToolArgumentError("No selected event context is available.") }
+                return try selectedTaskContext(sessionID).jsonString()
+            case "link_event_to_task", "update_tasks", "set_task_completion", "set_task_archived":
+                let prepared = try prepareTaskMutationArguments(name: name, fields: fields)
+                guard let prepareTaskMutation, let authorizeTaskMutation else {
+                    return JSONValue.object(["status": .string("needsAuthorization"), "saved": .bool(false), "error": .string("Conversation task changes are unavailable until native task authorization is connected. Use the task or selected-event controls.")]).jsonString()
+                }
+                _ = try await prepareTaskMutation(prepared, sessionID)
+                guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                let result = try await authorizeTaskMutation(prepared, sessionID)
+                // A dispatched operation may complete after Stop; the native hook must return its
+                // actual receipts. A replacement session must never receive those old results.
+                guard self.sessionID == sessionID else { return #"{"cancelled":true}"# }
+                return result.jsonString()
             case "create_tasks":
                 guard let createTasks else { throw CalendarToolArgumentError("Tasks are unavailable.") }
                 let result = try createTasks(fields)
                 let hasNew = result.saved.arrayValue?.contains { $0.objectValue?["alreadyInTasks"] != .bool(true) } == true
                 guard hasNew else { return JSONValue.object(["tasksSaved": taskImportReceipts?(result.saved) ?? .array([]), "calendar": .string("Already in Tasks. No new calendar writes.")]).jsonString() }
+                if result.proposals.isEmpty, let commitTaskOnlyImport {
+                    // Task-only: a matching saved grant saves immediately; otherwise fall through to the existing review.
+                    if let committed = try await commitTaskOnlyImport(sessionID) {
+                        guard self.sessionID == sessionID else { return #"{"cancelled":true}"# }
+                        finishTaskImport?()
+                        return JSONValue.object(["tasksSaved": committed, "calendar": .string("No calendar changes. This was task-only.")]).jsonString()
+                    }
+                    guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                }
                 coordinator.replace(with: coordinator.proposals + result.proposals)
                 try coordinator.persist?(coordinator.proposals)
                 let calendar = await awaitApproval(name: name, ids: Set(result.proposals.map(\.id)))
@@ -78,7 +136,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 guard let listFriends else { throw CalendarToolArgumentError("Friend sharing is unavailable. Open Friends & sharing in Settings.") }
                 onStep("Checking friends who share with you")
                 let result = try await listFriends()
-                guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                 return result.jsonString()
             case "search_friend_events":
                 try CalendarToolDraftMapper.keys(fields, allowed: ["friendID", "query", "start", "end"])
@@ -89,13 +147,13 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 guard let searchFriend else { throw CalendarToolArgumentError("Friend calendar reads are unavailable.") }
                 onStep("Checking your friend’s shared calendars")
                 let result = try await searchFriend(fields)
-                guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                 // Friend event IDs never enter the searched targets used by write tools.
                 return result.jsonString()
             case "read_screen_text":
                 try CalendarToolDraftMapper.keys(fields, allowed: [])
                 let text = await screenText()
-                guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                 return JSONValue.object(["text": .string(String(text.prefix(16_000))), "truncated": .bool(text.count > 16_000)]).jsonString()
             case "search_events":
                 try CalendarToolDraftMapper.keys(fields, allowed: ["query", "start", "end"])
@@ -116,11 +174,11 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                     onStep("Searching \(calendar.title)")
                     do {
                         let found = try await service.searchEvents(query: query, start: start, end: end, in: .resolve(identifier: calendar.id))
-                        guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                        guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                         events.append(contentsOf: found.map { ($0, calendar.id) })
                         results.append(.object(["id": .string(calendar.id), "name": .string(calendar.title), "sourceName": .string(calendar.sourceName ?? calendar.provider.rawValue), "isReadOnly": .bool(calendar.isReadOnly), "count": .number(Double(found.count))]))
                     } catch {
-                        guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                        guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                         results.append(.object(["id": .string(calendar.id), "name": .string(calendar.title), "sourceName": .string(calendar.sourceName ?? calendar.provider.rawValue), "isReadOnly": .bool(calendar.isReadOnly), "error": .string(error.localizedDescription)]))
                     }
                 }
@@ -167,7 +225,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 let calendar = try resolveDestination(fields)
                 onTargetDestination(calendar.id)
                 let ocr = await screenText()
-                guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                 let context = ocr + "\n" + sourceContext() + "\n" + confirmedAnswers.joined(separator: "\n")
                 let drafts = try events.map { try CalendarToolDraftMapper.create($0, context: context, confirmedContext: sourceContext() + "\n" + confirmedAnswers.joined(separator: "\n")) }
                 var retained = coordinator.proposals
@@ -209,7 +267,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                           let sourceID = searched[id], sourceID != destination.id else { throw CalendarToolArgumentError("Search each original first; source and destination must differ and each event must occur once.") }
                     guard searchDestinations?().first(where: { $0.id == sourceID })?.isReadOnly != true else { throw CalendarDestinationError.calendarReadOnly }
                     guard let original = try await service.event(identifier: id, in: .resolve(identifier: sourceID)) else { throw CalendarDestinationError.calendarUnavailable }
-                    guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                    guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                     var draft = original.draft; draft.id = UUID()
                     var proposal = CalendarActionProposal(draft: draft, operation: .move, targetEventIdentifier: id, before: original.draft)
                     proposal.sourceDestinationID = sourceID
@@ -224,7 +282,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                     }
                     requests.append(proposal)
                 }
-                guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                 var retained = coordinator.proposals
                 for index in retained.indices where !retained[index].isFinished { retained[index].isSelected = false }
                 onTargetDestination(destination.id)
@@ -246,7 +304,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 guard let existing = try await service.event(identifier: identifier, in: .resolve(identifier: calendarID)) else {
                     throw CalendarDestinationError.calendarUnavailable
                 }
-                guard self.sessionID == sessionID, !Task.isCancelled else { return #"{"cancelled":true}"# }
+                guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                 let before = existing.draft
                 var proposal: CalendarActionProposal
                 if name == "update_event" {
@@ -269,7 +327,55 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 return await awaitApproval(name: name, ids: [proposal.id])
             default: throw CalendarToolArgumentError("Unknown calendar tool.")
             }
-        } catch { return JSONValue.object(["error": .string(error.localizedDescription)]).jsonString() }
+        } catch is CancellationError { return #"{"cancelled":true}"# }
+        catch { return JSONValue.object(["error": .string(error.localizedDescription)]).jsonString() }
+    }
+
+    private func currentTasks() throws -> [JSONValue] {
+        guard let listTasks, let rows = try listTasks().arrayValue else { throw CalendarToolArgumentError("Tasks are unavailable. Reload Tasks and try again.") }
+        return rows
+    }
+
+    /// Validation is shared by the exposed tools and future native review integration.
+    func prepareTaskMutationArguments(name: String, fields: [String: JSONValue]) throws -> AgentPreparedTaskMutation {
+        if name == "link_event_to_task" {
+            try CalendarToolDraftMapper.keys(fields, allowed: ["contextReference"])
+            guard let reference = try CalendarToolDraftMapper.string(fields, "contextReference", required: true, limit: 36).flatMap(UUID.init(uuidString:)) else { throw CalendarToolArgumentError("Use the current native selected context reference.") }
+            return AgentPreparedTaskMutation(id: UUID(), change: .linkSelectedEvent(contextReference: reference))
+        }
+        guard ["update_tasks", "set_task_completion", "set_task_archived"].contains(name) else { throw CalendarToolArgumentError("Unknown task mutation.") }
+        try CalendarToolDraftMapper.keys(fields, allowed: ["tasks"])
+        guard let rows = fields["tasks"]?.arrayValue, !rows.isEmpty, rows.count <= 100 else { throw CalendarToolArgumentError("Provide 1–100 task changes.") }
+        let allowed: Set<String> = name == "set_task_completion" ? ["completed"] : name == "set_task_archived" ? ["archived"] : ["title", "dueDate", "dueTime", "timeZone", "notes"]
+        var seen = Set<UUID>()
+        let patches = try rows.map { row -> AgentPreparedTaskMutation.Patch in
+            guard let values = row.objectValue else { throw CalendarToolArgumentError("Each task change must be an object.") }
+            try CalendarToolDraftMapper.keys(values, allowed: ["taskID", "expectedVersion", "patch"])
+            guard let id = try CalendarToolDraftMapper.string(values, "taskID", required: true, limit: 36).flatMap(UUID.init(uuidString:)),
+                  let version = try CalendarToolDraftMapper.string(values, "expectedVersion", required: true, limit: 36).flatMap(UUID.init(uuidString:)),
+                  seen.insert(id).inserted, let patch = values["patch"]?.objectValue, !patch.isEmpty else { throw CalendarToolArgumentError("Use unique task IDs, exact current versions and a nonempty patch.") }
+            try CalendarToolDraftMapper.keys(patch, allowed: allowed)
+            for (key, value) in patch {
+                if key == "completed" || key == "archived" {
+                    guard value.boolValue != nil else { throw CalendarToolArgumentError("Task state must be a boolean.") }
+                } else {
+                    let nullable = ["dueDate", "dueTime", "notes"].contains(key)
+                    let limit = key == "notes" ? 8000 : key == "title" ? 500 : key == "timeZone" ? 100 : key == "dueDate" ? 10 : 5
+                    let text = try CalendarToolDraftMapper.string(patch, key, required: !nullable, limit: limit)
+                    if let text {
+                        if key == "dueDate", text.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) == nil {
+                            throw CalendarToolArgumentError("A task date needs an explicit year in YYYY-MM-DD form. Leave missing dates unresolved.")
+                        }
+                        if key == "dueTime", text.range(of: #"^([01]\d|2[0-3]):[0-5]\d$"#, options: .regularExpression) == nil { throw CalendarToolArgumentError("Use HH:mm for a task time.") }
+                        if key == "timeZone", TimeZone(identifier: text) == nil { throw CalendarToolArgumentError("Use a valid task timezone.") }
+                        if key == "title", text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw CalendarToolArgumentError("A task title is required.") }
+                    }
+                    guard value != .null || nullable else { throw CalendarToolArgumentError("This task field cannot be cleared.") }
+                }
+            }
+            return .init(operationID: UUID(), taskID: id, expectedVersion: version, fields: patch)
+        }
+        return AgentPreparedTaskMutation(id: UUID(), change: .patches(patches))
     }
 
     private var extraSkipped: [CalendarActionProposal] = []
@@ -342,6 +448,8 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
 
     func cancelPending(sessionID: UUID) {
         guard self.sessionID == sessionID else { return }
+        sessionCancelled = true
+        cancelTaskMutation?(sessionID)
         answerQuestion(nil)
         if coordinator.isExecuting { coordinator.requestStop() }
         else { skipApproval() }

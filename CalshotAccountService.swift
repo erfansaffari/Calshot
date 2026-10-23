@@ -168,7 +168,7 @@ final class CalshotAccountService: ObservableObject {
     }
     static let sharingRPCNames: Set<String> = ["read_calendar_sharing", "publish_calendar", "request_calendar_share", "respond_calendar_request", "manage_calendar_request", "withdraw_calendar", "calendar_publication_status", "read_shared_calendar", "search_friend_calendars"]
     func syncRPC<T: Decodable>(_ name: String, body: JSONValue, user: UUID) async throws -> T {
-        guard let client, userID == user, (["read_task_state", "write_task_state", "read_account_state", "write_account_state", "read_mac_calendar_sync", "set_mac_calendar_sync", "write_mac_calendar_snapshot", "disable_mac_calendar_sync"].contains(name) || Self.sharingRPCNames.contains(name)) else { throw CancellationError() }
+        guard let client, userID == user, (["read_task_state", "write_task_state", "read_task_state_v2", "write_task_state_v2", "read_account_state", "write_account_state", "read_mac_calendar_sync", "set_mac_calendar_sync", "write_mac_calendar_snapshot", "disable_mac_calendar_sync"].contains(name) || Self.sharingRPCNames.contains(name)) else { throw CancellationError() }
         let session = try await client.session
         guard userID == user, session.user.id == user else { throw CancellationError() }
         var request = URLRequest(url: Self.projectURL.appendingPathComponent("rest/v1/rpc/" + name))

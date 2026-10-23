@@ -423,7 +423,9 @@ export function TasksPage({
                             " · source Mac"}
                         </span>
                       )}
-                      {confirmed ? (
+                      {task.sourceLink ? (
+                        <span>Linked to source · {task.sourceLink.calendarName} · {task.sourceLink.sourceName}{task.sourceLink.deviceID !== tasks.deviceID ? " · source Mac" : " · this Mac"}</span>
+                      ) : confirmed ? (
                         <span className="task-ok">
                           <Check size={12} />
                           On{" "}
@@ -602,6 +604,10 @@ function TaskEditor({
   const [calendar, setCalendar] = useState(
     task?.calendarID || state.selectedCalendarID || "",
   );
+  const [intentChoice, setIntentChoice] = useState<"none" | "new" | undefined>();
+  const linked = Boolean(task?.sourceLink || task?.calendarIntent === "existing");
+  const intent = linked ? "existing" : intentChoice ?? (task?.intentProvenance === "suppressed" ? "none" : task?.calendarIntent === "none" && task.intentProvenance === "defaulted" ? "new" : task?.calendarIntent ?? "new");
+  const publishes = intent === "new";
   const [more, setMore] = useState(
     readOnly || Boolean(task?.notes) || task?.reminderMinutes != null,
   );
@@ -625,7 +631,8 @@ function TaskEditor({
           titleRef.current?.focus();
           return;
         }
-        if (day && !calendar) {
+        if (locked || saving) return;
+        if (day && publishes && !calendar) {
           setError("Choose a calendar for the deadline.");
           return;
         }
@@ -646,7 +653,8 @@ function TaskEditor({
             notes,
             reminderMinutes: reminder === "none" ? null : Number(reminder),
             reminderTime: reminderTime || null,
-            calendarID: calendar || null,
+            ...(publishes && !task?.receipt ? { calendarID: calendar || null } : {}),
+            ...(intentChoice == null ? {} : { calendarIntent: intentChoice }),
           });
         } catch (e) {
           setError((e as Error).message);
@@ -722,7 +730,18 @@ function TaskEditor({
           </label>
         )}
       </div>
-      {day && (
+      {!linked && !task?.receipt && (
+        <label>
+          Calendar use
+          <select value={intent} disabled={locked} onChange={(e) => setIntentChoice(e.target.value as "none" | "new")}>
+            <option value="none">Tasks only</option>
+            <option value="new">Publish deadline</option>
+          </select>
+        </label>
+      )}
+      {linked && <p className="fine-print">Linked to source · {task?.sourceLink?.calendarName || "calendar"}. Edits change this task only; the source event stays unchanged.{task?.sourceLink?.deviceID !== state.tasks?.deviceID ? " Source details belong to the source Mac." : " This link belongs to this Mac."}</p>}
+      {task?.receipt && <p className="fine-print">This task owns a published deadline. Changing to Tasks only requires a choice to retain or remove that entry; that transition is not available here yet.</p>}
+      {day && publishes && (
         <label>
           Deadline calendar
           <select
@@ -810,7 +829,11 @@ function TaskEditor({
         </details>
       )}
       <p className="fine-print">
-        {day
+        {linked
+          ? "Task edits never change the linked source event."
+          : !publishes
+            ? "Tasks only. No calendar entry is created."
+            : day
           ? "Adds one all-day, free entry to your calendar after you review it. An exact time stays in the title and notes."
           : "No date: stays in Inbox and adds nothing to your calendar."}
         {task?.receipt &&
@@ -831,7 +854,7 @@ function TaskEditor({
         {!readOnly && !remote && (
           <button className="button primary" disabled={saving}>
             {saving ? <Spinner /> : null}
-            {day ? "Save task & review deadline" : "Save task"}
+            {day && publishes ? "Save task & review deadline" : "Save task"}
           </button>
         )}
       </div>

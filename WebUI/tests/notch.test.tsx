@@ -8,6 +8,22 @@ vi.mock("../src/bridge", () => ({ useAppState: () => mock.state, command: mock.c
 import NotchApp from "../src/NotchApp";
 beforeEach(() => { mock.state = structuredClone(preview); mock.command.mockClear(); });
 afterEach(cleanup);
+it("imports an unannotated screenshot through a distinct native action", async () => {
+  mock.state.imageURL = "fixture://capture"; mock.state.messages = []; mock.state.proposals = [];
+  mock.state.running = false; mock.state.saving = false; mock.state.isRecognizing = false; mock.state.isCapturing = false;
+  render(<NotchApp />);
+  await userEvent.click(screen.getByRole("button", { name: "Add to calendar", exact: true }));
+  expect(mock.command).toHaveBeenCalledWith({ action: "importCapturedScreenshot" });
+  expect(mock.command.mock.calls.some(([c]) => c.action === "send")).toBe(false);
+});
+it("keeps user-written screenshot instructions as a typed request", async () => {
+  mock.state.imageURL = "fixture://capture"; mock.state.messages = []; mock.state.proposals = [];
+  mock.state.running = false; mock.state.saving = false; mock.state.isRecognizing = false; mock.state.isCapturing = false;
+  render(<NotchApp />);
+  await userEvent.type(screen.getByRole("textbox", { name: "Screenshot instructions" }), "Add this to Tasks only");
+  await userEvent.click(screen.getByRole("button", { name: "Add to calendar", exact: true }));
+  expect(mock.command).toHaveBeenCalledWith({ action: "send", text: "Add this to Tasks only" });
+});
 it("answers the current question inside the notch without opening the workspace", async () => {
   mock.state.question = { id: "question-in-notch", question: "Which class?", choices: ["Biology", "Chemistry"] };
   render(<NotchApp />);

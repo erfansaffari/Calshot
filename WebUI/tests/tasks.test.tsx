@@ -368,3 +368,44 @@ it("shows no home summary before native tasks exist and a loading state while re
   expect(screen.getByText(/Loading your tasks/)).toBeTruthy();
   expect(screen.queryByRole("textbox")).toBeNull();
 });
+
+it("keeps source-linked tasks task-only while editing their own dates and reminders", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  const linked: CalshotTask = { ...task, calendarIntent: "existing", intentProvenance: "explicit", sourceLink: { deviceID: "this-mac", calendarID: "school", eventID: "source-event", occurrenceKey: "single", observedStart: "2026-11-10T22:00:00Z", observedEnd: "2026-11-10T23:00:00Z", observedAt: "2026-10-23T00:00:00Z", calendarName: "Fictional school", sourceName: "Fixture" } };
+  render(<TasksPage state={state([linked])} onCommand={action} />);
+  expect(screen.queryByRole("button", { name: "Review deadline" })).toBeNull();
+  expect(screen.getByText(/Linked to source/)).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: task.title }));
+  expect(screen.queryByRole("combobox", { name: "Calendar use" })).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "Deadline calendar" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Save task" }));
+  await waitFor(() => expect(action).toHaveBeenCalled());
+  const save = action.mock.calls.find(([c]) => c.action === "saveTask")![0];
+  expect(save).not.toHaveProperty("calendarIntent");
+  expect(save).not.toHaveProperty("calendarID");
+});
+it("sends Tasks-only intent only after an explicit choice and needs no writable calendar", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  render(<TasksPage state={{ ...state(), calendars: [], selectedCalendarID: undefined }} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: task.title }));
+  fireEvent.change(screen.getByRole("combobox", { name: "Calendar use" }), { target: { value: "none" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save task" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith(expect.objectContaining({ action: "saveTask", calendarIntent: "none", dueDate: task.dueDate })));
+  expect(action.mock.calls[0][0]).not.toHaveProperty("calendarID");
+});
+it("preserves omitted intent for ordinary edits and locks owned publication transitions", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  const published = { ...task, calendarIntent: "new" as const, intentProvenance: "explicit" as const, receiptDeviceID: "this-mac", receipt: { eventIdentifier: "owned", destinationID: "school", calendarName: "School" } };
+  render(<TasksPage state={state([published])} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: task.title }));
+  expect(screen.queryByRole("combobox", { name: "Calendar use" })).toBeNull();
+  expect(screen.getByText(/retain or remove that entry/)).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "Save task & review deadline" }));
+  await waitFor(() => expect(action).toHaveBeenCalled());
+  expect(action.mock.calls[0][0]).not.toHaveProperty("calendarIntent");
+});
+it("does not offer deadline review for Tasks-only dated tasks", () => {
+  render(<TasksPage state={state([{ ...task, calendarIntent: "none", intentProvenance: "explicit" }])} onCommand={async () => {}} />);
+  expect(screen.queryByRole("button", { name: "Review deadline" })).toBeNull();
+  expect(screen.queryByText("Not on calendar yet")).toBeNull();
+});

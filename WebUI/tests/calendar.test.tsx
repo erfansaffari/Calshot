@@ -556,3 +556,58 @@ it("resizes the native sidebar with bounded keyboard controls and reset", async 
   fireEvent.doubleClick(divider);
   expect(onAction).toHaveBeenLastCalledWith("sidebarWidth", { width: 228 });
 });
+
+async function selectedPersonalEvent(readOnly = false) {
+  const base = { ...preview, waitingApproval: false, running: false, saving: false, question: undefined, calendars: [{ ...preview.calendars[0], isReadOnly: true }] };
+  const content = (state: typeof base) => <CalendarPresentationProvider><CalendarPage state={state} onCommand={command} readOnly={readOnly} /></CalendarPresentationProvider>;
+  const rendered = render(content(base));
+  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: "loadCalendarEvents" })));
+  const request = vi.mocked(command).mock.calls.filter(([c]) => c.action === "loadCalendarEvents").at(-1)![0];
+  const start = new Date(); start.setHours(10, 0, 0, 0);
+  const selected = { ...event, title: "Fictional source event", calendarIdentifier: base.calendars[0].id, start: start.toISOString(), end: new Date(start.getTime() + 3600000).toISOString(), isAllDay: false, selectionHandle: "native-handle", selectionGeneration: "native-view" };
+  const loaded = { ...base, calendarView: { loaded: true, loading: false, start: String(request.start), end: String(request.end), events: [selected], errors: [] } };
+  rendered.rerender(content(loaded));
+  fireEvent.click(screen.getByRole("button", { name: /Fictional source event/ }));
+  return { rendered, content, loaded };
+}
+it("links a personal read-only source using only native authority and waits for the receipt", async () => {
+  const { rendered, content, loaded } = await selectedPersonalEvent();
+  fireEvent.click(screen.getByRole("button", { name: "Add to Tasks" }));
+  await waitFor(() => expect(command).toHaveBeenCalledWith({ action: "linkCalendarEventTask", selectionHandle: "native-handle", selectionGeneration: "native-view" }));
+  expect(screen.queryByText(/Added to Tasks on this Mac/)).toBeNull();
+  rendered.rerender(content({ ...loaded, calendarTaskNotices: { "native-handle": { status: "success", receipt: { operationID: "operation", taskID: "task", taskVersion: "version", outcome: "saved", savedAt: "2026-10-23T00:00:00Z" } } } }));
+  expect(screen.getByText(/Added to Tasks on this Mac/)).toBeDefined();
+  expect(screen.getByRole("dialog", { name: "Fictional source event" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "View Tasks" })).toBeDefined();
+  expect(vi.mocked(command).mock.calls.some(([c]) => c.action === "startCalendarTask")).toBe(false);
+});
+it("keeps link failures by the event and prevents concurrent repeated submissions", async () => {
+  await selectedPersonalEvent();
+  let reject!: (error: Error) => void;
+  vi.mocked(command).mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+  const add = screen.getByRole("button", { name: "Add to Tasks" });
+  fireEvent.click(add); fireEvent.click(add);
+  expect(vi.mocked(command).mock.calls.filter(([c]) => c.action === "linkCalendarEventTask")).toHaveLength(1);
+  reject(new Error("The source event changed. Select it again."));
+  expect((await screen.findByRole("alert")).textContent).toContain("The source event changed");
+  expect(screen.getByRole("dialog", { name: "Fictional source event" })).toBeDefined();
+});
+it("hides Add to Tasks on the read-only website", async () => {
+  await selectedPersonalEvent(true);
+  expect(screen.queryByRole("button", { name: "Add to Tasks" })).toBeNull();
+});
+it("keeps selected-event authority attached to its Calendar composer request", async () => {
+  await selectedPersonalEvent();
+  fireEvent.click(screen.getByRole("button", { name: "Ask Calshot about this" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Ask Calshot about your calendar" }), { target: { value: "Add this event to Tasks" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send calendar question" }));
+  await waitFor(() => expect(command).toHaveBeenCalledWith({ action: "startCalendarTask", text: "Add this event to Tasks", eventHandle: "native-handle", viewToken: "native-view" }));
+});
+it("discards the selected-event draft when its native view changes", async () => {
+  const { rendered, content, loaded } = await selectedPersonalEvent();
+  fireEvent.click(screen.getByRole("button", { name: "Ask Calshot about this" }));
+  const input = screen.getByRole("textbox", { name: "Ask Calshot about your calendar" }) as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "Add this event to Tasks" } });
+  rendered.rerender(content({ ...loaded, calendarView: { ...loaded.calendarView, events: [{ ...loaded.calendarView.events[0], selectionHandle: "new-handle", selectionGeneration: "new-generation" }] } }));
+  await waitFor(() => expect(input.value).toBe(""));
+});

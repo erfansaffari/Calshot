@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C73000000000000000000001 /* CalshotAgentPermissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = C72000000000000000000001; };
+		C73000000000000000000002 /* AgentPermissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C72000000000000000000002; };
 		C63000000000000000000001 /* CalshotTasks.swift in Sources */ = {isa = PBXBuildFile; fileRef = C62000000000000000000001; };
 		C53000000000000000000001 /* ScreenPermissionFlowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C52000000000000000000001; };
 		E30000000000000000000001 /* CalendarSharing.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001; };
@@ -77,6 +79,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C72000000000000000000001 /* CalshotAgentPermissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalshotAgentPermissions.swift; sourceTree = "<group>"; };
+		C72000000000000000000002 /* AgentPermissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTests/AgentPermissionTests.swift; sourceTree = "<group>"; };
 		C62000000000000000000001 /* CalshotTasks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalshotTasks.swift; sourceTree = "<group>"; };
 		C52000000000000000000001 /* ScreenPermissionFlowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenPermissionFlowController.swift; sourceTree = "<group>"; };
 		E20000000000000000000001 /* CalendarSharing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarSharing.swift; sourceTree = "<group>"; };
@@ -170,6 +174,8 @@
 		A10000000000000000000004 /* . */ = {
 			isa = PBXGroup;
 			children = (
+				C72000000000000000000001 /* CalshotAgentPermissions.swift */,
+				C72000000000000000000002 /* AgentPermissionTests.swift */,
 				C20000000000000000000001 /* CalshotAccountService.swift */,
 				D20000000000000000000001 /* AccountSync.swift */,
 				E20000000000000000000001 /* CalendarSharing.swift */,
@@ -383,6 +389,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C73000000000000000000001 /* CalshotAgentPermissions.swift in Sources */,
 				C30000000000000000000001 /* CalshotAccountService.swift in Sources */,
 				D30000000000000000000001 /* AccountSync.swift in Sources */,
 				E30000000000000000000001 /* CalendarSharing.swift in Sources */,
@@ -434,6 +441,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C73000000000000000000002 /* AgentPermissionTests.swift in Sources */,
 				A3000000000000000000002C /* CalendarConnectionTests.swift in Sources */,
 				A30000000000000000000028 /* AgentMemoryTests.swift in Sources */,
 				A30000000000000000000027 /* CalendarAgentToolTests.swift in Sources */,

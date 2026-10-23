@@ -11,6 +11,7 @@ export function taskNeedsPublication(task: CalshotTask) {
   ].join("\x1f");
   return (
     !task.deleted &&
+    (task.calendarIntent == null || task.calendarIntent === "new") &&
     Boolean(task.dueDate || task.receipt) &&
     task.publishedFingerprint !== fingerprint
   );
