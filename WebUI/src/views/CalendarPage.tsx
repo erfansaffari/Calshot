@@ -28,6 +28,14 @@ import {
   timeRange,
 } from "../components/ui";
 import {
+  allDayConversionRequest,
+  changeRequestPrefix,
+  eventInfo,
+  isAllDayEvent,
+  keyToDate,
+  occursOn,
+} from "../calendarEvents";
+import {
   calendarColor,
   dateKey,
   monthDays,
@@ -35,31 +43,14 @@ import {
 } from "../calendarPresentation";
 
 export const dayKey = dateKey;
-function allDayKey(value: string, zone?: string) {
-  try {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: zone || undefined,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(new Date(value));
-    return ["year", "month", "day"]
-      .map((type) => parts.find((p) => p.type === type)?.value)
-      .join("-");
-  } catch {
-    return value.slice(0, 10);
-  }
-}
-export function occursOn(event: CalendarEvent, day: Date) {
-  if (event.isAllDay)
-    return (
-      allDayKey(event.start, event.timeZone) <= dayKey(day) &&
-      allDayKey(event.end, event.timeZone) > dayKey(day)
-    );
-  const end = new Date(day);
-  end.setDate(end.getDate() + 1);
-  return new Date(event.start) < end && new Date(event.end) > day;
-}
+export { occursOn };
+const dueLabel = (time: string) => {
+  const [hour, minute] = time.split(":").map(Number);
+  return new Date(2026, 0, 1, hour, minute).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
 const labelDay = (date: Date) =>
   date.toLocaleDateString(undefined, { dateStyle: "full" });
 const eventKey = (event: CalendarEvent) =>
@@ -81,7 +72,7 @@ export function dayInterval(event: CalendarEvent, day: Date) {
 // share the group's maximum lane count rather than covering one another.
 export function layoutDayEvents(events: CalendarEvent[], day: Date) {
   const sorted = events
-    .filter((e) => !e.isAllDay && occursOn(e, day))
+    .filter((e) => !isAllDayEvent(e) && occursOn(e, day))
     .map((event) => ({ event, ...dayInterval(event, day), lane: 0, lanes: 1 }))
     .sort(
       (a, b) =>
@@ -192,7 +183,7 @@ export function CalendarPage({
         .filter((e) => ids.includes(e.calendarIdentifier))
         .sort(
           (a, b) =>
-            Number(b.isAllDay) - Number(a.isAllDay) ||
+            Number(isAllDayEvent(b)) - Number(isAllDayEvent(a)) ||
             a.start.localeCompare(b.start) ||
             a.title.localeCompare(b.title),
         )
@@ -202,6 +193,29 @@ export function CalendarPage({
     ...(state.sharing?.error ? [{ calendarIdentifier: "shared:status", calendarName: "Friend calendars", message: state.sharing.error }] : []),
   ];
   const detail = events.find((e) => eventKey(e) === detailKey);
+  const detailInfo = detail ? eventInfo(detail) : undefined;
+  const detailCalendar = detail
+    ? state.calendars.find((c) => c.id === detail.calendarIdentifier)
+    : undefined;
+  const canChange = Boolean(
+    detail &&
+      !readOnly &&
+      !detail.calendarIdentifier.startsWith("shared:") &&
+      detailCalendar &&
+      !detailCalendar.isReadOnly &&
+      !detailCalendar.unavailable,
+  );
+  const conversionRequest =
+    canChange && detail ? allDayConversionRequest(detail) : undefined;
+  const askAbout = (text: string) => {
+    setAsk(text);
+    setDetailKey(undefined);
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLInputElement>(".calendar-ask input")
+        ?.focus(),
+    );
+  };
   const color = (id: string) =>
     calendarColor(visibleSources.findIndex((c) => c.id === id));
   const tint = (event: CalendarEvent) =>
@@ -222,7 +236,7 @@ export function CalendarPage({
         );
   const timed = days.flatMap((day) =>
     events
-      .filter((e) => !e.isAllDay && occursOn(e, day))
+      .filter((e) => !isAllDayEvent(e) && occursOn(e, day))
       .map((e) => dayInterval(e, day)),
   );
   // Match the reference's 8 AM–8 PM window, expanding for early/late events.
@@ -287,11 +301,16 @@ export function CalendarPage({
     }
   };
   const eventLabel = (event: CalendarEvent) =>
-    `${event.title || "Untitled event"}, ${timeRange(event.start, event.end, undefined, event.isAllDay)}, ${event.calendarName}`;
-  const allDayCount = Math.max(
+    `${event.title || "Untitled event"}, ${timeRange(event.start, event.end, undefined, isAllDayEvent(event))}, ${event.calendarName}`;
+  // Week cells stay compact: three entries, then a link into Day for the rest.
+  const allDayLimit = mode === "week" ? 3 : Infinity;
+  const allDayByDay = days.map((day) =>
+    events.filter((e) => isAllDayEvent(e) && occursOn(e, day)),
+  );
+  const allDayRows = Math.max(
     1,
-    ...days.map(
-      (day) => events.filter((e) => e.isAllDay && occursOn(e, day)).length,
+    ...allDayByDay.map(
+      (items) => Math.min(items.length, allDayLimit) + Number(items.length > allDayLimit),
     ),
   );
   return (
@@ -496,7 +515,7 @@ export function CalendarPage({
                           <button
                             key={eventKey(event)}
                             className={
-                              "month-event " + (event.isAllDay ? "all-day" : "")
+                              "month-event " + (isAllDayEvent(event) ? "all-day" : "")
                             }
                             style={tint(event)}
                             aria-label={eventLabel(event)}
@@ -506,7 +525,7 @@ export function CalendarPage({
                             <span className="truncate">
                               {event.title || "Untitled event"}
                             </span>
-                            {!event.isAllDay && (
+                            {!isAllDayEvent(event) && (
                               <time>
                                 {new Date(event.start).toLocaleTimeString(
                                   undefined,
@@ -567,27 +586,41 @@ export function CalendarPage({
                     ...columns,
                     maxHeight: 112,
                     minHeight: 28,
-                    height: 6 + allDayCount * 23,
+                    height: 6 + allDayRows * 23,
                   }}
                 >
                   <span className="all-day-label">all-day</span>
-                  {days.map((day) => (
-                    <div className="all-day-cell" key={dayKey(day)}>
-                      {events
-                        .filter((e) => e.isAllDay && occursOn(e, day))
-                        .map((event) => (
+                  {days.map((day, index) => {
+                    const items = allDayByDay[index];
+                    return (
+                      <div className="all-day-cell" key={dayKey(day)}>
+                        {items.slice(0, allDayLimit).map((event) => (
                           <button
                             key={eventKey(event)}
                             className="all-day-event"
                             style={tint(event)}
                             aria-label={eventLabel(event)}
+                            title={event.title || "Untitled event"}
                             onClick={() => setDetailKey(eventKey(event))}
                           >
                             {event.title || "Untitled event"}
                           </button>
                         ))}
-                    </div>
-                  ))}
+                        {items.length > allDayLimit && (
+                          <button
+                            className="month-more"
+                            aria-label={`Show ${items.length - allDayLimit} more all-day events on ${labelDay(day)}`}
+                            onClick={() => {
+                              setAnchor(day);
+                              setMode("day");
+                            }}
+                          >
+                            +{items.length - allDayLimit} more
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
                 <div className="timetable-scroll" ref={scroller}>
                   <div
@@ -710,7 +743,7 @@ export function CalendarPage({
           </footer>
         </>
       )}
-      {detail && (
+      {detail && detailInfo && (
         <Modal
           title={detail.title || "Event details"}
           onClose={() => setDetailKey(undefined)}
@@ -719,15 +752,20 @@ export function CalendarPage({
           <div className="calendar-event-detail">
             <p>
               <CalendarDays size={15} />
-              {detail.isAllDay
-                ? allDayKey(detail.start, detail.timeZone)
+              {detailInfo.allDay
+                ? detailInfo.last === detailInfo.first
+                  ? keyToDate(detailInfo.first).toLocaleDateString(undefined, {
+                      dateStyle: "full",
+                    })
+                  : `${keyToDate(detailInfo.first).toLocaleDateString(undefined, { dateStyle: "medium" })} – ${keyToDate(detailInfo.last).toLocaleDateString(undefined, { dateStyle: "medium" })}`
                 : new Date(detail.start).toLocaleDateString(undefined, {
                     dateStyle: "full",
                   })}
             </p>
             <p>
               <Clock size={15} />
-              {timeRange(detail.start, detail.end, undefined, detail.isAllDay)}
+              {timeRange(detail.start, detail.end, undefined, detailInfo.allDay)}
+              {detailInfo.dueTime && ` · due ${dueLabel(detailInfo.dueTime)}`}
             </p>
             <p>
               <span
@@ -745,24 +783,25 @@ export function CalendarPage({
             {detail.notes && <p className="event-notes">{detail.notes}</p>}
             {detail.timeZone && <small>{detail.timeZone}</small>}
             {detail.calendarIdentifier.startsWith("shared:") && <Badge>Shared · Read-only</Badge>}
-            {!readOnly && !detail.calendarIdentifier.startsWith("shared:") && (
-              <button
-                className="button secondary"
-                disabled={blocked}
-                onClick={() => {
-                  setAsk(
-                    `Change “${detail.title}” on ${new Date(detail.start).toLocaleString()} in “${detail.calendarName}”: `,
-                  );
-                  setDetailKey(undefined);
-                  requestAnimationFrame(() =>
-                    document
-                      .querySelector<HTMLInputElement>(".calendar-ask input")
-                      ?.focus(),
-                  );
-                }}
-              >
-                Ask Calshot to change this
-              </button>
+            {canChange && (
+              <>
+                <button
+                  className="button secondary"
+                  disabled={blocked}
+                  onClick={() => askAbout(changeRequestPrefix(detail))}
+                >
+                  Ask Calshot to change this
+                </button>
+                {conversionRequest && (
+                  <button
+                    className="button secondary"
+                    disabled={blocked}
+                    onClick={() => askAbout(conversionRequest)}
+                  >
+                    Make all-day
+                  </button>
+                )}
+              </>
             )}
           </div>
         </Modal>

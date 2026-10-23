@@ -1,54 +1,51 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Archive,
   ArrowDown,
   ArrowUp,
+  Bell,
+  CalendarDays,
   Check,
+  ChevronRight,
+  GripVertical,
   ListTodo,
   Plus,
   RefreshCw,
-  GripVertical,
-  CalendarDays,
-  Bell,
 } from "lucide-react";
 import type { AppState, CalshotTask, Command } from "../types";
 import { Empty, InlineError, Modal, Spinner } from "../components/ui";
+import {
+  localDay,
+  reminderLabel,
+  taskCounts,
+  taskDueLabel,
+  taskNeedsPublication,
+} from "../taskPresentation";
+
+export { taskDue, taskNeedsPublication } from "../taskPresentation";
 
 type Filter = "all" | "today" | "upcoming" | "inbox" | "completed" | "archived";
-export function taskNeedsPublication(task: CalshotTask) {
-  const fingerprint = [
-    task.title,
-    task.dueDate || "",
-    task.dueTime || "",
-    task.timeZone,
-    task.notes,
-    task.calendarID || "",
-  ].join("\x1f");
-  return (
-    !task.deleted &&
-    Boolean(task.dueDate || task.receipt) &&
-    task.publishedFingerprint !== fingerprint
-  );
-}
-const localDay = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
-export function taskDue(task: CalshotTask) {
-  if (!task.dueDate) return "No deadline";
-  const d = new Date(task.dueDate + "T12:00:00");
-  const day = d.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-  if (!task.dueTime) return day + " · Date only";
-  const [h, m] = task.dueTime.split(":").map(Number);
-  const t = new Date(2000, 0, 1, h, m).toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  return day + " · Due " + t + " · " + task.timeZone;
-}
+const filters: [Filter, string][] = [
+  ["all", "All"],
+  ["today", "Today & overdue"],
+  ["upcoming", "Upcoming"],
+  ["inbox", "Inbox"],
+  ["completed", "Completed"],
+  ["archived", "Archived"],
+];
+const inFilter = (t: CalshotTask, filter: Filter, today: string) =>
+  filter === "archived"
+    ? t.deleted
+    : !t.deleted &&
+      (filter === "completed" ? t.completed : !t.completed) &&
+      (filter === "inbox"
+        ? !t.dueDate
+        : filter === "today"
+          ? Boolean(t.dueDate && t.dueDate <= today)
+          : filter === "upcoming"
+            ? Boolean(t.dueDate && t.dueDate > today)
+            : true);
+
 export function TasksPage({
   state,
   onCommand,
@@ -72,22 +69,11 @@ export function TasksPage({
   const dragged = useRef<string | undefined>(undefined);
   const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const today = localDay();
+  const items = tasks?.items || [];
   const ordered = useMemo(
     () =>
-      (tasks?.items || [])
-        .filter((t) =>
-          filter === "archived"
-            ? t.deleted
-            : !t.deleted &&
-              (filter === "completed" ? t.completed : !t.completed) &&
-              (filter === "inbox"
-                ? !t.dueDate
-                : filter === "today"
-                  ? Boolean(t.dueDate && t.dueDate <= today)
-                  : filter === "upcoming"
-                    ? Boolean(t.dueDate && t.dueDate > today)
-                    : true),
-        )
+      items
+        .filter((t) => inFilter(t, filter, today))
         .sort((a, b) =>
           sort === "due"
             ? (a.dueDate || "9999").localeCompare(b.dueDate || "9999") ||
@@ -96,7 +82,17 @@ export function TasksPage({
         ),
     [tasks?.items, filter, sort, today],
   );
-  const fullOrder = (tasks?.items || [])
+  const counts = useMemo(
+    () => ({
+      all: items.filter((t) => inFilter(t, "all", today)).length,
+      today: items.filter((t) => inFilter(t, "today", today)).length,
+      upcoming: items.filter((t) => inFilter(t, "upcoming", today)).length,
+      inbox: items.filter((t) => inFilter(t, "inbox", today)).length,
+    }),
+    [tasks?.items, today],
+  );
+  const summary = taskCounts(items, today);
+  const fullOrder = items
     .filter((t) => !t.deleted && !t.completed)
     .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
   const conversationBusy =
@@ -155,17 +151,37 @@ export function TasksPage({
           : "smooth",
       });
   }, [reviewKey]);
+  const lockReason = (task: CalshotTask) =>
+    reviewedTaskIDs.has(task.id)
+      ? "Finish the calendar review for this task first."
+      : undefined;
   return (
     <div className="page-scroll">
       <div className="page-inner tasks-page">
-        <header className="page-title">
-          <div>
-            <p className="eyebrow">YOUR WORK, IN ORDER</p>
+        <header className="page-title tasks-head">
+          <div className="tasks-heading">
             <h1>Tasks</h1>
-            <p className="muted">
-              Keep track of what to finish. Review dated tasks to add their
-              deadlines to your calendar.
-            </p>
+            {tasks?.loaded && (
+              <p className="tasks-summary">
+                <span>
+                  {summary.open === 0 ? "Nothing open" : `${summary.open} open`}
+                </span>
+                {summary.overdue > 0 && (
+                  <>
+                    {" · "}
+                    <span className="task-overdue">
+                      {summary.overdue} overdue
+                    </span>
+                  </>
+                )}
+                {summary.dueToday > 0 && (
+                  <>
+                    {" · "}
+                    <span>{summary.dueToday} due today</span>
+                  </>
+                )}
+              </p>
+            )}
           </div>
           <div className="tasks-header-actions">
             <button
@@ -188,7 +204,7 @@ export function TasksPage({
             )}
           </div>
         </header>
-        <p role="status" aria-live="polite" className="fine-print">
+        <p role="status" aria-live="polite" className="task-live">
           {announcement}
         </p>
         {error && <InlineError message={error} />}
@@ -236,8 +252,8 @@ export function TasksPage({
           >
             <h2>Review calendar deadlines</h2>
             <p className="muted">
-              These entries appear above the timetable and do not reserve work
-              time. Exact due times remain in their titles and notes.
+              Added as all-day, free entries above the timetable. Exact due
+              times stay in the title and notes.
             </p>
             {deadlineReview}
           </section>
@@ -259,24 +275,23 @@ export function TasksPage({
         )}
         <div className="tasks-toolbar">
           <div className="tasks-filters" role="group" aria-label="Task views">
-            {(
-              [
-                ["all", "All tasks"],
-                ["today", "Today & overdue"],
-                ["upcoming", "Upcoming"],
-                ["inbox", "Inbox"],
-                ["completed", "Completed"],
-                ["archived", "Archived"],
-              ] as [Filter, string][]
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                aria-pressed={filter === id}
-                onClick={() => setFilter(id)}
-              >
-                {label}
-              </button>
-            ))}
+            {filters.map(([id, label]) => {
+              const count = counts[id as keyof typeof counts];
+              return (
+                <button
+                  key={id}
+                  aria-pressed={filter === id}
+                  onClick={() => setFilter(id)}
+                >
+                  {label}
+                  {count > 0 && (
+                    <span className="task-count" aria-hidden="true">
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
           <label className="task-sort">
             Order
@@ -308,18 +323,18 @@ export function TasksPage({
             )}
           </div>
         ) : ordered.length === 0 ? (
-          <Empty
-            icon={<ListTodo size={28} />}
-            title={
-              filter === "all"
-                ? "A little space for what’s next."
-                : "No tasks in this view."
-            }
-          >
-            {filter === "all"
-              ? "Add a task with just a title. Choose a deadline when you know it."
-              : "Your other tasks are still available in All tasks."}
-          </Empty>
+          <div className="tasks-empty-state">
+            <Empty
+              icon={<ListTodo size={24} />}
+              title={
+                filter === "all" ? "No tasks yet" : "No tasks in this view"
+              }
+            >
+              {filter === "all"
+                ? "A title is enough. Add a deadline when you know it."
+                : "Your other tasks are in All."}
+            </Empty>
+          </div>
         ) : (
           <div className="task-list" aria-label="Task list">
             {ordered.map((task) => {
@@ -330,10 +345,15 @@ export function TasksPage({
                   sort === "manual" &&
                   !task.completed;
               const needs = taskNeedsPublication(task);
+              const confirmed = !needs && Boolean(task.receipt);
+              const due = taskDueLabel(task, today);
+              const locked = reviewedTaskIDs.has(task.id);
               return (
                 <article
                   className={
-                    "task-item" + (task.completed ? " task-completed" : "")
+                    "task-row" +
+                    (task.completed ? " task-completed" : "") +
+                    (canMove ? " task-draggable" : "")
                   }
                   key={task.id}
                   draggable={canMove && !pending}
@@ -360,21 +380,19 @@ export function TasksPage({
                     dragged.current = undefined;
                   }}
                 >
-                  <span className="task-grip" aria-hidden="true">
-                    <GripVertical size={15} />
-                  </span>
+                  {canMove && (
+                    <span className="task-grip" aria-hidden="true">
+                      <GripVertical size={14} />
+                    </span>
+                  )}
                   <input
                     type="checkbox"
                     aria-label={
                       (task.completed ? "Reopen " : "Complete ") + task.title
                     }
+                    title={lockReason(task)}
                     checked={task.completed}
-                    disabled={
-                      pending ||
-                      readOnly ||
-                      task.deleted ||
-                      reviewedTaskIDs.has(task.id)
-                    }
+                    disabled={pending || readOnly || task.deleted || locked}
                     onChange={(e) =>
                       void run("completeTask", {
                         taskID: task.id,
@@ -382,7 +400,7 @@ export function TasksPage({
                       }).catch(() => {})
                     }
                   />
-                  <div className="task-item-main">
+                  <div className="task-body">
                     <button
                       className="task-open"
                       ref={(el) => {
@@ -393,31 +411,39 @@ export function TasksPage({
                       {task.title}
                     </button>
                     <div className="task-meta">
-                      <span
-                        className={
-                          !task.completed &&
-                          task.dueDate &&
-                          task.dueDate < today
-                            ? "task-overdue"
-                            : ""
-                        }
-                      >
+                      <span className={due.overdue ? "task-overdue" : ""}>
                         <CalendarDays size={12} />
-                        {taskDue(task)}
+                        {due.text}
                       </span>
-                      {task.calendarName && <span>{task.calendarName}</span>}
                       {task.reminderMinutes != null && (
                         <span>
                           <Bell size={12} />
-                          {task.reminderMinutes === 0
-                            ? "At deadline"
-                            : task.reminderMinutes === 60
-                              ? "1 hour before"
-                              : "1 day before"}
-                          {task.reminderDeviceID !== tasks.deviceID
-                            ? " · source Mac"
-                            : " · this Mac"}
+                          {reminderLabel(task.reminderMinutes)}
+                          {task.reminderDeviceID !== tasks.deviceID &&
+                            " · source Mac"}
                         </span>
+                      )}
+                      {confirmed ? (
+                        <span className="task-ok">
+                          <Check size={12} />
+                          On{" "}
+                          {task.receipt?.calendarName ||
+                            task.calendarName ||
+                            "calendar"}
+                        </span>
+                      ) : (
+                        <>
+                          {task.calendarName && (
+                            <span>{task.calendarName}</span>
+                          )}
+                          {needs && !task.calendarError && (
+                            <span className="task-pending">
+                              {task.receipt
+                                ? "Deadline change needs review"
+                                : "Not on calendar yet"}
+                            </span>
+                          )}
+                        </>
                       )}
                     </div>
                     {task.calendarError && (
@@ -425,25 +451,13 @@ export function TasksPage({
                         {task.calendarError}
                       </p>
                     )}
-                    {needs && !task.calendarError && (
-                      <p className="task-publish-status">
-                        {task.receipt
-                          ? "Deadline changes need calendar review."
-                          : "Task saved · deadline needs calendar review."}
-                      </p>
-                    )}
-                    {!needs && task.receipt && (
-                      <p className="task-publish-status">
-                        <Check size={11} />
-                        Calendar deadline confirmed
-                      </p>
-                    )}
                   </div>
-                  <div className="task-item-actions">
-                    {needs && !readOnly && !task.completed && (
+                  <div className="task-actions">
+                    {needs && !readOnly && !task.completed && !task.deleted && (
                       <button
                         className="button secondary"
-                        disabled={pending || reviewedTaskIDs.has(task.id)}
+                        disabled={pending || locked}
+                        title={lockReason(task)}
                         onClick={() =>
                           void run("reviewTaskDeadline", {
                             taskID: task.id,
@@ -458,11 +472,8 @@ export function TasksPage({
                         <button
                           className="icon-button"
                           aria-label={`Move ${task.title} up`}
-                          disabled={
-                            pending ||
-                            reviewedTaskIDs.has(task.id) ||
-                            index === 0
-                          }
+                          title="Move up"
+                          disabled={pending || locked || index === 0}
                           onClick={() => void move(task, -1)}
                         >
                           <ArrowUp size={14} />
@@ -470,10 +481,9 @@ export function TasksPage({
                         <button
                           className="icon-button"
                           aria-label={`Move ${task.title} down`}
+                          title="Move down"
                           disabled={
-                            pending ||
-                            reviewedTaskIDs.has(task.id) ||
-                            index === fullOrder.length - 1
+                            pending || locked || index === fullOrder.length - 1
                           }
                           onClick={() => void move(task, 1)}
                         >
@@ -481,31 +491,42 @@ export function TasksPage({
                         </button>
                       </>
                     )}
-                    {!readOnly && (
-                      <button
-                        className="button secondary"
-                        disabled={pending || reviewedTaskIDs.has(task.id)}
-                        onClick={() =>
-                          void run("archiveTask", {
-                            taskID: task.id,
-                            archived: !task.deleted,
-                          }).catch(() => {})
-                        }
-                      >
-                        {task.deleted ? "Restore" : "Archive"}
-                      </button>
-                    )}
+                    {!readOnly &&
+                      (task.deleted ? (
+                        <button
+                          className="button secondary"
+                          disabled={pending || locked}
+                          onClick={() =>
+                            void run("archiveTask", {
+                              taskID: task.id,
+                              archived: false,
+                            }).catch(() => {})
+                          }
+                        >
+                          Restore
+                        </button>
+                      ) : (
+                        <button
+                          className="icon-button"
+                          aria-label={`Archive ${task.title}`}
+                          title="Archive"
+                          disabled={pending || locked}
+                          onClick={() =>
+                            void run("archiveTask", {
+                              taskID: task.id,
+                              archived: true,
+                            }).catch(() => {})
+                          }
+                        >
+                          <Archive size={14} />
+                        </button>
+                      ))}
                   </div>
                 </article>
               );
             })}
           </div>
         )}
-        <p className="task-footer-note">
-          Completing or archiving a task keeps its historical calendar deadline.
-          Reminders run on the Mac where you enable them. Smart planning is
-          coming in a later phase.
-        </p>
         {editing && (
           <Modal
             title={
@@ -523,6 +544,7 @@ export function TasksPage({
               state={state}
               token={editToken}
               readOnly={readOnly}
+              onCancel={() => setEditing(undefined)}
               onSave={async (body) => {
                 await run("saveTask", body);
                 setAnnouncement("Saved “" + String(body.title) + "” to Tasks.");
@@ -553,6 +575,7 @@ function TaskEditor({
   token,
   onSave,
   onReload,
+  onCancel,
   readOnly,
 }: {
   task?: CalshotTask;
@@ -560,6 +583,7 @@ function TaskEditor({
   token: string;
   onSave: (body: Record<string, unknown>) => Promise<void>;
   onReload: () => void;
+  onCancel: () => void;
   readOnly: boolean;
 }) {
   const [title, setTitle] = useState(task?.title || "");
@@ -578,18 +602,39 @@ function TaskEditor({
   const [calendar, setCalendar] = useState(
     task?.calendarID || state.selectedCalendarID || "",
   );
+  const [more, setMore] = useState(
+    readOnly || Boolean(task?.notes) || task?.reminderMinutes != null,
+  );
   const [error, setError] = useState("");
+  const [titleError, setTitleError] = useState("");
+  const titleRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const remote = Boolean(
     task?.receipt && task.receiptDeviceID !== state.tasks?.deviceID,
   );
+  const locked = readOnly || remote;
   return (
     <form
       className="task-editor"
+      noValidate
       onSubmit={async (e) => {
         e.preventDefault();
-        setSaving(true);
         setError("");
+        if (!title.trim()) {
+          setTitleError("Enter a task title.");
+          titleRef.current?.focus();
+          return;
+        }
+        if (day && !calendar) {
+          setError("Choose a calendar for the deadline.");
+          return;
+        }
+        if (day && time === "" && reminder !== "none" && !reminderTime) {
+          setMore(true);
+          setError("Choose a time for the reminder.");
+          return;
+        }
+        setSaving(true);
         try {
           await onSave({
             token,
@@ -612,7 +657,7 @@ function TaskEditor({
     >
       {error && <InlineError message={error} />}
       {remote && !readOnly && (
-        <p className="notice">
+        <p className="notice task-editor-notice">
           This calendar entry is linked on its source Mac. Edit its deadline
           there; you can complete or reorder this task here.
         </p>
@@ -620,21 +665,32 @@ function TaskEditor({
       <label>
         Task
         <input
+          ref={titleRef}
           autoFocus
           value={title}
           maxLength={500}
-          required
-          disabled={readOnly || remote}
-          onChange={(e) => setTitle(e.target.value)}
+          aria-required="true"
+          aria-invalid={Boolean(titleError)}
+          aria-describedby={titleError ? "task-title-error" : undefined}
+          disabled={locked}
+          onChange={(e) => {
+            setTitle(e.target.value);
+            if (titleError && e.target.value.trim()) setTitleError("");
+          }}
         />
       </label>
+      {titleError && (
+        <div id="task-title-error">
+          <InlineError message={titleError} />
+        </div>
+      )}
       <div className="task-form-grid">
         <label>
           Due date
           <input
             type="date"
             value={day}
-            disabled={readOnly || remote}
+            disabled={locked}
             onChange={(e) => {
               setDay(e.target.value);
               if (!e.target.value) {
@@ -644,32 +700,36 @@ function TaskEditor({
             }}
           />
         </label>
-        <label>
-          Due time (optional)
-          <input
-            type="time"
-            value={time}
-            disabled={!day || readOnly || remote}
-            onChange={(e) => setTime(e.target.value)}
-          />
-        </label>
+        {day && (
+          <label>
+            Due time (optional)
+            <input
+              type="time"
+              value={time}
+              disabled={locked}
+              onChange={(e) => setTime(e.target.value)}
+            />
+          </label>
+        )}
+        {day && time && (
+          <label>
+            Timezone
+            <input
+              value={zone}
+              disabled={locked}
+              onChange={(e) => setZone(e.target.value)}
+            />
+          </label>
+        )}
       </div>
-      <label>
-        Timezone
-        <input
-          value={zone}
-          disabled={readOnly || remote}
-          onChange={(e) => setZone(e.target.value)}
-        />
-      </label>
       {day && (
         <label>
           Deadline calendar
           <select
             value={calendar}
-            disabled={readOnly || remote || Boolean(task?.receipt)}
+            disabled={locked || Boolean(task?.receipt)}
             onChange={(e) => setCalendar(e.target.value)}
-            required
+            aria-required="true"
           >
             <option value="">Choose a calendar</option>
             {task?.calendarID &&
@@ -691,65 +751,90 @@ function TaskEditor({
           </select>
         </label>
       )}
+      <button
+        type="button"
+        className="task-more"
+        aria-expanded={more}
+        aria-controls="task-more-fields"
+        onClick={() => setMore(!more)}
+      >
+        <ChevronRight size={14} />
+        Notes{day ? " & reminder" : ""}
+      </button>
+      {more && (
+        <div className="task-more-fields" id="task-more-fields">
+          <label>
+            Notes
+            <textarea
+              value={notes}
+              maxLength={8000}
+              rows={3}
+              disabled={locked}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+          </label>
+          {day && (
+            <div className="task-form-grid">
+              <label>
+                {readOnly ? "Mac reminder" : "Remind on this Mac"}
+                <select
+                  value={reminder}
+                  disabled={locked}
+                  onChange={(e) => setReminder(e.target.value)}
+                >
+                  <option value="none">No reminder</option>
+                  <option value="0">At deadline</option>
+                  <option value="60">1 hour before</option>
+                  <option value="1440">1 day before</option>
+                </select>
+              </label>
+              {!time && reminder !== "none" && (
+                <label>
+                  Reminder time
+                  <input
+                    type="time"
+                    value={reminderTime}
+                    disabled={locked}
+                    onChange={(e) => setReminderTime(e.target.value)}
+                  />
+                </label>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {task?.sourceText && (
         <details>
           <summary>Source evidence</summary>
           <p className="source-text">{task.sourceText}</p>
         </details>
       )}
-      <label>
-        Notes
-        <textarea
-          value={notes}
-          maxLength={8000}
-          rows={3}
-          disabled={readOnly || remote}
-          onChange={(e) => setNotes(e.target.value)}
-        />
-      </label>
-      <div className="task-form-grid">
-        <label>
-          {readOnly ? "Mac reminder" : "Remind on this Mac"}
-          <select
-            value={reminder}
-            disabled={!day || readOnly || remote}
-            onChange={(e) => setReminder(e.target.value)}
-          >
-            <option value="none">No reminder</option>
-            <option value="0">At deadline</option>
-            <option value="60">1 hour before</option>
-            <option value="1440">1 day before</option>
-          </select>
-        </label>
-        {day && !time && reminder !== "none" && (
-          <label>
-            Reminder time
-            <input
-              type="time"
-              value={reminderTime}
-              required
-              disabled={readOnly || remote}
-              onChange={(e) => setReminderTime(e.target.value)}
-            />
-          </label>
-        )}
-      </div>
       <p className="fine-print">
         {day
-          ? "Your deadline is an all-day entry marked free. An exact due time stays in its title and notes. Calendar changes require review."
-          : "Tasks without a due date stay in Inbox. No calendar event is created."}
+          ? "Adds one all-day, free entry to your calendar after you review it. An exact time stays in the title and notes."
+          : "No date: stays in Inbox and adds nothing to your calendar."}
+        {task?.receipt &&
+          " Completing or archiving keeps its calendar deadline."}
       </p>
-      {!readOnly && !remote && (
-        <button className="button primary" disabled={saving}>
-          {saving ? <Spinner /> : null}
-          {day ? "Save task & review deadline" : "Save task"}
+      <div className="task-editor-foot">
+        {error && !readOnly && (
+          <button type="button" className="button secondary" onClick={onReload}>
+            {task
+              ? "Reload current task"
+              : "Use latest task list and keep draft"}
+          </button>
+        )}
+        <span className="task-foot-spacer" />
+        <button type="button" className="button secondary" onClick={onCancel}>
+          {readOnly || remote ? "Close" : "Cancel"}
         </button>
-      )}
-      {error && !readOnly && (
-        <button type="button" className="button secondary" onClick={onReload}>
-          {task ? "Reload current task" : "Use latest task list and keep draft"}
-        </button>
-      )}
+        {!readOnly && !remote && (
+          <button className="button primary" disabled={saving}>
+            {saving ? <Spinner /> : null}
+            {day ? "Save task & review deadline" : "Save task"}
+          </button>
+        )}
+      </div>
     </form>
   );
 }

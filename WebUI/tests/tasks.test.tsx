@@ -7,6 +7,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { TasksPage } from "../src/views/TasksPage";
+import { HomeTasks } from "../src/components/HomeTasks";
 import { preview } from "../src/preview";
 import type { AppState, CalshotTask } from "../src/types";
 afterEach(cleanup);
@@ -58,6 +59,41 @@ it("creates a title-only Inbox task without inventing a date or reminder", async
       }),
     ),
   );
+});
+it("keeps an empty or whitespace title as a persistent field error without saving", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  render(<TasksPage state={state([])} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: "New task" }));
+  const field = screen.getByRole("textbox", {
+    name: "Task",
+  }) as HTMLInputElement;
+  const save = screen.getByRole("button", { name: "Save task" });
+  save.focus();
+  expect(document.activeElement).toBe(save);
+  fireEvent.click(screen.getByRole("button", { name: "Save task" }));
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "Enter a task title.",
+  );
+  expect(field.getAttribute("aria-invalid")).toBe("true");
+  expect(document.activeElement).toBe(field);
+  fireEvent.change(field, { target: { value: "   " } });
+  expect(screen.getByRole("alert").textContent).toContain(
+    "Enter a task title.",
+  );
+  save.focus();
+  expect(document.activeElement).toBe(save);
+  fireEvent.click(save);
+  expect(document.activeElement).toBe(field);
+  expect(field.value).toBe("   ");
+  expect(screen.getByRole("alert").textContent).toContain(
+    "Enter a task title.",
+  );
+  expect(action).not.toHaveBeenCalled();
+  fireEvent.change(field, { target: { value: "Read the brief" } });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(field.getAttribute("aria-invalid")).toBe("false");
+  fireEvent.click(screen.getByRole("button", { name: "Save task" }));
+  await waitFor(() => expect(action).toHaveBeenCalledTimes(1));
 });
 it("sends the captured edit token and preserves unsaved text after a stale edit", async () => {
   const action = vi
@@ -145,4 +181,190 @@ it("opens archived tasks separately without calendar publication actions", () =>
   fireEvent.click(screen.getByRole("button", { name: "Archived" }));
   expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Review deadline" })).toBeNull();
+});
+it("shows dense rows with concise metadata and no filler header", () => {
+  render(
+    <TasksPage
+      state={state([
+        { ...task, dueDate: "2020-01-02", dueTime: undefined },
+        {
+          ...task,
+          id: "fixture-b",
+          title: "Read chapter",
+          dueDate: undefined,
+          dueTime: undefined,
+          rank: 1,
+        },
+      ])}
+      onCommand={vi.fn()}
+    />,
+  );
+  expect(screen.queryByText("YOUR WORK, IN ORDER")).toBeNull();
+  expect(screen.getByRole("heading", { name: "Tasks" })).toBeTruthy();
+  expect(screen.getByText("2 open")).toBeTruthy();
+  expect(screen.getByText(/Overdue · Jan 2, 2020/)).toBeTruthy();
+  expect(screen.getByText("No date")).toBeTruthy();
+  expect(screen.getAllByText("Not on calendar yet").length).toBe(1);
+  expect(
+    screen.getByRole("button", { name: "Archive Read chapter" }),
+  ).toBeTruthy();
+});
+it("reveals editor fields progressively and keeps the draft when cancelling is not chosen", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  render(<TasksPage state={state([])} onCommand={action} />);
+  expect(screen.getByRole("heading", { name: "No tasks yet" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "New task" }));
+  expect(screen.queryByLabelText("Due time (optional)")).toBeNull();
+  expect(screen.queryByLabelText("Deadline calendar")).toBeNull();
+  expect(screen.queryByLabelText("Notes")).toBeNull();
+  fireEvent.change(screen.getByLabelText("Due date"), {
+    target: { value: "2026-12-01" },
+  });
+  expect(screen.getByLabelText("Due time (optional)")).toBeTruthy();
+  expect(screen.getByLabelText("Deadline calendar")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /Notes & reminder/ }));
+  expect(screen.getByLabelText("Notes")).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Remind on this Mac"), {
+    target: { value: "60" },
+  });
+  expect(screen.getByLabelText("Reminder time")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(action).not.toHaveBeenCalled();
+});
+it("keeps the stale-edit reload action beside the editor", async () => {
+  const action = vi.fn().mockRejectedValue(new Error("Tasks changed."));
+  render(<TasksPage state={state()} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: task.title }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Save task & review deadline" }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Reload current task" }),
+    ).toBeTruthy(),
+  );
+});
+it("shows confirmed deadlines from receipts and the other Mac's reminder", () => {
+  const confirmed: CalshotTask = {
+    ...task,
+    calendarID: "cal",
+    calendarName: "Personal",
+    receipt: {
+      eventIdentifier: "e",
+      destinationID: "cal",
+      calendarName: "Personal",
+    },
+    receiptDeviceID: "this-mac",
+    publishedFingerprint: [
+      task.title,
+      task.dueDate,
+      task.dueTime,
+      task.timeZone,
+      task.notes,
+      "cal",
+    ].join("\x1f"),
+    reminderMinutes: 60,
+    reminderDeviceID: "other-mac",
+  };
+  render(<TasksPage state={state([confirmed])} onCommand={vi.fn()} />);
+  expect(screen.getByText("On Personal")).toBeTruthy();
+  expect(screen.getByText(/1 hour before · source Mac/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Review deadline" })).toBeNull();
+});
+const home = (
+  items: CalshotTask[],
+  extra: Partial<AppState> = {},
+): AppState => ({
+  ...state(items),
+  page: "chat",
+  ...extra,
+});
+it("summarizes overdue and next tasks on the Assistant home as navigation only", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  render(
+    <HomeTasks
+      state={home([
+        {
+          ...task,
+          id: "later",
+          title: "Later",
+          dueDate: "2999-01-01",
+          rank: 0,
+        },
+        {
+          ...task,
+          id: "late",
+          title: "Late one",
+          dueDate: "2020-01-01",
+          rank: 2,
+        },
+        {
+          ...task,
+          id: "inbox",
+          title: "Inbox one",
+          dueDate: undefined,
+          rank: 1,
+        },
+        { ...task, id: "done", title: "Finished", completed: true, rank: 3 },
+        { ...task, id: "gone", title: "Archived", deleted: true, rank: 4 },
+      ])}
+      onCommand={action}
+    />,
+  );
+  expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+  expect(screen.queryByRole("textbox")).toBeNull();
+  const rows = screen
+    .getAllByRole("button")
+    .filter((b) => b.className.includes("home-task"));
+  expect(
+    rows.map((r) => r.querySelector(".home-task-title")?.textContent),
+  ).toEqual(["Late one", "Later", "Inbox one"]);
+  expect(screen.getByText("3 open")).toBeTruthy();
+  expect(screen.getByText("1 overdue")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "View all" }));
+  await waitFor(() => expect(action).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect((rows[0] as HTMLButtonElement).disabled).toBe(false),
+  );
+  fireEvent.click(rows[0]);
+  await waitFor(() => expect(action).toHaveBeenCalledTimes(2));
+  expect(action.mock.calls.map(([c]) => c)).toEqual([
+    { action: "navigate", page: "tasks" },
+    { action: "navigate", page: "tasks" },
+  ]);
+});
+it("keeps a failed home navigation visible beside the summary", async () => {
+  const action = vi.fn().mockRejectedValue(new Error("Couldn’t open Tasks."));
+  render(<HomeTasks state={home([task])} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: "View all" }));
+  await waitFor(() =>
+    expect(screen.getByText("Couldn’t open Tasks.")).toBeTruthy(),
+  );
+});
+it("offers Open Tasks instead of an inline form when nothing is open", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  render(<HomeTasks state={home([])} onCommand={action} />);
+  expect(screen.getByText("No open tasks.")).toBeTruthy();
+  expect(screen.queryByRole("textbox")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Open Tasks" }));
+  await waitFor(() =>
+    expect(action).toHaveBeenCalledWith({ action: "navigate", page: "tasks" }),
+  );
+  expect(action).toHaveBeenCalledTimes(1);
+});
+it("shows no home summary before native tasks exist and a loading state while reading", () => {
+  const view = render(
+    <HomeTasks state={{ ...home([]), tasks: undefined }} onCommand={vi.fn()} />,
+  );
+  expect(view.container.firstChild).toBeNull();
+  cleanup();
+  render(
+    <HomeTasks
+      state={{ ...home([]), tasks: { ...state([]).tasks!, loaded: false } }}
+      onCommand={vi.fn()}
+    />,
+  );
+  expect(screen.getByText(/Loading your tasks/)).toBeTruthy();
+  expect(screen.queryByRole("textbox")).toBeNull();
 });

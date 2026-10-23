@@ -105,13 +105,12 @@ function AccountSyncCard({ state }: { state: AppState }) {
         </div>
         <InlineError message={sync.error || a.error} />
         <p className="fine-print">
-          Your profile, appearance, sidebar preference, connected-account list
-          and task history sync privately with your Calshot account. Screenshot
-          images and authorization credentials stay on each Mac. Restoring
-          history never repeats calendar changes.
+          Profile, appearance, sidebar, connected-account list and task history
+          sync privately. Screenshots and credentials stay on each Mac.
+          Restoring history never repeats calendar changes.
         </p>
         {!!unique.length && (
-          <div style={{ marginTop: 16 }}>
+          <div className="settings-group">
             <h3>Accounts from your other devices</h3>
             {unique.map((item) => (
               <div className="settings-row" key={item.key}>
@@ -717,7 +716,7 @@ export function SettingsPage({ state }: { state: AppState }) {
     locked = state.running || state.saving || a.busy;
   return (
     <div className="page-scroll">
-      <div className="page-inner">
+      <div className="page-inner settings-page">
         <header className="page-title">
           <h1>Settings</h1>
         </header>
@@ -756,15 +755,12 @@ export function SettingsPage({ state }: { state: AppState }) {
         {tab === "general" && <SoftwareUpdates state={state} onAction={(action, extra) => command({ action, ...extra })} />}
         {tab === "general" && (
           <section>
-            <h2 className="section-label">Appearance</h2>
+            <h2 className="section-label">Appearance & capture</h2>
             <div className="card settings-card">
               <div className="settings-row">
                 <div>
-                  <h3>Choose your look</h3>
-                  <p>
-                    System follows your Mac. Applies to the workspace and native
-                    Calshot windows.
-                  </p>
+                  <h3>Appearance</h3>
+                  <p>System follows your Mac.</p>
                 </div>
                 <Select
                   label="Appearance"
@@ -777,6 +773,31 @@ export function SettingsPage({ state }: { state: AppState }) {
                   <option value="dark">Dark</option>
                 </Select>
               </div>
+              <div className="settings-row">
+                <div>
+                  <h3>Capture shortcut</h3>
+                  <p>Change it in native preferences.</p>
+                </div>
+                <button
+                  className="button secondary"
+                  onClick={() => void a.run("advancedSettings")}
+                >
+                  {state.shortcut}
+                </button>
+              </div>
+              <div className="settings-row">
+                <div>
+                  <h3>Copy captures to clipboard</h3>
+                </div>
+                <input
+                  type="checkbox"
+                  aria-label="Copy captures to clipboard"
+                  checked={s.copyCaptures}
+                  onChange={(e) =>
+                    void a.run("copyCaptures", { enabled: e.target.checked })
+                  }
+                />
+              </div>
             </div>
           </section>
         )}
@@ -786,11 +807,8 @@ export function SettingsPage({ state }: { state: AppState }) {
             <div className="card settings-card">
               <div className="settings-row">
                 <div>
-                  <h3>Use for new requests</h3>
-                  <p>
-                    API usage is billed separately from your ChatGPT plan. Your
-                    choice is saved.
-                  </p>
+                  <h3>AI service for new requests</h3>
+                  <p>API usage is billed by OpenAI, separately from ChatGPT.</p>
                 </div>
                 <Select
                   label="AI service"
@@ -812,9 +830,8 @@ export function SettingsPage({ state }: { state: AppState }) {
                   </h3>
                   <p>
                     {s.apiKeySaved
-                      ? "Key saved in your macOS Keychain."
-                      : "Add an API key to use this service."}{" "}
-                    Usage is billed by OpenAI.
+                      ? "Saved in your macOS Keychain."
+                      : "No key saved."}
                   </p>
                 </div>
                 <div className="settings-actions">
@@ -849,7 +866,7 @@ export function SettingsPage({ state }: { state: AppState }) {
                       ? (s.chatGPTPlan ? "Signed in as " : "Saved account: ") +
                         s.chatGPTEmail +
                         "."
-                      : "Connect a supported ChatGPT account."}{" "}
+                      : "Not connected."}{" "}
                     {s.chatGPTError
                       ? s.chatGPTPlan
                         ? "Your sign-in is kept while the service is unavailable."
@@ -863,7 +880,7 @@ export function SettingsPage({ state }: { state: AppState }) {
                     </details>
                   )}
                 </div>
-                <div className="account-actions">
+                <div className="settings-actions">
                   {s.chatGPTConnecting ? (
                     <>
                       <span role="status">
@@ -909,7 +926,9 @@ export function SettingsPage({ state }: { state: AppState }) {
               </div>
               {s.models.length > 0 && (
                 <div className="settings-row">
-                  <label htmlFor="chatgpt-model">ChatGPT model</label>
+                  <h3>
+                    <label htmlFor="chatgpt-model">ChatGPT model</label>
+                  </h3>
                   <select
                     id="chatgpt-model"
                     value={s.useAPIKey ? "" : s.model}
@@ -933,16 +952,10 @@ export function SettingsPage({ state }: { state: AppState }) {
                   </select>
                 </div>
               )}
-              <p className="fine-print">
-                ChatGPT plan access powers AI requests. Your Calshot account and
-                calendar permissions stay separate.
-              </p>
               <div className="settings-row">
                 <div>
                   <h3>Calendar agent</h3>
-                  <p>
-                    Use the chosen AI service for screenshots and conversation.
-                  </p>
+                  <p>Use the chosen service for screenshots and chat.</p>
                 </div>
                 <input
                   type="checkbox"
@@ -954,6 +967,10 @@ export function SettingsPage({ state }: { state: AppState }) {
                   }
                 />
               </div>
+              <p className="fine-print">
+                Your Calshot account and calendar permissions are separate from
+                AI billing.
+              </p>
             </div>
           </section>
         )}
@@ -965,8 +982,8 @@ export function SettingsPage({ state }: { state: AppState }) {
                 <div>
                   <h3>Screen Recording</h3>
                   <p>
-                    Open the helper, drag Calshot into the Screen Recording list,
-                    and enable it. macOS may ask you to quit and reopen Calshot.
+                    Needed to capture your screen. Drag Calshot into the list
+                    and turn it on; macOS may ask you to reopen Calshot.
                   </p>
                 </div>
                 <button
@@ -981,9 +998,7 @@ export function SettingsPage({ state }: { state: AppState }) {
               <div className="settings-row">
                 <div>
                   <h3>Calendars</h3>
-                  <p>
-                    Read connected calendars and perform changes after approval.
-                  </p>
+                  <p>Read your calendars and make approved changes.</p>
                 </div>
                 <button
                   className="button secondary"
@@ -991,39 +1006,6 @@ export function SettingsPage({ state }: { state: AppState }) {
                 >
                   System Settings
                 </button>
-              </div>
-            </div>
-          </section>
-        )}
-        {tab === "general" && (
-          <section>
-            <h2 className="section-label">Capture</h2>
-            <div className="card settings-card">
-              <div className="settings-row">
-                <div>
-                  <h3>Capture shortcut</h3>
-                  <p>Choose a shortcut in native preferences.</p>
-                </div>
-                <button
-                  className="button secondary"
-                  onClick={() => void a.run("advancedSettings")}
-                >
-                  {state.shortcut}
-                </button>
-              </div>
-              <div className="settings-row">
-                <div>
-                  <h3>Copy captures to clipboard</h3>
-                  <p>Also copy the screenshot when capturing.</p>
-                </div>
-                <input
-                  type="checkbox"
-                  aria-label="Copy captures to clipboard"
-                  checked={s.copyCaptures}
-                  onChange={(e) =>
-                    void a.run("copyCaptures", { enabled: e.target.checked })
-                  }
-                />
               </div>
             </div>
           </section>
@@ -1039,12 +1021,12 @@ export function SettingsPage({ state }: { state: AppState }) {
                 responses for later use; OpenAI processes them under its own
                 policies.
               </p>
-              <div className="settings-row" style={{ marginTop: 16 }}>
+              <div className="settings-row">
                 <div>
                   <h3>History on this Mac</h3>
                   <p>
-                    {state.memory.length} tasks. Removing local history does not
-                    change calendar events.
+                    {state.memory.length} tasks. Removing history never changes
+                    calendar events.
                   </p>
                 </div>
                 <button
@@ -1057,9 +1039,7 @@ export function SettingsPage({ state }: { state: AppState }) {
               <div className="settings-row">
                 <div>
                   <h3>Advanced</h3>
-                  <p>
-                    Connection setup, storage location and native preferences.
-                  </p>
+                  <p>Connection setup, storage and native preferences.</p>
                 </div>
                 <button
                   className="button secondary"

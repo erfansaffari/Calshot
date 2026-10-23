@@ -24,8 +24,9 @@ export function Sidebar({
   const [changing, setChanging] = useState(false);
   const [draftWidth, setDraftWidth] = useState<number | null>(null);
   const drag = useRef<{ x: number; width: number; value: number } | null>(null);
-  const width = draftWidth ?? state.sidebarWidth ?? 228;
   const clamp = (value: number) => Math.min(320, Math.max(184, value));
+  // One saved width for every section; only the user's resize changes it.
+  const width = clamp(draftWidth ?? state.sidebarWidth ?? 228);
   const expanded = state.sidebarExpanded !== false;
   const navigation: [Page, string, typeof MessageSquare][] = [
     ["chat", "Assistant", MessageSquare],

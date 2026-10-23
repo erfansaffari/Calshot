@@ -23,6 +23,7 @@ import type { AppState, Page } from "./types";
 import { Badge, Empty, InlineError, Modal, Spinner } from "./components/ui";
 import { Review } from "./components/Review";
 import { Question } from "./components/Question";
+import { HomeTasks } from "./components/HomeTasks";
 import { AccountScreen } from "./views/AccountScreen";
 import { TasksPage } from "./views/TasksPage";
 import { CalendarPage } from "./views/CalendarPage";
@@ -227,6 +228,7 @@ function App() {
                           <small>Pick a capture from your History</small>
                         </button>
                       </div>
+                      <HomeTasks state={state} onCommand={command} />
                       <p className="section-label">Ask Calshot</p>
                       <div className="suggestions">
                         {[
