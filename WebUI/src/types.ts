@@ -305,6 +305,8 @@ export interface AppState {
     model: string;
     models: { id: string; name: string }[];
     copyCaptures: boolean;
+    /** Device-local; on unless the user turned the notch off. */
+    notchEnabled?: boolean;
   };
 }
 export interface Command {

@@ -32,6 +32,7 @@ final class NotchExperienceController: ObservableObject {
     @Published private(set) var expandedWidth: CGFloat = 520
     @Published private(set) var cameraInset: CGFloat = 24
     @Published private(set) var activity = NotchActivity.idle
+    @Published private(set) var geometry: NotchGeometry?
     private var detail = false
     private var detailHeight: CGFloat = 490
     private var pointerTimer: Timer?
@@ -42,9 +43,10 @@ final class NotchExperienceController: ObservableObject {
     private var subscriptions = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
     var expandedHeight: CGFloat {
-        let available = (panel.screen ?? NSScreen.main)?.visibleFrame.height ?? 700
-        return cameraInset + (detail ? min(detailHeight, available - cameraInset - 24) : 66)
+        geometry?.expandedHeight(detail: detail, detailHeight: detailHeight) ?? cameraInset + (detail ? detailHeight : 66)
     }
+    /// Displays without a camera housing get a visible black notch in the menu bar.
+    var drawsClosedNotch: Bool { geometry.map { !$0.hasCameraHousing } ?? false }
 
     init(model: CalshotModel) {
         self.model = model
@@ -87,7 +89,10 @@ final class NotchExperienceController: ObservableObject {
         }
 #endif
     }
-    func show() { refreshActivity(); position(); panel.orderFrontRegardless() }
+    func show() {
+        guard model?.notchEnabled != false else { return hide() }
+        refreshActivity(); position(); panel.orderFrontRegardless()
+    }
     func showQuickPreview(image: NSImage, recordID: UUID, copiedToClipboard: Bool) {
         guard let model, let record = model.memoryRecords.first(where: { $0.id == recordID }) else { return }
         model.taskUsesNotch = true; model.restoreCalendarReview(record); openQuickMenu()
@@ -107,6 +112,7 @@ final class NotchExperienceController: ObservableObject {
         apply(next)
     }
     func openQuickMenu() {
+        guard model?.notchEnabled != false else { return }
         model?.taskUsesNotch = true
         var next = presentation; next.open()
         apply(next)
@@ -143,18 +149,22 @@ final class NotchExperienceController: ObservableObject {
         }
         if panel.isVisible { position() }
     }
+    /// An open panel stays on its display. Otherwise prefer the built-in camera housing,
+    /// then the menu bar display, so a reconnected or removed display never strands the notch.
+    private var targetScreen: NSScreen? {
+        let screens = NSScreen.screens
+        if isExpanded, let current = panel.screen, screens.contains(current) { return current }
+        return screens.first(where: { NotchGeometry($0).hasCameraHousing }) ?? screens.first ?? NSScreen.main
+    }
     private func position(animated: Bool = true) {
-        let screen = panel.screen ?? NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main
-        guard let screen else { return }
-        cameraInset = max(24, screen.safeAreaInsets.top)
-        expandedWidth = min(detail ? 560 : 520, screen.frame.width - 32)
-        var closedWidth: CGFloat = 184
-        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
-            closedWidth = max(closedWidth, right.minX - left.maxX)
-        }
-        launcherSize = NSSize(width: showsNotification ? max(340, closedWidth + 24) : closedWidth, height: showsNotification ? cameraInset + 26 : cameraInset)
+        guard let screen = targetScreen else { return }
+        let geometry = NotchGeometry(screen)
+        self.geometry = geometry
+        cameraInset = geometry.barHeight
+        expandedWidth = geometry.expandedWidth(detail: detail)
+        launcherSize = showsNotification ? geometry.notificationSize : geometry.closedSize
         let size = isExpanded ? NSSize(width: expandedWidth, height: expandedHeight) : launcherSize
-        let frame = NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - size.height, width: size.width, height: size.height)
+        let frame = geometry.frame(for: size)
         // Frequent agent snapshots must not restart an in-flight transition.
         guard targetFrame != frame || !animated else { return }
         let previous = targetFrame
@@ -242,6 +252,64 @@ struct NotchPresentationState: Equatable {
     }
 }
 
+/// Panel sizes for any display: MacBooks with a camera housing (any scaling),
+/// Macs without one, and external displays whose menu bar height differs.
+struct NotchGeometry: Equatable {
+    static let minimumClosedWidth: CGFloat = 184
+    let screenFrame: NSRect
+    let visibleFrame: NSRect
+    let hasCameraHousing: Bool
+    /// Camera housing height, or the menu bar height on displays without one.
+    let barHeight: CGFloat
+    let closedWidth: CGFloat
+    let centerX: CGFloat
+
+    init(frame: NSRect, visibleFrame: NSRect, safeAreaTop: CGFloat, leftAuxiliaryWidth: CGFloat?, rightAuxiliaryWidth: CGFloat?, statusBarThickness: CGFloat) {
+        screenFrame = frame
+        self.visibleFrame = visibleFrame
+        let housingWidth = leftAuxiliaryWidth.flatMap { left in rightAuxiliaryWidth.map { frame.width - left - $0 } }
+        if safeAreaTop > 0, let housingWidth, housingWidth > 0, let left = leftAuxiliaryWidth {
+            hasCameraHousing = true
+            barHeight = safeAreaTop
+            // Match the physical housing exactly; scaled resolutions change its width in points.
+            closedWidth = housingWidth
+            centerX = frame.minX + left + housingWidth / 2
+        } else {
+            hasCameraHousing = false
+            // visibleFrame excludes the menu bar unless it hides automatically.
+            let menuBar = frame.maxY - visibleFrame.maxY
+            barHeight = (20...44).contains(menuBar) ? menuBar : max(24, statusBarThickness)
+            closedWidth = min(Self.minimumClosedWidth, frame.width * 0.3)
+            centerX = frame.midX
+        }
+    }
+
+    init(_ screen: NSScreen) {
+        self.init(frame: screen.frame, visibleFrame: screen.visibleFrame, safeAreaTop: screen.safeAreaInsets.top,
+                  leftAuxiliaryWidth: screen.auxiliaryTopLeftArea?.width, rightAuxiliaryWidth: screen.auxiliaryTopRightArea?.width,
+                  statusBarThickness: NSStatusBar.system.thickness)
+    }
+
+    var closedSize: NSSize { NSSize(width: closedWidth, height: barHeight) }
+    var notificationSize: NSSize { NSSize(width: min(max(340, closedWidth + 24), screenFrame.width - 32), height: barHeight + 26) }
+    /// Bottom corners of the closed shape, close to the physical housing.
+    var closedCornerRadius: CGFloat { min(10, barHeight / 3) }
+    func expandedWidth(detail: Bool) -> CGFloat {
+        max(min(detail ? 560 : 520, screenFrame.width - 32), min(closedWidth + 48, screenFrame.width))
+    }
+    func expandedHeight(detail: Bool, detailHeight: CGFloat) -> CGFloat {
+        guard detail else { return barHeight + 66 }
+        // Stop above the Dock and keep a small gap on short displays.
+        let available = screenFrame.maxY - visibleFrame.minY - barHeight - 12
+        return barHeight + max(120, min(detailHeight, available))
+    }
+    /// Top-aligned and centred on the housing, kept inside the display.
+    func frame(for size: NSSize) -> NSRect {
+        let x = min(max(centerX - size.width / 2, screenFrame.minX), screenFrame.maxX - size.width)
+        return NSRect(x: x, y: screenFrame.maxY - size.height, width: size.width, height: size.height)
+    }
+}
+
 struct NotchActivity: Equatable {
     enum Phase: String { case idle, working, question, approval, failed, completed }
     let phase: Phase
@@ -308,7 +376,10 @@ private struct NotchExperienceView: View {
                         .background(.black, in: UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14))
                 }.buttonStyle(.plain).help("Open task in notch")
             } else {
-                Color.clear.frame(width: controller.launcherSize.width, height: controller.launcherSize.height)
+                // A physical housing already shows the notch; elsewhere draw one in the menu bar.
+                UnevenRoundedRectangle(bottomLeadingRadius: controller.geometry?.closedCornerRadius ?? 8, bottomTrailingRadius: controller.geometry?.closedCornerRadius ?? 8)
+                    .fill(controller.drawsClosedNotch ? Color.black : Color.clear)
+                    .frame(width: controller.launcherSize.width, height: controller.launcherSize.height)
                     .accessibilityLabel("Calshot. Move the pointer here to capture or ask.")
             }
         }

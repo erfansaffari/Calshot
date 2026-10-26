@@ -130,6 +130,7 @@ export const preview: AppState = {
     model: "gpt-6-luna",
     models: [],
     copyCaptures: true,
+    notchEnabled: true,
   },
 };
 

@@ -104,7 +104,7 @@ enum WebWorkspaceState {
             "useAPIKey": .bool(model.agentUseAPIKey), "chatGPTPlan": .bool(model.chatGPTAccount?.canUsePlan == true), "chatGPTConnecting": .bool(model.chatGPTIsConnecting),
             "model": .string(model.agentUseAPIKey || model.chatGPTAccount == nil ? OpenAIEventAnalyzer.modelName : model.chatGPTAccount?.model ?? ""),
             "models": .array(model.chatGPTModels.map { .object(["id": .string($0.slug), "name": .string($0.displayName)]) }),
-            "copyCaptures": .bool(CaptureClipboard.automaticallyCopyCapture)]
+            "copyCaptures": .bool(CaptureClipboard.automaticallyCopyCapture), "notchEnabled": .bool(model.notchEnabled)]
         if let email = model.chatGPTAccount?.email { settings["chatGPTEmail"] = .string(email) }
         if let error = model.chatGPTConnectionError { settings["chatGPTError"] = .string(error) }
         state["settings"] = .object(settings)

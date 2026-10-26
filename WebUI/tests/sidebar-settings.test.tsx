@@ -6,6 +6,7 @@ import { preview } from "../src/preview";
 import { CalendarPresentationProvider } from "../src/calendarPresentation";
 import { Sidebar } from "../src/components/Sidebar";
 import type { Page } from "../src/types";
+import { command } from "../src/bridge";
 vi.mock("../src/bridge", () => ({
   command: vi.fn().mockResolvedValue(undefined),
 }));
@@ -59,6 +60,15 @@ it("groups appearance and capture preferences with every control kept", async ()
   expect(screen.getByRole("combobox", { name: "Appearance" })).toBeTruthy();
   expect(screen.getByRole("checkbox", { name: "Copy captures to clipboard" })).toBeTruthy();
   expect(screen.getByRole("button", { name: preview.shortcut })).toBeTruthy();
+});
+
+it("shows the notch toggle on by default and sends the native setting", async () => {
+  const { notchEnabled: _omitted, ...settings } = preview.settings;
+  render(<SettingsPage state={{ ...preview, settings }} />);
+  const toggle = screen.getByRole<HTMLInputElement>("checkbox", { name: "Show Calshot in the notch" });
+  expect(toggle.checked).toBe(true);
+  await userEvent.click(toggle);
+  expect(vi.mocked(command)).toHaveBeenCalledWith({ action: "notchEnabled", enabled: false });
 });
 
 it("keeps billing and privacy explanations on their settings sections", async () => {

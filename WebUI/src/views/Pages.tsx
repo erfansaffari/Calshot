@@ -788,6 +788,21 @@ export function SettingsPage({ state }: { state: AppState }) {
               </div>
               <div className="settings-row">
                 <div>
+                  <h3>Show Calshot in the notch</h3>
+                  <p>Point at the top of the screen to capture or ask. When off, tasks open here.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  aria-label="Show Calshot in the notch"
+                  checked={s.notchEnabled !== false}
+                  disabled={a.busy}
+                  onChange={(e) =>
+                    void a.run("notchEnabled", { enabled: e.target.checked })
+                  }
+                />
+              </div>
+              <div className="settings-row">
+                <div>
                   <h3>Copy captures to clipboard</h3>
                 </div>
                 <input

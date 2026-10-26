@@ -33,6 +33,7 @@ struct CalshotApp: App {
                 SoftwareUpdateMenuItem(controller: appDelegate.model.softwareUpdates)
 
                 Button("Open Quick Menu") {
+                    guard appDelegate.model.notchEnabled else { appDelegate.model.openPanel(); return }
                     appDelegate.model.showNotchLauncher()
                     appDelegate.model.notchLauncherController?.openQuickMenu()
                 }.keyboardShortcut("k", modifiers: [.command, .shift])
@@ -192,8 +193,26 @@ final class CalshotModel: ObservableObject {
     @Published var screenCapturePermissionNeeded = false
     var screenPermissionFlow: ScreenPermissionFlowController?
     var workspaceWindowController: WorkspaceWindowController?
-    var taskUsesNotch = false
+    /// A task follows the notch only while the notch is turned on in Settings.
+    var taskUsesNotch = false {
+        didSet { if taskUsesNotch && !notchEnabled { taskUsesNotch = false } }
+    }
     var notchLauncherController: NotchExperienceController?
+    /// Device-local preference, on by default. Off hides the notch; tasks open in the workspace.
+    @Published var notchEnabled = UserDefaults.standard.object(forKey: "notchEnabled") as? Bool ?? true {
+        didSet {
+            guard notchEnabled != oldValue else { return }
+            if persistsAISelection { UserDefaults.standard.set(notchEnabled, forKey: "notchEnabled") }
+            if notchEnabled { showNotchLauncher() }
+            else {
+                // A task already shown in the notch moves to the workspace; nothing is cancelled.
+                let hadNotchTask = taskUsesNotch
+                taskUsesNotch = false
+                notchLauncherController?.hide()
+                if hadNotchTask && (agentIsRunning || agentIsWaitingForApproval || agentQuestion != nil || agentTaskReview != nil) { openPanel() }
+            }
+        }
+    }
     @Published var taskDocument = CalshotTaskDocument()
     @Published var taskImport: CalshotTaskImport?
     @Published var taskDataReady = false
@@ -390,6 +409,7 @@ final class CalshotModel: ObservableObject {
     }
 
     func showNotchLauncher() {
+        guard notchEnabled else { return }
         if notchLauncherController == nil {
             notchLauncherController = NotchExperienceController(model: self)
         }
@@ -641,6 +661,7 @@ final class CalshotModel: ObservableObject {
                 agentStatus = "Screenshot ready. Tell Calshot what you want to do."
                 return
             }
+            guard notchEnabled else { restoreCalendarReview(record); workspaceSelection = .chat; openPanel(); return }
             showNotchLauncher()
             notchLauncherController?.showQuickPreview(image: image, recordID: record.id,
                                                        copiedToClipboard: copied)
@@ -942,12 +963,14 @@ struct MenuBarView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-            Button { model.showNotchLauncher() } label: {
-                Label("Show notch launcher", systemImage: "capsule.portrait")
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if model.notchEnabled {
+                Button { model.showNotchLauncher() } label: {
+                    Label("Show notch launcher", systemImage: "capsule.portrait")
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             HStack(spacing: 7) {
                 Circle().fill(model.openAIAnalysisEnabled ? .orange : .green).frame(width: 6, height: 6)
                 Text(model.openAIAnalysisEnabled ? "OpenAI analysis · captured image sent online" : "Private by design · processed on your Mac")

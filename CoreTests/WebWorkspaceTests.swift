@@ -609,6 +609,51 @@ final class WebWorkspaceTests: XCTestCase {
         do { try await notch.handle("sidebarWidth", ["width": 240.0]); XCTFail("Notch changed workspace width") } catch {}
         XCTAssertEqual(model.sidebarWidth, 280)
     }
+    func testNotchGeometryMatchesCameraHousingOnEachMacBookSize() {
+        // (display, safe-area top, left and right areas beside the housing)
+        let models: [(NSRect, CGFloat, CGFloat, CGFloat)] = [
+            (NSRect(x: 0, y: 0, width: 1470, height: 956), 32, 640, 640),   // 13" / 15" Air
+            (NSRect(x: 0, y: 0, width: 1512, height: 982), 32, 662, 662),   // 14" Pro
+            (NSRect(x: 0, y: 0, width: 1728, height: 1117), 38, 764, 764),  // 16" Pro
+            (NSRect(x: 0, y: 0, width: 1800, height: 1169), 32, 810, 810),  // 14" Pro, More Space
+        ]
+        for (frame, top, left, right) in models {
+            let visible = NSRect(x: 0, y: 70, width: frame.width, height: frame.height - 70 - top)
+            let g = NotchGeometry(frame: frame, visibleFrame: visible, safeAreaTop: top, leftAuxiliaryWidth: left, rightAuxiliaryWidth: right, statusBarThickness: 24)
+            XCTAssertTrue(g.hasCameraHousing)
+            XCTAssertEqual(g.barHeight, top)
+            XCTAssertEqual(g.closedSize, NSSize(width: frame.width - left - right, height: top))
+            let closed = g.frame(for: g.closedSize)
+            XCTAssertEqual(closed.minX, left)
+            XCTAssertEqual(closed.maxY, frame.maxY)
+            XCTAssertGreaterThan(g.expandedWidth(detail: false), g.closedWidth)
+        }
+    }
+    func testNotchGeometryDrawsMenuBarNotchWithoutCameraHousing() {
+        // External 1080p display: 30pt menu bar and a 53pt Dock.
+        let external = NotchGeometry(frame: NSRect(x: 0, y: 0, width: 1920, height: 1080), visibleFrame: NSRect(x: 0, y: 53, width: 1920, height: 997), safeAreaTop: 0, leftAuxiliaryWidth: nil, rightAuxiliaryWidth: nil, statusBarThickness: 22)
+        XCTAssertFalse(external.hasCameraHousing)
+        XCTAssertEqual(external.barHeight, 30)
+        XCTAssertEqual(external.frame(for: external.closedSize), NSRect(x: 868, y: 1050, width: 184, height: 30))
+        XCTAssertEqual(external.expandedHeight(detail: true, detailHeight: 490), 520)
+        // MacBook without a notch, with the menu bar hidden automatically.
+        let hidden = NotchGeometry(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 900), safeAreaTop: 0, leftAuxiliaryWidth: nil, rightAuxiliaryWidth: nil, statusBarThickness: 22)
+        XCTAssertEqual(hidden.barHeight, 24)
+        // A secondary display keeps the panel on its own frame.
+        let secondary = NotchGeometry(frame: NSRect(x: 1920, y: 200, width: 1280, height: 800), visibleFrame: NSRect(x: 1920, y: 200, width: 1280, height: 775), safeAreaTop: 0, leftAuxiliaryWidth: nil, rightAuxiliaryWidth: nil, statusBarThickness: 22)
+        XCTAssertEqual(secondary.frame(for: secondary.closedSize), NSRect(x: 2468, y: 975, width: 184, height: 25))
+    }
+    func testNotchGeometryFitsSmallAndShortDisplays() {
+        let g = NotchGeometry(frame: NSRect(x: 0, y: 0, width: 360, height: 600), visibleFrame: NSRect(x: 0, y: 300, width: 360, height: 276), safeAreaTop: 0, leftAuxiliaryWidth: nil, rightAuxiliaryWidth: nil, statusBarThickness: 22)
+        XCTAssertEqual(g.closedWidth, 108)
+        XCTAssertEqual(g.notificationSize.width, 328)
+        XCTAssertEqual(g.expandedWidth(detail: true), 328)
+        // Detail stops above the Dock instead of running off the display.
+        XCTAssertEqual(g.expandedHeight(detail: true, detailHeight: 490), 24 + 264)
+        let open = g.frame(for: NSSize(width: g.expandedWidth(detail: true), height: 288))
+        XCTAssertGreaterThanOrEqual(open.minX, 0)
+        XCTAssertLessThanOrEqual(open.maxX, 360)
+    }
     func testNotchHoverIntentAndLeaveGrace() {
         let now = Date(timeIntervalSince1970: 100)
         var state = NotchPresentationState()
@@ -728,6 +773,23 @@ final class WebWorkspaceTests: XCTestCase {
         for mode in AppAppearance.allCases { mode.save(to: defaults); XCTAssertEqual(AppAppearance.load(from: defaults), mode) }
         defaults.set("invalid", forKey: AppAppearance.defaultsKey)
         XCTAssertEqual(AppAppearance.load(from: defaults), .system)
+    }
+    func testNotchSettingIsSettingsOnlyAndRoutesTasksToTheWorkspaceWhenOff() async throws {
+        let model = fixture(); let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        model.notchEnabled = true
+        let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
+        do { try await notch.handle("notchEnabled", ["enabled": false]); XCTFail("The notch turned itself off") } catch {}
+        do { try await bridge.handle("notchEnabled", ["enabled": "no"]); XCTFail("Accepted a non-Boolean value") } catch {}
+        XCTAssertTrue(model.notchEnabled)
+        model.taskUsesNotch = true
+        try await bridge.handle("notchEnabled", ["enabled": false])
+        XCTAssertFalse(model.notchEnabled)
+        XCTAssertFalse(model.taskUsesNotch)
+        // Shortcut and capture paths ask for the notch; while it is off they cannot get it.
+        model.taskUsesNotch = true
+        model.showNotchLauncher()
+        XCTAssertFalse(model.taskUsesNotch)
+        XCTAssertNil(model.notchLauncherController)
     }
     func testAppearanceBridgeValidatesAndPublishesTheSelectedMode() async throws {
         let previousAppearance = NSApp.appearance

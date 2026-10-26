@@ -594,6 +594,9 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         case "provider":
             try requireIdle(); model.agentUseAPIKey = body["useAPIKey"] as? Bool == true
         case "agentEnabled": try requireIdle(); model.openAIAnalysisEnabled = body["enabled"] as? Bool == true
+        case "notchEnabled":
+            guard !isNotch, let enabled = body["enabled"] as? Bool else { throw CalendarToolArgumentError("Turn the notch on or off in Settings.") }
+            model.notchEnabled = enabled
         case "copyCaptures": CaptureClipboard.automaticallyCopyCapture = body["enabled"] as? Bool == true
         case "saveAPIKey":
             try requireIdle(); try model.saveOpenAIAPIKey(body["key"] as? String ?? "")
