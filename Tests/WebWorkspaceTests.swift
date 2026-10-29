@@ -404,6 +404,15 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.selectedEventContext?.runID, runID)
         model.currentCaptureSessionID = UUID(); XCTAssertNil(model.selectedEventContext)
     }
+    func testVoiceBridgeRejectsStaleControlsAndNotchPreferences() async throws {
+        let model = fixture(); model.workspaceSelection = .settings
+        let bridge = WebWorkspaceController(model: model)
+        do { try await bridge.handle("stopVoice", ["token": "stale"]); XCTFail("Stale voice control accepted") } catch {}
+        let notch = WebWorkspaceController(model: model, isNotch: true)
+        do { try await notch.handle("voiceSettings", ["token": model.voiceSession.token, "model": "fictional", "voice": "marin", "cap": 10.0]); XCTFail("Notch settings accepted") } catch {}
+        let snapshot = WebWorkspaceState.make(model, imageURL: nil, notice: nil, accounts: [], googleReady: false)
+        XCTAssertEqual(snapshot.objectValue?["voice"]?.objectValue?["state"]?.stringValue, "idle")
+    }
     private func fixture(service: any CalendarDestinationService = CalendarDemoService()) -> CalshotModel {
         CalshotModel(calendarService: service, memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)), loadsAIConnection: false)
     }
@@ -1573,6 +1582,18 @@ final class AgentTaskReviewIntegrationTests: XCTestCase {
         let typed = try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("Typed request")])]), runID: run)
         XCTAssertEqual(typed.objectValue?["authorization"]?.stringValue, "savedPermission")
         XCTAssertEqual(model.taskDocument.items[0].title, "Typed request")
+    }
+
+    func testVoiceRunAlwaysReviewsEvenWithSavedTaskGrant() async throws {
+        let model = fixture(), task = try addTasks(model, 1)[0], run = UUID()
+        model.activeAgentRunID = run; model.voiceRunID = run; model.agentIsRunning = false; model.agentTypedRunID = nil
+        try await grant(model, ["edit": true])
+        let call = Task { try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("Voice request")])]), runID: run) }
+        try await waitFor { model.agentTaskReview != nil }
+        XCTAssertTrue(try XCTUnwrap(model.agentTaskReview).reason.contains("Voice"))
+        XCTAssertEqual(model.taskDocument.items[0].title, "Fictional task 0")
+        model.cancelAgentTaskReview(); let result = try await call.value
+        XCTAssertEqual(status(result), "cancelled")
     }
 
     func testLedgerReconciliationWaitsForTasksThenSettlesFromTheMatchingReceipt() async throws {

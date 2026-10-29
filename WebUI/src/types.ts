@@ -207,7 +207,14 @@ export interface AgentPermissionsState {
   families: { id: string; label: string; detail: string; enabled: boolean; expired: boolean }[];
   expiresAt?: string | null; limits: { perRun: number; perWindow: number; windowMinutes: number };
 }
+export interface VoiceState {
+  token: string; state: string; active: boolean; inputLevel: number; caption: string; userTranscript: string; drawing: boolean;
+  usage: { seconds: number; estimatedCost: number }; error?: string; needsKey: boolean; needsAcknowledgement: boolean;
+  permissions: { microphone: boolean; screen: boolean }; model: string; voice: string; monthlyCap: number;
+}
 export interface AppState {
+  voice?: VoiceState;
+  voiceShortcut?: string;
   taskReview?: TaskReview;
   taskOutcome?: TaskOutcome;
   agentPermissions?: AgentPermissionsState;
@@ -245,7 +252,7 @@ export interface AppState {
     message?: string;
     error?: string;
   };
-  settingsSection?: "general" | "calendars" | "friends" | "ai" | "privacy";
+  settingsSection?: "general" | "calendars" | "friends" | "ai" | "voice" | "privacy";
   calendarView?: CalendarViewState;
   /** From the provider receipt of the last direct Calendar change. */
   calendarChange?: { operation: "create" | "update" | "delete"; title: string; calendarName: string; thisDateOnly?: boolean } | null;

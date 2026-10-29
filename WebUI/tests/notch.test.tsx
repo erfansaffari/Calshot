@@ -86,3 +86,25 @@ it("preserves unfinished event edits when pointer leave hides the notch", async 
   expect((screen.getByRole("textbox", { name: "Event title" }) as HTMLInputElement).value).toBe("Unfinished corrected title");
   expect(mock.command.mock.calls.some(([c]) => ["approve", "skip", "editProposal", "stop"].includes(c.action))).toBe(false);
 });
+function voiceFixture() {
+  mock.state.proposals = []; mock.state.messages = []; mock.state.running = false; mock.state.waitingApproval = false;
+  mock.state.voice = { token: "voice-current", state: "listening", active: true, inputLevel: .5, caption: "", userTranscript: "", drawing: false, usage: { seconds: 12, estimatedCost: .03 }, needsKey: false, needsAcknowledgement: false, permissions: { microphone: true, screen: true }, model: "fictional-model", voice: "marin", monthlyCap: 10 };
+}
+it("shows live voice level and stops with its current session token", async () => {
+  voiceFixture(); render(<NotchApp />);
+  expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe("0.5");
+  await userEvent.click(screen.getByRole("button", { name: "Stop", exact: true }));
+  expect(mock.command).toHaveBeenCalledWith({ action: "stopVoice", token: "voice-current" });
+});
+it("shows speaking captions and a voice billing acknowledgement inline", async () => {
+  voiceFixture(); mock.state.voice!.state = "speaking"; mock.state.voice!.caption = "Fictional appointment at noon.";
+  mock.state.voice!.needsAcknowledgement = true;
+  render(<NotchApp />); expect(screen.getByText("Fictional appointment at noon.")).toBeTruthy();
+  await userEvent.click(screen.getByText("I understand"));
+  expect(mock.command).toHaveBeenCalledWith({ action: "acknowledgeVoiceBilling", token: "voice-current" });
+});
+it("Escape ends voice without approving the review", async () => {
+  voiceFixture(); render(<NotchApp />); fireEvent.keyDown(window, { key: "Escape" });
+  await waitFor(() => expect(mock.command).toHaveBeenCalledWith({ action: "stopVoice", token: "voice-current" }));
+  expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
+});

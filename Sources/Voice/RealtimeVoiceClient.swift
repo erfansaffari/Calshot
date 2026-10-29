@@ -186,6 +186,7 @@ final class RealtimeVoiceClient: ObservableObject {
         var voice = "marin"
         var transcriptionModel = "gpt-4o-mini-transcribe"
         var tools: [JSONValue] = []
+        var automaticResponse = true
     }
     enum State: Equatable { case disconnected, connecting, ready, responding, failed(String) }
     @Published private(set) var state: State = .disconnected
@@ -262,7 +263,7 @@ final class RealtimeVoiceClient: ObservableObject {
     private func session(_ c: Configuration) -> [String: Any] {
         ["type": "realtime", "model": c.model, "instructions": c.instructions, "output_modalities": ["audio"],
          "audio": ["input": ["format": ["type": "audio/pcm", "rate": 24000], "transcription": ["model": c.transcriptionModel],
-                               "turn_detection": ["type": "server_vad", "create_response": true, "interrupt_response": false]],
+                               "turn_detection": ["type": "server_vad", "create_response": c.automaticResponse, "interrupt_response": false]],
                    "output": ["format": ["type": "audio/pcm", "rate": 24000], "voice": c.voice]],
          "tools": c.tools.compactMap { try? JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }, "tool_choice": "auto"]
     }

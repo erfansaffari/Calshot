@@ -59,7 +59,7 @@ final class NotchExperienceController: ObservableObject {
         panel.backgroundColor = .clear; panel.isOpaque = false; panel.hasShadow = false
         panel.isMovableByWindowBackground = false; panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
-        panel.onEscape = { [weak self] in self?.collapse() }
+        panel.onEscape = { [weak self] in if self?.model?.voiceSession.active == true { self?.model?.voiceSession.stop() }; self?.collapse() }
         workspace.onNotchLayout = { [weak self] detail, height in
             guard let self else { return }
             if let height { self.detailHeight = CGFloat(height) }
@@ -89,8 +89,12 @@ final class NotchExperienceController: ObservableObject {
         }
 #endif
     }
+    func showVoice() {
+        position(); panel.orderFrontRegardless()
+        if !isExpanded { var next = presentation; next.open(); apply(next) }
+    }
     func show() {
-        guard model?.notchEnabled != false else { return hide() }
+        guard model?.notchEnabled != false || model?.voiceSession.active == true else { return hide() }
         refreshActivity(); position(); panel.orderFrontRegardless()
     }
     func showQuickPreview(image: NSImage, recordID: UUID, copiedToClipboard: Bool) {
@@ -164,7 +168,10 @@ final class NotchExperienceController: ObservableObject {
         expandedWidth = geometry.expandedWidth(detail: detail)
         launcherSize = showsNotification ? geometry.notificationSize : geometry.closedSize
         let size = isExpanded ? NSSize(width: expandedWidth, height: expandedHeight) : launcherSize
-        let frame = geometry.frame(for: size)
+        var frame = geometry.frame(for: size)
+        if model?.notchEnabled == false, model?.voiceSession.active == true {
+            frame.origin.y = screen.visibleFrame.maxY - frame.height - 12
+        }
         // Frequent agent snapshots must not restart an in-flight transition.
         guard targetFrame != frame || !animated else { return }
         let previous = targetFrame

@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     let model: CalshotModel = {
 #if DEBUG
         if NSClassFromString("XCTestCase") != nil { return CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("CalshotTestHost-" + UUID().uuidString)), loadsAIConnection: false) }
+        if ProcessInfo.processInfo.arguments.contains("--voice-preview") { return CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("CalshotVoicePreview-" + UUID().uuidString)), loadsAIConnection: false) }
         if ProcessInfo.processInfo.arguments.contains("--tasks-preview") { return CalshotModel.tasksPreviewModel() }
         if ProcessInfo.processInfo.arguments.contains("--sharing-preview") { return CalshotModel.sharingPreviewModel() }
         if ProcessInfo.processInfo.arguments.contains("--calendar-agent-demo") {
@@ -69,6 +70,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         UNUserNotificationCenter.current().delegate = self
         model.appearanceMode.apply()
         if NSClassFromString("XCTestCase") == nil { model.softwareUpdates.start() }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--voice-preview") { _ = model.voiceSession }
+#endif
         HotKeyController.shared.onPress = { [weak model = self.model] in
             Task { @MainActor in
                 model?.taskUsesNotch = true
@@ -116,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        model.voiceSession.stop()
         guard model.softwareUpdates.hasPendingInstallation || model.softwareUpdates.installing || model.softwareUpdates.updater?.sessionInProgress == true else { return .terminateNow }
         guard model.canRestartForSoftwareUpdate else {
             model.softwareUpdates.explainDeferredQuit()
@@ -197,6 +202,13 @@ final class CalshotModel: ObservableObject {
     @Published var agentPermissionNotice: String?
     @Published var agentPermissionBusy = false
     @Published var agentCommand = ""
+    var voiceShortcut: GlobalShortcut = {
+        guard let data = UserDefaults.standard.data(forKey: "voice.shortcut"), let value = try? JSONDecoder().decode(GlobalShortcut.self, from: data) else { return .voiceDefault }; return value
+    }() {
+        didSet { if let data = try? JSONEncoder().encode(voiceShortcut) { UserDefaults.standard.set(data, forKey: "voice.shortcut") }; registerShortcut() }
+    }
+    var voiceRunID: UUID?
+    lazy var voiceSession = makeVoiceSession()
     var calendarAgent: CalendarAgent?
     var agentToolExecutor: CalendarAgentToolExecutor?
     var agentSubscriptions = Set<AnyCancellable>()
@@ -231,6 +243,7 @@ final class CalshotModel: ObservableObject {
         didSet {
             guard notchEnabled != oldValue else { return }
             if persistsAISelection { UserDefaults.standard.set(notchEnabled, forKey: "notchEnabled") }
+            if voiceSession.active { notchLauncherController?.showVoice(); return }
             if notchEnabled { showNotchLauncher() }
             else {
                 // A task already shown in the notch moves to the workspace; nothing is cancelled.
@@ -375,12 +388,13 @@ final class CalshotModel: ObservableObject {
         calendarObservation = calendarActions.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         accountObservation = account.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         if loadsAIConnection { clearTaskSession() } else { loadTasks() }
-        account.onSignedOut = { [weak self] in self?.selectedEventContext = nil; self?.teardownAgentPermissions(reason: "You signed out."); self?.clearTaskSession() }
+        account.onSignedOut = { [weak self] in self?.voiceSession.stop(); self?.selectedEventContext = nil; self?.teardownAgentPermissions(reason: "You signed out."); self?.clearTaskSession() }
         account.onShowWindow = { [weak self] in self?.openPanel() }
         account.onAuthenticated = { [weak self] provider in
             Task { @MainActor in
                 guard let self, let signedInUser = self.account.userID else { return }
                 if self.activeLocalAccountID != signedInUser {
+                    self.voiceSession.stop()
                     self.clearTaskSession()
                     self.cancelCalendarConnection()
                     self.stopAgent(); self.analysisTask?.cancel(); self.ocrTask?.cancel()
@@ -457,6 +471,8 @@ final class CalshotModel: ObservableObject {
 
     func registerShortcut() {
         shortcutRegistrationStatus = HotKeyController.shared.register(shortcut)
+        HotKeyController.shared.onVoicePress = { [weak self] in Task { @MainActor in await self?.voiceSession.toggle() } }
+        HotKeyController.shared.registerVoice(voiceShortcut)
     }
 
     func setShortcutRecording(_ recording: Bool) {
@@ -464,6 +480,7 @@ final class CalshotModel: ObservableObject {
         isRecordingShortcut = recording
         if recording {
             HotKeyController.shared.unregister()
+            HotKeyController.shared.unregisterVoice()
         } else {
             registerShortcut()
         }
@@ -553,6 +570,18 @@ final class CalshotModel: ObservableObject {
         guard !softwareUpdates.installing else { return }
         guard account.canUseWorkspace else { openPanel(); return }
         guard selectionOverlay == nil, !isCapturing, !isSaving else { return }
+        if voiceSession.active {
+            do {
+                let capture = try await ScreenCaptureService.captureMainDisplayWithScreen()
+                let overlay = RegionSelectionOverlay(image: capture.image, screen: capture.screen) { [weak self] result in
+                    guard let self else { return }; self.selectionOverlay = nil
+                    if case .success(let selected) = result { CaptureClipboard.copy(NSImage(cgImage: selected, size: .zero)) }
+                    self.notchLauncherController?.showVoice()
+                }
+                selectionOverlay = overlay; overlay.show()
+            } catch { status = "Couldn’t capture screenshot: \(error.localizedDescription)" }
+            return
+        }
         stopAgent()
         await Task.yield()
         calendarAgent?.invalidateSession()

@@ -1894,3 +1894,9 @@ details p {
 section[aria-label="Personal memory"] form { margin: 12px 0; }
 
 section[aria-label="Personal memory"] form > .button { margin: 0 8px; }
+
+.voice-settings { display: grid; gap: 16px; }
+.voice-settings > label { display: grid; gap: 8px; }
+.voice-settings > label:first-of-type { display: flex; align-items: center; gap: 16px; }
+.voice-settings button { justify-self: start; }
+.voice-settings > p { margin: 0; }
