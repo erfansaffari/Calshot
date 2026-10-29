@@ -439,17 +439,22 @@ public final class MemoryStore: @unchecked Sendable {
         }
     }
 
-    /// Deletes all history files in this store and recreates its directory.
+    /// Clear only this store's history namespace. Never remove the shared account
+    /// directory: tasks, write-recovery journals, permissions and personal memory live here too.
     public func deleteAll() throws {
         lock.lock()
         defer { lock.unlock() }
-        let accountMarker = directoryURL.appendingPathComponent(".calshot-account")
-        let owner = try? Data(contentsOf: accountMarker)
-        if fileManager.fileExists(atPath: directoryURL.path) {
-            try fileManager.removeItem(at: directoryURL)
+        guard fileManager.fileExists(atPath: directoryURL.path) else { return }
+        let files = try fileManager.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+        for url in files {
+            // MemoryStore exclusively creates UUID-named metadata and PNG/JPEG images.
+            // Do not traverse directories or follow symlinks into sibling stores.
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil,
+                  ["json", "png", "jpeg"].contains(url.pathExtension.lowercased()) else { continue }
+            try fileManager.removeItem(at: url)
         }
-        try ensureDirectory()
-        if let owner { try owner.write(to: accountMarker, options: .atomic) }
     }
 
     private func updateRecord(

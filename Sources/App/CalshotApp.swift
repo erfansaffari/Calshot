@@ -299,6 +299,7 @@ final class CalshotModel: ObservableObject {
     @Published var lastOCRStatus = "No OCR run yet"
     @Published var lastCaptureSummary = "No capture yet"
     let calendarService: any CalendarDestinationService
+    var personalMemoryCache: PersonalMemoryStore?
     var memoryStore: MemoryStore
     var activeLocalAccountID: UUID?
     var accountMemoryRoot: MemoryStore

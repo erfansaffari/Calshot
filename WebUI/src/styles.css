@@ -1887,3 +1887,10 @@ details p {
 .notch-details .task-review-rows {
   max-height: max(80px, min(230px, calc(100dvh - 350px)));
 }
+
+.personal-memory-row { padding: 12px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.personal-memory-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.personal-memory-row textarea, section[aria-label="Personal memory"] textarea { display: block; width: 100%; min-height: 64px; margin: 8px 0; }
+section[aria-label="Personal memory"] form { margin: 12px 0; }
+
+section[aria-label="Personal memory"] form > .button { margin: 0 8px; }

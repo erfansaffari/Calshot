@@ -293,6 +293,7 @@ export interface AppState {
   googleReady: boolean;
   googleClientID: string;
   outlookClientID: string;
+  personalMemory?: PersonalMemoryState;
   memory: MemoryRecord[];
   memoryLocation: string;
   shortcut: string;
@@ -343,3 +344,22 @@ export interface CalshotTask {
   receiptDeviceID?: string; publishedFingerprint?: string; calendarError?: string; sourceText?: string;
 }
 export interface TasksState { items: CalshotTask[]; token: string; loaded: boolean; busy: boolean; conflict?: boolean; error?: string; reminderError?: string; deviceID: string }
+
+export interface PersonalMemoryItem {
+  id: string;
+  version: string;
+  kind: "preference" | "fact" | "person" | "routine";
+  text: string;
+  origin: "explicit" | "suggested";
+  status: "active" | "pendingApproval";
+  createdAt: string;
+  updatedAt: string;
+  expiresAt?: string;
+}
+export interface PersonalMemoryState {
+  loaded: boolean;
+  error?: string | null;
+  items: PersonalMemoryItem[];
+  pending: PersonalMemoryItem[];
+  token: string;
+}

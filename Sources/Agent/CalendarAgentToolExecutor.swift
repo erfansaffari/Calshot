@@ -8,6 +8,9 @@ struct AgentQuestion: Identifiable {
 
 @MainActor
 final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
+    var remember: ((MemoryItem.Kind, String) throws -> Void)?
+    var recall: ((String) throws -> String)?
+    var memorySuggestionsBlocked = false
     var taskImportReceipts: ((JSONValue) -> JSONValue)?
     var finishTaskImport: (() -> Void)?
     var listTasks: (() throws -> JSONValue)?
@@ -24,6 +27,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
     var commitTaskOnlyImport: ((UUID) async throws -> JSONValue?)?
     var availableToolNames: Set<String> {
         var names = CalendarAgent.toolNames
+        if remember == nil { names.remove("remember") }; if recall == nil { names.remove("recall") }
         if listTasks == nil { names.subtract(["list_tasks", "get_tasks"]) }
         if selectedTaskContext == nil { names.remove("get_selected_event_context") }
         if prepareTaskMutation == nil || authorizeTaskMutation == nil {
@@ -73,6 +77,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
     func activate(sessionID: UUID) {
         if let old = self.sessionID { cancelPending(sessionID: old) }
         self.sessionID = sessionID; sessionCancelled = false
+        memorySuggestionsBlocked = false
         searched = [:]; ambiguousTargets = []; cancelledTargets = []; confirmedAnswers = []
     }
 
@@ -81,6 +86,17 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         do {
             guard let fields = arguments.objectValue else { throw CalendarToolArgumentError("Arguments must be an object.") }
             switch name {
+            case "remember":
+                try CalendarToolDraftMapper.keys(fields, allowed: ["kind", "text"])
+                guard !memorySuggestionsBlocked, let remember else { throw CalendarToolArgumentError("Memory suggestions are unavailable in a conversation with shared-friend calendar context.") }
+                guard let raw = try CalendarToolDraftMapper.string(fields, "kind", required: true, limit: 20), let kind = MemoryItem.Kind(rawValue: raw),
+                      let text = try CalendarToolDraftMapper.string(fields, "text", required: true, limit: 500), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CalendarToolArgumentError("Choose a valid memory kind and text.") }
+                try remember(kind, text)
+                return JSONValue.object(["status": .string("pendingApproval"), "message": .string("Suggested memory awaits your approval in Settings → Privacy & permissions → Memory.")]).jsonString()
+            case "recall":
+                try CalendarToolDraftMapper.keys(fields, allowed: ["query"])
+                guard let recall, let query = try CalendarToolDraftMapper.string(fields, "query", required: true, limit: 500), !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CalendarToolArgumentError("Provide a query of 1–500 characters.") }
+                return JSONValue.object(["context": .string(try recall(query))]).jsonString()
             case "list_tasks":
                 try CalendarToolDraftMapper.keys(fields, allowed: ["includeArchived"])
                 if let flag = fields["includeArchived"], flag != .null, flag.boolValue == nil { throw CalendarToolArgumentError("includeArchived must be a boolean.") }
@@ -132,6 +148,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 let calendar = await awaitApproval(name: name, ids: Set(result.proposals.map(\.id)))
                 return JSONValue.object(["tasksSaved": taskImportReceipts?(result.saved) ?? .array([]), "calendar": (try? JSONDecoder().decode(JSONValue.self, from: Data(calendar.utf8))) ?? .string(calendar)]).jsonString()
             case "list_friends":
+                memorySuggestionsBlocked = true
                 try CalendarToolDraftMapper.keys(fields, allowed: [])
                 guard let listFriends else { throw CalendarToolArgumentError("Friend sharing is unavailable. Open Friends & sharing in Settings.") }
                 onStep("Checking friends who share with you")
@@ -139,6 +156,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                 return result.jsonString()
             case "search_friend_events":
+                memorySuggestionsBlocked = true
                 try CalendarToolDraftMapper.keys(fields, allowed: ["friendID", "query", "start", "end"])
                 guard let id = try CalendarToolDraftMapper.string(fields, "friendID", required: true, limit: 36), UUID(uuidString: id) != nil,
                       let start = try CalendarToolDraftMapper.instant(fields, "start"), let end = try CalendarToolDraftMapper.instant(fields, "end"),
