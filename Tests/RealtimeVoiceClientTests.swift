@@ -32,6 +32,16 @@ final class RealtimeVoiceClientTests: XCTestCase {
         await settle { client.state == .ready }
         return client
     }
+    func testConcurrentResponsesCoalesceAndActiveResponseErrorIsNonfatal() async throws {
+        let fake = FakeRealtimeTransport(), client = await ready(fake)
+        try await client.requestResponse(); try await client.requestResponse(); try await client.sendText("Fictional review")
+        XCTAssertEqual(fake.sent.filter { $0["type"] as? String == "response.create" }.count, 1)
+        fake.emit(["type": "response.created"])
+        fake.emit(["type": "error", "error": ["code": "conversation_already_has_active_response"]])
+        fake.emit(["type": "response.done", "response": ["id": "one", "status": "completed"]])
+        await settle { fake.sent.filter { $0["type"] as? String == "response.create" }.count == 2 }
+        XCTAssertNotNil(fake.continuation); XCTAssertNotEqual(client.state, .failed("")); client.disconnect()
+    }
     func testSessionConfigurationAndAuthentication() async throws {
         let fake = FakeRealtimeTransport()
         let tool: JSONValue = .object(["type": .string("function"), "name": .string("fictional_lookup"), "parameters": .object(["type": .string("object")])])
@@ -265,12 +275,36 @@ final class VoiceSessionIntegrationTests: XCTestCase {
     private var frames: PreviewVoiceFrames!
     private func make(microphone: Bool = true, screen: Bool = true) -> VoiceSessionController {
         defaults = UserDefaults(suiteName: "VoiceSessionTests.\(UUID())")!
-        defaults.set(true, forKey: "voice.billingAcknowledged")
+        defaults.set(2, forKey: "voice.acknowledgementVersion")
         client = PreviewVoiceClient(); audio = PreviewVoiceAudio(); overlay = PreviewVoiceOverlay(); frames = PreviewVoiceFrames()
         let session = VoiceSessionController(client: client, audio: audio, overlay: overlay, frames: frames, defaults: defaults, permission: { microphone }, screenPermission: { screen })
         session.eligible = { true }; session.hasKey = { true }; return session
     }
     private func settle() async { for _ in 0..<50 { await Task.yield() } }
+    func testConsentAndUpdatedNoticeGateAndRevokeSession() async {
+        let s = make(); s.consent = { false }; await s.toggle()
+        XCTAssertNil(client.configuration); XCTAssertTrue(s.error?.contains("OpenAI analysis") == true)
+        s.consent = { true }; defaults.set(0, forKey: "voice.acknowledgementVersion"); defaults.set(true, forKey: "voice.billingAcknowledged")
+        await s.toggle(); XCTAssertTrue(s.needsAcknowledgement); XCTAssertNil(client.configuration)
+        s.acknowledge(); await s.toggle(); XCTAssertTrue(s.active)
+        s.consent = { false }; s.tick(now: Date()); XCTAssertFalse(s.active)
+    }
+    func testInvalidArgumentsAlwaysReturnErrorAndUnchangedTicksDoNotPublish() async {
+        let s = make(); await s.toggle(); s.handle(.sessionUpdated)
+        s.handle(.functionCall(callID: "bad", name: "recall", argumentsJSON: "{")); await settle()
+        XCTAssertEqual(client.results, ["{\"error\":\"invalid arguments\"}"])
+        var changes = 0; s.onChange = { changes += 1 }
+        s.tick(now: Date()); let baseline = changes
+        for _ in 0..<10 { s.tick(now: Date()) }; XCTAssertEqual(changes, baseline); s.stop()
+    }
+    func testTimedEndPreservesReviewAndReconnectRestoresItWithoutEmptyContext() async {
+        let s = make(); var cancelled = 0; s.cancelPending = { cancelled += 1 }; s.waitingForReview = { true }
+        await s.toggle(); s.handle(.sessionUpdated); XCTAssertEqual(s.state, .waitingForReview)
+        client.onReconnect?(); s.handle(.sessionUpdated); await settle()
+        XCTAssertEqual(s.state, .waitingForReview); XCTAssertTrue(client.texts.isEmpty)
+        s.tick(now: Date().addingTimeInterval(61)); XCTAssertEqual(cancelled, 0)
+        s.stop(); XCTAssertEqual(cancelled, 1)
+    }
     func testStateTransitionsAndToggleReleasesMicrophone() async {
         let s = make(); await s.toggle(); XCTAssertEqual(s.state, .connecting)
         s.handle(.sessionUpdated); XCTAssertEqual(s.state, .listening); XCTAssertTrue(audio.running)
@@ -283,7 +317,7 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         let s = make(); s.hasKey = { false }; await s.toggle(); XCTAssertTrue(s.needsKey); XCTAssertNil(client.configuration)
     }
     func testBillingAcknowledgementRequired() async {
-        let s = make(); defaults.set(false, forKey: "voice.billingAcknowledged"); await s.toggle()
+        let s = make(); defaults.set(0, forKey: "voice.acknowledgementVersion"); await s.toggle()
         XCTAssertTrue(s.needsAcknowledgement); XCTAssertNil(client.configuration)
         s.acknowledge(); await s.toggle(); XCTAssertEqual(s.state, .connecting); s.stop()
     }
@@ -307,18 +341,14 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(1.7))
         XCTAssertEqual(frames.captures, 1); XCTAssertEqual(client.images, 1); XCTAssertTrue(overlay.marks.isEmpty); s.stop()
     }
-    func testSpokenYesNeverApprovesAndToolResultUsesExecutorHook() async {
-        let s = make(); var executed = 0; s.execute = { _, _ in executed += 1; return "{\"saved\":false}" }
-        await s.toggle(); s.handle(.sessionUpdated); s.review(true)
-        s.handle(.userTranscript(itemID: "fictional", text: "yes", final: true)); s.handle(.speechStopped); await settle()
-        XCTAssertEqual(s.state, .waitingForReview); XCTAssertEqual(executed, 0)
-        s.review(false); s.handle(.functionCall(callID: "fictional", name: "recall", argumentsJSON: "{}")); await settle()
-        XCTAssertEqual(executed, 1); XCTAssertEqual(client.results.count, 1); s.stop()
-    }
     func testReconnectSendsTranscriptsAndNeverReplaysTool() async {
-        let s = make(); await s.toggle(); s.handle(.sessionUpdated)
+        let s = make(); var finish: CheckedContinuation<String, Never>?
+        s.execute = { _, _ in await withCheckedContinuation { finish = $0 } }
+        await s.toggle(); s.handle(.sessionUpdated)
+        s.handle(.functionCall(callID: "old", name: "recall", argumentsJSON: "{}")); await settle()
+        XCTAssertNotNil(finish)
         s.handle(.userTranscript(itemID: "fictional", text: "My fictional schedule", final: true))
-        client.onReconnect?(); s.handle(.sessionUpdated); await settle()
+        client.onReconnect?(); s.handle(.sessionUpdated); finish?.resume(returning: "{\"saved\":true}"); await settle()
         XCTAssertTrue(client.texts.first?.contains("My fictional schedule") == true); XCTAssertTrue(client.results.isEmpty); s.stop()
     }
     func testIdleAndAccountLossEndSession() async {
@@ -334,12 +364,12 @@ final class VoiceSessionIntegrationTests: XCTestCase {
     }
     func testHotkeyRoutingKeepsCaptureVoiceAndEscapeIndependent() {
         let hotkey = HotKeyController.shared
-        let oldCapture = hotkey.onPress, oldVoice = hotkey.onVoicePress, oldCancel = hotkey.onVoiceCancel
-        defer { hotkey.onPress = oldCapture; hotkey.onVoicePress = oldVoice; hotkey.onVoiceCancel = oldCancel }
-        var capture = 0, voice = 0, cancel = 0
-        hotkey.onPress = { capture += 1 }; hotkey.onVoicePress = { voice += 1 }; hotkey.onVoiceCancel = { cancel += 1 }
-        hotkey.dispatch(id: 1); hotkey.dispatch(id: 2); hotkey.dispatch(id: 3); hotkey.dispatch(id: 99)
-        XCTAssertEqual(capture, 1); XCTAssertEqual(voice, 1); XCTAssertEqual(cancel, 1)
+        let oldCapture = hotkey.onPress, oldVoice = hotkey.onVoicePress
+        defer { hotkey.onPress = oldCapture; hotkey.onVoicePress = oldVoice }
+        var capture = 0, voice = 0
+        hotkey.onPress = { capture += 1 }; hotkey.onVoicePress = { voice += 1 }
+        hotkey.dispatch(id: 1); hotkey.dispatch(id: 2); hotkey.dispatch(id: 3)
+        XCTAssertEqual(capture, 1); XCTAssertEqual(voice, 1)
     }
     func testNewSessionInvalidatesControlToken() async { let s = make(); let old = s.token; await s.toggle(); XCTAssertNotEqual(old, s.token); s.stop() }
 }

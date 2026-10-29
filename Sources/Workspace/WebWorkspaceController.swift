@@ -453,10 +453,12 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         Task { try? await webView.callAsyncJavaScript("window.__calshotReply(reply)", arguments: ["reply": ["id": id, "ok": error == nil, "error": error ?? ""]], in: nil, contentWorld: .page) }
     }
     private func requireIdle() throws {
+        guard !model.voiceSession.active else { throw CalendarToolArgumentError("Voice mode is on — stop it first") }
         guard !calendarTaskLinkBusy, !calendarDirectActionBusy, !model.isSaving, !model.isCapturing, !model.agentIsRunning, !model.isRecognizing else { throw CalendarToolArgumentError("Finish or stop the current task first.") }
     }
     /// An open conversation doesn't block your own edits; the coordinator rejects any row it makes stale.
     private func requireCalendarDirectWrite() throws {
+        guard !model.voiceSession.active else { throw CalendarToolArgumentError("Voice mode is on — stop it first") }
         guard model.account.canUseWorkspace else { throw CalendarToolArgumentError("Sign in and connect a calendar first.") }
         guard !calendarTaskLinkBusy, !calendarDirectActionBusy, !model.isSaving, !model.directCalendarWriter.isWriting else {
             throw CalendarToolArgumentError("Wait for the current save to finish.")
@@ -465,7 +467,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
     private func resetConversation() {
         model.analysisTask?.cancel(); model.analysisTask = nil; model.ocrTask?.cancel(); model.ocrTask = nil
         model.selectedEventContext = nil
-        model.activeAgentRunID = nil; model.agentCommand = ""
+        model.activeAgentRunID = nil; model.voicePreparedRunID = nil; model.agentCommand = ""
         comparisons = [:]; model.currentCaptureSessionID = UUID(); model.currentMemoryRecordID = nil
         model.image = nil; model.previousCaptureImage = nil; model.recognizedText = ""
         model.screenRecognition = ScreenTextRecognition(lines: []); model.currentAgentSourceID = nil
@@ -491,6 +493,10 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
            ["refreshCalendars", "connectGoogle", "selectCalendar", "calendarSettings", "internetAccountsSettings"].contains(action) {
             throw CalendarToolArgumentError("Set up your AI service before confirming calendars.")
         }
+        if model.voiceSession.active {
+            let safe: Set<String> = ["ready", "notchLayout", "collapseNotch", "openWorkspace", "navigate", "authSignOut", "appearance", "stop", "stopVoice", "setVoiceDrawing", "voiceAISettings", "voiceMicrophoneSettings", "screenSettings", "approve", "skipApproval", "editProposal", "selectProposal", "compareDuplicate", "allowDuplicate", "approveTaskChange", "cancelTaskChange", "answer", "cancelQuestion", "approveMemory", "rejectMemory", "agentEnabled"]
+            guard safe.contains(action) else { throw CalendarToolArgumentError("Voice mode is on — stop it first") }
+        }
         switch action {
         case "startVoice", "stopVoice", "setVoiceDrawing", "acknowledgeVoiceBilling", "voiceSettings", "voiceMicrophoneSettings", "voiceShortcut", "voiceAISettings", "voiceShortcutRecording":
             let voice = model.voiceSession
@@ -514,7 +520,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                     model.setShortcutRecording(enabled)
                     return
                 } else if action == "voiceShortcut" {
-                    guard let code = body["keyCode"] as? UInt32, code < 128, let modifiers = body["modifiers"] as? UInt32, modifiers > 0, modifiers & ~UInt32(0x1F00) == 0,
+                    guard let code = body["keyCode"] as? UInt32, code < 128, let modifiers = body["modifiers"] as? UInt32, modifiers & UInt32(0x1100) != 0, modifiers & ~UInt32(0x1F00) == 0,
                           let label = body["label"] as? String, (1...40).contains(label.count), code != model.shortcut.keyCode || modifiers != model.shortcut.modifiers else { throw CalendarToolArgumentError("Choose a different modified shortcut.") }
                     model.voiceShortcut = GlobalShortcut(keyCode: code, modifiers: modifiers, label: label)
                     model.setShortcutRecording(false)
@@ -569,6 +575,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             guard !model.account.requiresLogin, model.onboardingAIReady, model.account.aiSetupConfirmed || !model.account.enabled, model.readableCalendars.contains(where: { !$0.id.hasPrefix("unavailable:") }) else { throw CalendarToolArgumentError("Set up your AI service and confirm an available calendar first.") }
             model.account.finishOnboarding()
         case "authSignOut":
+            model.voiceSession.stop()
             try requireIdle()
             model.cancelCalendarConnection()
             model.accountSyncTask?.cancel(); model.accountSyncTimer?.invalidate()
@@ -835,7 +842,9 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             model.scheduleAccountSync()
         case "provider":
             try requireIdle(); model.agentUseAPIKey = body["useAPIKey"] as? Bool == true
-        case "agentEnabled": try requireIdle(); model.openAIAnalysisEnabled = body["enabled"] as? Bool == true
+        case "agentEnabled":
+            if body["enabled"] as? Bool != false { try requireIdle() }
+            model.openAIAnalysisEnabled = body["enabled"] as? Bool == true
         case "notchEnabled":
             guard !isNotch, let enabled = body["enabled"] as? Bool else { throw CalendarToolArgumentError("Turn the notch on or off in Settings.") }
             model.notchEnabled = enabled

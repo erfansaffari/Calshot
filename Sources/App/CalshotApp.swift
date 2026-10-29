@@ -208,6 +208,7 @@ final class CalshotModel: ObservableObject {
         didSet { if let data = try? JSONEncoder().encode(voiceShortcut) { UserDefaults.standard.set(data, forKey: "voice.shortcut") }; registerShortcut() }
     }
     var voiceRunID: UUID?
+    var voicePreparedRunID: UUID?
     lazy var voiceSession = makeVoiceSession()
     var calendarAgent: CalendarAgent?
     var agentToolExecutor: CalendarAgentToolExecutor?
@@ -292,7 +293,7 @@ final class CalshotModel: ObservableObject {
     @Published var chatGPTModels: [ChatGPTConnection.ModelOption] = []
     @Published var chatGPTUsage: [ChatGPTConnection.UsageRecord] = CalshotModel.loadChatGPTUsage()
     @Published var openAIAnalysisEnabled = UserDefaults.standard.bool(forKey: "openAIAnalysisEnabled") {
-        didSet { UserDefaults.standard.set(openAIAnalysisEnabled, forKey: "openAIAnalysisEnabled") }
+        didSet { UserDefaults.standard.set(openAIAnalysisEnabled, forKey: "openAIAnalysisEnabled"); if !openAIAnalysisEnabled { voiceSession.stop() } }
     }
     @Published var analyzedWithOpenAI = false
     @Published var shortcut: GlobalShortcut = CalshotModel.loadShortcut() {
@@ -472,7 +473,12 @@ final class CalshotModel: ObservableObject {
     func registerShortcut() {
         shortcutRegistrationStatus = HotKeyController.shared.register(shortcut)
         HotKeyController.shared.onVoicePress = { [weak self] in Task { @MainActor in await self?.voiceSession.toggle() } }
-        HotKeyController.shared.registerVoice(voiceShortcut)
+        let voiceStatus = HotKeyController.shared.registerVoice(voiceShortcut)
+        reportVoiceShortcutRegistration(voiceStatus)
+    }
+
+    func reportVoiceShortcutRegistration(_ status: OSStatus) {
+        if status != noErr { voiceSession.showNotice("Voice shortcut is unavailable (\(status)). Choose another shortcut in Settings.") }
     }
 
     func setShortcutRecording(_ recording: Bool) {
@@ -487,6 +493,7 @@ final class CalshotModel: ObservableObject {
     }
 
     func updateShortcut(_ newShortcut: GlobalShortcut) {
+        guard newShortcut.keyCode != voiceShortcut.keyCode || newShortcut.modifiers != voiceShortcut.modifiers else { voiceSession.showNotice("Capture and voice need different shortcuts."); return }
         shortcut = newShortcut
     }
 
@@ -570,18 +577,7 @@ final class CalshotModel: ObservableObject {
         guard !softwareUpdates.installing else { return }
         guard account.canUseWorkspace else { openPanel(); return }
         guard selectionOverlay == nil, !isCapturing, !isSaving else { return }
-        if voiceSession.active {
-            do {
-                let capture = try await ScreenCaptureService.captureMainDisplayWithScreen()
-                let overlay = RegionSelectionOverlay(image: capture.image, screen: capture.screen) { [weak self] result in
-                    guard let self else { return }; self.selectionOverlay = nil
-                    if case .success(let selected) = result { CaptureClipboard.copy(NSImage(cgImage: selected, size: .zero)) }
-                    self.notchLauncherController?.showVoice()
-                }
-                selectionOverlay = overlay; overlay.show()
-            } catch { status = "Couldn’t capture screenshot: \(error.localizedDescription)" }
-            return
-        }
+        guard !voiceSession.active else { voiceSession.showNotice("Voice mode is on — stop it first to capture a screenshot."); return }
         stopAgent()
         await Task.yield()
         calendarAgent?.invalidateSession()
@@ -943,6 +939,7 @@ final class CalshotModel: ObservableObject {
     }
 
     func restoreCalendarReview(_ record: MemoryCaptureRecord) {
+        guard !voiceSession.active else { agentError = "Voice mode is on — stop it first"; return }
         guard !isSaving, !isRecognizing, !isCapturing,
               !agentIsRunning else { return }
         stopAgent()

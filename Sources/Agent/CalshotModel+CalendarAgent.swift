@@ -17,6 +17,7 @@ extension CalshotModel {
             }, searchDestinations: { [weak self] in self?.readableCalendars ?? [] },
             onTargetDestination: { [weak self] in self?.selectedCalendarID = $0 }, screenText: { [weak self] in
                 guard let self else { return "" }
+                if self.voicePreparedRunID == self.activeAgentRunID, self.voicePreparedRunID != nil { return "" }
                 let captureID = self.currentCaptureSessionID
                 if let task = self.ocrTask, let result = try? await task.value {
                     guard self.currentCaptureSessionID == captureID, !Task.isCancelled else { return "" }
@@ -96,6 +97,7 @@ extension CalshotModel {
     }
 
     func analyzeWithCalendarAgent(_ cgImage: CGImage, sessionID: UUID) async {
+        guard !voiceSession.active else { agentError = "Voice mode is on — stop it first"; return }
         guard currentCaptureSessionID == sessionID else { return }
         agentTypedRunID = nil // a capture alone is not a request to change tasks
         image = NSImage(cgImage: cgImage, size: .zero)
@@ -164,12 +166,14 @@ extension CalshotModel {
     }
 
     func startAgentCommand(prompt explicitPrompt: String? = nil, expectedSessionID: UUID? = nil, isTypedRequest: Bool = true) async {
+        guard !voiceSession.active else { agentError = "Voice mode is on — stop it first"; return }
         guard !softwareUpdates.installing else { return }
         guard account.canUseWorkspace else { openPanel(); return }
         guard expectedSessionID == nil || currentCaptureSessionID == expectedSessionID else { return }
         let prompt = (explicitPrompt ?? agentCommand).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !isSaving, !isCapturing else { return }
         stopAgent()
+        voicePreparedRunID = nil
         await Task.yield()
         guard expectedSessionID == nil || currentCaptureSessionID == expectedSessionID else { return }
         analysisTask?.cancel()
@@ -203,6 +207,7 @@ extension CalshotModel {
     }
 
     func runAgentSession(prompt: String, image: CGImage?, sessionID: UUID) async {
+        guard !voiceSession.active else { agentError = "Voice mode is on — stop it first"; return }
         configureCalendarAgent()
         guard let agent = calendarAgent, let executor = agentToolExecutor, let recordID = currentMemoryRecordID else { return }
         activeAgentRunID = sessionID
@@ -290,6 +295,7 @@ extension CalshotModel {
     }
 
     func stopAgent() {
+        voiceSession.stop()
         // Resume any awaited task review exactly once and invalidate its buttons before cancelling the run.
         cancelAgentTaskReview(reason: "Stopped.")
         calendarAgent?.cancel()
@@ -298,7 +304,11 @@ extension CalshotModel {
     }
     func answerAgentQuestion(_ answer: String) { agentToolExecutor?.answerQuestion(answer) }
     func cancelAgentQuestion() { agentToolExecutor?.answerQuestion(nil) }
-    func skipAgentApproval() { agentToolExecutor?.skipApproval() }
+    func skipAgentApproval() {
+        let voiceReview = voicePreparedRunID != nil && voicePreparedRunID == activeAgentRunID
+        agentToolExecutor?.skipApproval()
+        if voiceReview { calendarActions.replace(with: calendarActions.proposals.filter(\.isFinished)) }
+    }
 }
 
 extension CalshotModel {
@@ -570,6 +580,7 @@ extension CalshotModel {
 
     /// Account change or sign-out: resume any awaited review as cancelled, then close the old store.
     func teardownAgentPermissions(reason: String) {
+        voiceSession.stop()
         cancelAgentTaskReview(reason: reason)
         agentPermissionOpening?.task.cancel(); agentPermissionOpening = nil
         if let old = agentPermissionStore {
@@ -638,7 +649,7 @@ extension CalshotModel {
 
     private func awaitAgentTaskReview(_ review: AgentTaskReview) async -> AgentTaskReviewDecision {
         await withCheckedContinuation { continuation in
-            guard agentTaskReview == nil, agentTaskReviewContinuation == nil, (agentIsRunning || voiceRunID == review.runID),
+            guard agentTaskReview == nil, agentTaskReviewContinuation == nil, (agentIsRunning || voiceRunID == review.runID || voicePreparedRunID == review.runID),
                   activeAgentRunID == review.runID, !Task.isCancelled else { continuation.resume(returning: .cancelled); return }
             agentTaskReviewContinuation = continuation
             voiceSession.review(true)

@@ -122,7 +122,7 @@ extension CalshotModel {
         try personalMemory.suggest(kind: kind, text: text, sourceReference: sourceReference)
     }
     func handlePersonalMemoryAction(_ action: String, body: [String: Any], isNotch: Bool) throws {
-        guard !isNotch, workspaceSelection == .settings else { throw CalendarToolArgumentError("Manage personal memory in Settings.") }
+        guard (isNotch && ["approveMemory", "rejectMemory"].contains(action)) || (!isNotch && workspaceSelection == .settings) else { throw CalendarToolArgumentError("Manage personal memory in Settings.") }
         let store = personalMemory
         var allowed: Set<String> = ["action", "id", "token"]
         switch action {
@@ -144,6 +144,9 @@ extension CalshotModel {
             if action == "addMemory" { try store.add(kind: kind, text: text); return }
         }
         guard let id = (body["memoryID"] as? String).flatMap(UUID.init(uuidString:)), let version = (body["expectedVersion"] as? String).flatMap(UUID.init(uuidString:)) else { throw CalendarToolArgumentError("Choose a current memory and version.") }
+        if isNotch {
+            guard store.items.contains(where: { $0.id == id && $0.version == version && $0.status == .pendingApproval }) else { throw CalendarToolArgumentError("Choose a pending memory suggestion.") }
+        }
         switch action {
         case "editMemory": try store.change(id: id, expectedVersion: version, kind: MemoryItem.Kind(rawValue: body["kind"] as! String), text: body["text"] as? String)
         case "approveMemory": try store.change(id: id, expectedVersion: version, approve: true)

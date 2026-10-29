@@ -19,7 +19,7 @@ struct GlobalShortcut: Codable, Equatable {
         if flags.contains(.control) { carbon |= UInt32(controlKey) }
         if flags.contains(.option) { carbon |= UInt32(optionKey) }
         if flags.contains(.shift) { carbon |= UInt32(shiftKey) }
-        guard carbon != 0, let key = event.charactersIgnoringModifiers?.uppercased(),
+        guard carbon & UInt32(cmdKey | controlKey) != 0, let key = event.charactersIgnoringModifiers?.uppercased(),
               !key.isEmpty, event.keyCode < 128 else { return nil }
         let prefix = (flags.contains(.control) ? "⌃" : "") + (flags.contains(.option) ? "⌥" : "")
             + (flags.contains(.shift) ? "⇧" : "") + (flags.contains(.command) ? "⌘" : "")
@@ -31,8 +31,6 @@ final class HotKeyController {
     static let shared = HotKeyController()
     var onPress: (() -> Void)?
     var onVoicePress: (() -> Void)?
-    var onVoiceCancel: (() -> Void)?
-    private var cancelRef: EventHotKeyRef?
     private var voiceRef: EventHotKeyRef?
     private var hotKeyRef: EventHotKeyRef?
     private var handlerInstalled = false
@@ -66,13 +64,7 @@ final class HotKeyController {
     }
 
     func dispatch(id: UInt32) {
-        switch id { case 1: onPress?(); case 2: onVoicePress?(); case 3: onVoiceCancel?(); default: break }
-    }
-    func setVoiceCancelEnabled(_ enabled: Bool) {
-        if enabled {
-            guard cancelRef == nil else { return }
-            RegisterEventHotKey(UInt32(kVK_Escape), 0, EventHotKeyID(signature: OSType(0x43414C53), id: 3), GetApplicationEventTarget(), 0, &cancelRef)
-        } else if let cancelRef { UnregisterEventHotKey(cancelRef); self.cancelRef = nil }
+        switch id { case 1: onPress?(); case 2: onVoicePress?(); default: break }
     }
     func unregisterVoice() { if let voiceRef { UnregisterEventHotKey(voiceRef); self.voiceRef = nil } }
     @discardableResult func registerVoice(_ shortcut: GlobalShortcut) -> OSStatus {

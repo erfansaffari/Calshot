@@ -1417,7 +1417,7 @@ function VoiceSettings({ state }: { state: AppState }) {
   const [recording, setRecording] = useState(false);
   if (!v) return <p>Voice settings are available in the Mac app.</p>;
   return <section className="card settings-card voice-settings"><h2>Voice</h2>
-    <p>Voice uses paid OpenAI Realtime API billing and requires an OpenAI API key. ChatGPT plan billing does not cover voice. The estimate includes transcription.</p>
+    <p>Microphone audio and screen frames are sent to OpenAI. Voice uses paid OpenAI Realtime API billing and requires an OpenAI API key. ChatGPT plan billing does not cover voice. The estimate includes transcription.</p>
     <InlineError message={a.error || v.error} />
     <label>Voice shortcut <button className="button secondary" disabled={v.active} onClick={() => { setRecording(!recording); void a.run("voiceShortcutRecording", { token: v.token, enabled: !recording }); }} onKeyDown={e => {
       if (!recording) return;
@@ -1425,7 +1425,7 @@ function VoiceSettings({ state }: { state: AppState }) {
       if (e.key === "Escape") { setRecording(false); void a.run("voiceShortcutRecording", { token: v.token, enabled: false }); return; }
       const codes: Record<string, number> = { KeyA: 0, KeyS: 1, KeyD: 2, KeyF: 3, KeyH: 4, KeyG: 5, KeyZ: 6, KeyX: 7, KeyC: 8, KeyV: 9, KeyB: 11, KeyQ: 12, KeyW: 13, KeyE: 14, KeyR: 15, KeyY: 16, KeyT: 17, KeyO: 31, KeyU: 32, KeyI: 34, KeyP: 35, KeyL: 37, KeyJ: 38, KeyK: 40, KeyN: 45, KeyM: 46 };
       const modifiers = (e.metaKey ? 256 : 0) | (e.shiftKey ? 512 : 0) | (e.altKey ? 2048 : 0) | (e.ctrlKey ? 4096 : 0);
-      if (!modifiers || codes[e.code] === undefined) return;
+      if (!(e.ctrlKey || e.metaKey) || codes[e.code] === undefined) return;
       const label = (e.ctrlKey ? "⌃" : "") + (e.altKey ? "⌥" : "") + (e.shiftKey ? "⇧" : "") + (e.metaKey ? "⌘" : "") + e.key.toUpperCase();
       void a.run("voiceShortcut", { token: v.token, keyCode: codes[e.code], modifiers, label }).finally(() => { void command({ action: "voiceShortcutRecording", token: v.token, enabled: false }).catch(() => {}); }); setRecording(false);
     }}>{recording ? "Press a modified letter…" : state.voiceShortcut || "⌃⇧V"}</button></label>

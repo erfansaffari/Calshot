@@ -96,6 +96,7 @@ struct SettingsView: View {
                                 .disabled(model.shortcut == .default || model.isRecordingShortcut)
                         }
                     }
+                    if let error = model.voiceSession.error { Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                     settingsDivider
                     settingsValueRow("Registration", value: model.isRecordingShortcut ? "Listening…" : model.shortcutRegistrationStatus == noErr ? "Active" : "Unavailable",
                                      color: model.isRecordingShortcut ? .accentColor : model.shortcutRegistrationStatus == noErr ? .green : .orange)

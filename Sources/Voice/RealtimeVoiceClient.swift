@@ -167,7 +167,7 @@ enum RealtimeVoiceEvent: Equatable {
             let e = j["error"] as? [String: Any] ?? [:]
             // Never expose arbitrary server text: it may echo credentials or request bodies.
             let raw = e["code"] as? String ?? ""
-            let code = ["invalid_api_key", "insufficient_quota", "rate_limit_exceeded", "invalid_request_error"].contains(raw) ? raw : "service_error"
+            let code = ["invalid_api_key", "insufficient_quota", "rate_limit_exceeded", "invalid_request_error", "conversation_already_has_active_response"].contains(raw) ? raw : "service_error"
             return .error(code: code, message: code == "invalid_api_key" ? RealtimeConnectionError.authentication.description : code == "insufficient_quota" ? RealtimeConnectionError.quota.description : "Voice could not complete the request. Try again.")
         default: return .unknown(type)
         }
@@ -209,6 +209,9 @@ final class RealtimeVoiceClient: ObservableObject {
     private var generation = UUID()
     private var currentAudio: (String, Int)?
     private var seenResponses = Set<String>()
+    private var outstandingTools = Set<String>()
+    private var responseInFlight = false
+    private var responsePending = false
     private var suppressAudio = false
     private var pendingCalls: [RealtimeVoiceEvent] = []
     init(apiKey: @escaping () throws -> String, prices: RealtimePrices = .init(),
@@ -243,7 +246,7 @@ final class RealtimeVoiceClient: ObservableObject {
                 } catch {
                     guard self.generation == id, !Task.isCancelled else { return }
                     self.transport?.close(); self.transport = nil
-                    _ = self.flushAudio(); self.currentAudio = nil; self.pendingCalls = []
+                    _ = self.flushAudio(); self.currentAudio = nil; self.pendingCalls = []; self.outstandingTools = []; self.responseInFlight = false; self.responsePending = false
                     if case .failed = self.state { return }
                     let failure = error as? RealtimeConnectionError ?? .unavailable
                     if failure == .authentication || failure == .quota || self.reconnectAttempt == 3 {
@@ -258,7 +261,7 @@ final class RealtimeVoiceClient: ObservableObject {
     }
     func disconnect() {
         generation = UUID(); run?.cancel(); run = nil; transport?.close(); transport = nil
-        _ = flushAudio(); currentAudio = nil; pendingCalls = []; suppressAudio = false; state = .disconnected
+        _ = flushAudio(); currentAudio = nil; pendingCalls = []; outstandingTools = []; responseInFlight = false; responsePending = false; suppressAudio = false; state = .disconnected
     }
     private func session(_ c: Configuration) -> [String: Any] {
         ["type": "realtime", "model": c.model, "instructions": c.instructions, "output_modalities": ["audio"],
@@ -296,14 +299,20 @@ final class RealtimeVoiceClient: ObservableObject {
         try requireReady()
         guard let data = outputJSON.data(using: .utf8), (try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)) != nil else { throw RealtimeConnectionError.invalidFrame }
         try await send(.itemCreate, ["item": ["type": "function_call_output", "call_id": callID, "output": outputJSON]])
-        try await requestResponse()
+        outstandingTools.remove(callID)
+        if outstandingTools.isEmpty { responsePending = false; try await requestResponse() }
     }
-    func requestResponse() async throws { try requireReady(); try await send(.responseCreate) }
+    func requestResponse() async throws {
+        try requireReady()
+        if responseInFlight { responsePending = true; return }
+        responseInFlight = true
+        do { try await send(.responseCreate) } catch { responseInFlight = false; throw error }
+    }
     func cancelResponse() async throws { try requireReady(); try await send(.cancel) }
     private func handle(_ event: RealtimeVoiceEvent) async throws {
         switch event {
         case .sessionUpdated: state = .ready
-        case .responseCreated: state = .responding; suppressAudio = false; pendingCalls = []
+        case .responseCreated: responseInFlight = true; state = .responding; suppressAudio = false; pendingCalls = []
         case .functionCall:
             // Arguments-done also arrives for cancelled responses. Deliver tools only after
             // the response is completed, never from an interrupted partial call.
@@ -321,15 +330,19 @@ final class RealtimeVoiceClient: ObservableObject {
             currentAudio = nil
         case .responseDone(let id, let status, let usage):
             let fresh = id.isEmpty || seenResponses.insert(id).inserted
-            if fresh { tokens.add(usage) }
+            guard fresh else { return }
+            tokens.add(usage)
+            responseInFlight = false
             state = .ready
             let calls = pendingCalls; pendingCalls = []
-            if fresh && status == "completed" && !suppressAudio { calls.forEach { onEvent?($0) } }
+            if fresh && status == "completed" && !suppressAudio { calls.forEach { if case .functionCall(let id, _, _) = $0 { outstandingTools.insert(id) } }; calls.forEach { onEvent?($0) } }
+            if responsePending && outstandingTools.isEmpty && status != "failed" { responsePending = false; try await requestResponse() }
             if status == "failed" {
                 state = .failed("Voice could not complete the response. Check AI service in Settings and try again.")
                 _ = flushAudio(); transport?.close()
             }
         case .error(let code, let message):
+            if code == "conversation_already_has_active_response" { responseInFlight = true; responsePending = true; return }
             if code == "invalid_api_key" { throw RealtimeConnectionError.authentication }
             if code == "insufficient_quota" { throw RealtimeConnectionError.quota }
             state = .failed(message); _ = flushAudio(); transport?.close()
