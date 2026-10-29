@@ -25,6 +25,8 @@ public struct CalendarActionProposal: Codable, Identifiable, Sendable {
     public var targetDestinationID: String?
     public var targetCalendarName: String?
     public var targetEventIdentifier: String?
+    /// The exact occurrence opened by the user. Present for a direct edit or delete so approval changes that date only.
+    public var targetOccurrence: CalendarEventSnapshot?
     public var before: EventDraft?
     public var id: UUID { draft.id }
     public var draft: EventDraft
@@ -52,7 +54,7 @@ public struct CalendarActionProposal: Codable, Identifiable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case sourceDestinationID, sourceCalendarName, moveCopyReceipt, moveDestinationBefore
-        case draft, operation, targetDestinationID, targetCalendarName, targetEventIdentifier, before, isSelected, state, error, sourceCaptureID, receipt
+        case draft, operation, targetDestinationID, targetCalendarName, targetEventIdentifier, targetOccurrence, before, isSelected, state, error, sourceCaptureID, receipt
         case duplicateDestinationID, duplicateIdentifiers, allowDuplicate, attemptedDestinationID, attemptedCalendarName
     }
     public init(from decoder: Decoder) throws {
@@ -66,6 +68,7 @@ public struct CalendarActionProposal: Codable, Identifiable, Sendable {
         targetDestinationID = try values.decodeIfPresent(String.self, forKey: .targetDestinationID)
         targetCalendarName = try values.decodeIfPresent(String.self, forKey: .targetCalendarName)
         targetEventIdentifier = try values.decodeIfPresent(String.self, forKey: .targetEventIdentifier)
+        targetOccurrence = try values.decodeIfPresent(CalendarEventSnapshot.self, forKey: .targetOccurrence)
         before = try values.decodeIfPresent(EventDraft.self, forKey: .before)
         isSelected = try values.decodeIfPresent(Bool.self, forKey: .isSelected) ?? (operation != .delete && CalendarDraftValidation.issues(draft).isEmpty)
         state = try values.decodeIfPresent(State.self, forKey: .state) ?? .pending

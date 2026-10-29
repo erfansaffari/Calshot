@@ -47,7 +47,10 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
     }
     private var calendarTaskSelections: [String: CalendarTaskSelection] = [:]
     private var calendarTaskLinkBusy = false
+    private var calendarDirectActionBusy = false
     private(set) var calendarTaskNotices: [String: JSONValue] = [:]
+    /// Built only from the provider receipt of the last direct Calendar change.
+    private(set) var calendarChange: JSONValue = .null
     private(set) var calendarView: JSONValue = .object(["loaded": .bool(false), "loading": .bool(false), "events": .array([]), "errors": .array([])])
 
     init(model: CalshotModel, loadsResources: Bool = true, isNotch: Bool = false) {
@@ -207,6 +210,185 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             throw error
         }
     }
+    /// Applies one change the user confirmed in Calendar. No conversation or History record.
+    func changeCalendarEvent(_ body: [String: Any]) async throws {
+        guard !isNotch, model.workspaceSelection == .calendars else {
+            throw CalendarToolArgumentError("Change calendar events from Calendar.")
+        }
+        guard Set(body.keys).isSubset(of: ["id", "action", "operation", "fields", "selectionHandle", "selectionGeneration", "allowDuplicate"]),
+              let operation = body["operation"] as? String,
+              ["create", "update", "delete"].contains(operation) else {
+            throw CalendarToolArgumentError("Choose a supported calendar change.")
+        }
+        var allowDuplicate = false
+        if let flag = body["allowDuplicate"] {
+            guard operation == "create", let value = flag as? Bool, CFGetTypeID(flag as CFTypeRef) == CFBooleanGetTypeID() else {
+                throw CalendarToolArgumentError("Choose a supported calendar change.")
+            }
+            allowDuplicate = value
+        }
+        try requireCalendarDirectWrite()
+        calendarDirectActionBusy = true
+        calendarChange = .null
+        publish()
+        defer { calendarDirectActionBusy = false; publish() }
+        await model.recoverDirectCalendarWrites()
+        var proposal: CalendarActionProposal
+        let calendar: CalendarDestinationInfo
+        switch operation {
+        case "create":
+            let fields = try directCalendarFields(body["fields"], allowed: Self.directCreateFields)
+            let calendarID = try requiredString(fields, "calendarID", limit: 1024, message: "Choose an available calendar.")
+            calendar = try writableCalendarInfo(calendarID)
+            proposal = CalendarActionProposal(draft: try directDraft(fields, sourceText: "Direct user entry"))
+            proposal.allowDuplicate = allowDuplicate
+        case "update":
+            guard let handle = body["selectionHandle"] as? String else {
+                throw CalendarToolArgumentError("Choose the current calendar event first.")
+            }
+            let selection = try resolveCalendarTaskSelection(handle: handle,
+                generation: body["selectionGeneration"] as? String)
+            calendar = try writableCalendarInfo(selection.calendarID)
+            let current = try await currentDirectEditableEvent(selection)
+            let fields = try directCalendarFields(body["fields"], allowed: Self.directUpdateFields)
+            var draft = try directDraft(fields, sourceText: "Direct edit of \(current.title)")
+            let changed = changedFields(before: current.draft, after: draft)
+            guard !changed.isEmpty else { throw CalendarToolArgumentError("Change at least one event detail before saving.") }
+            draft.changedFieldNames = changed
+            proposal = CalendarActionProposal(draft: draft, operation: .update,
+                                              targetEventIdentifier: current.eventIdentifier,
+                                              before: current.draft)
+            if current.isRecurring == true { proposal.targetOccurrence = current }
+        default:
+            guard body["fields"] == nil || (body["fields"] is NSNull) else {
+                throw CalendarToolArgumentError("Delete uses the selected event only.")
+            }
+            guard let handle = body["selectionHandle"] as? String else {
+                throw CalendarToolArgumentError("Choose the current calendar event first.")
+            }
+            let selection = try resolveCalendarTaskSelection(handle: handle,
+                generation: body["selectionGeneration"] as? String)
+            calendar = try writableCalendarInfo(selection.calendarID)
+            let current = try await currentDirectEditableEvent(selection)
+            proposal = CalendarActionProposal(draft: current.draft, operation: .delete,
+                                              targetEventIdentifier: current.eventIdentifier,
+                                              before: current.draft)
+            proposal.sourceDestinationID = calendar.id
+            proposal.sourceCalendarName = calendar.title
+            if current.isRecurring == true { proposal.targetOccurrence = current }
+        }
+        proposal.targetDestinationID = calendar.id
+        proposal.targetCalendarName = calendar.title
+        let result = try await model.directCalendarWriter.apply(proposal, destinationID: calendar.id, calendarName: calendar.title)
+        guard let receipt = result.receipt else { throw CalendarToolArgumentError("Couldn’t confirm the change in \(calendar.title).") }
+        calendarChange = .object([
+            "operation": .string(operation),
+            "title": .string(operation == "delete" ? (result.before?.title ?? result.draft.title) : result.draft.title),
+            "calendarName": .string(receipt.calendarName),
+            "thisDateOnly": .bool(result.targetOccurrence?.isRecurring == true),
+        ])
+    }
+    private static let directCreateFields: Set<String> = ["title", "date", "allDay", "startTime", "endTime", "timeZone", "calendarID", "location", "url", "notes"]
+    private static let directUpdateFields: Set<String> = ["title", "date", "allDay", "startTime", "endTime", "timeZone", "location", "url", "notes"]
+    private func writableCalendarInfo(_ id: String) throws -> CalendarDestinationInfo {
+        guard !id.hasPrefix("shared:"), !id.hasPrefix("friend:"),
+              let calendar = model.destinations.first(where: { $0.id == id && !$0.isReadOnly && !$0.id.hasPrefix("unavailable:") }) else {
+            throw CalendarToolArgumentError("Choose an available writable calendar.")
+        }
+        return calendar
+    }
+    private func currentDirectEditableEvent(_ selection: CalendarTaskSelection) async throws -> CalendarEventSnapshot {
+        _ = try writableCalendarInfo(selection.calendarID)
+        guard let current = try await model.calendarService.event(matching: selection.snapshot, in: .resolve(identifier: selection.calendarID)) else {
+            throw CalendarToolArgumentError("This event changed or disappeared. Refresh Calendar and select it again.")
+        }
+        guard try CalshotModel.taskSourceFingerprint(current) == selection.fingerprint else {
+            throw CalendarToolArgumentError("This event changed after you opened it. Refresh Calendar and select it again.")
+        }
+        return current
+    }
+    private func directCalendarFields(_ value: Any?, allowed: Set<String>) throws -> [String: Any] {
+        guard let fields = value as? [String: Any],
+              Set(fields.keys).isSubset(of: allowed) else {
+            throw CalendarToolArgumentError("Use the supported calendar fields.")
+        }
+        return fields
+    }
+    private func requiredString(_ fields: [String: Any], _ key: String, limit: Int, message: String) throws -> String {
+        guard let value = fields[key] as? String else { throw CalendarToolArgumentError(message) }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= limit else { throw CalendarToolArgumentError(message) }
+        return trimmed
+    }
+    private func optionalString(_ fields: [String: Any], _ key: String, limit: Int) throws -> String? {
+        guard let value = fields[key], !(value is NSNull) else { return nil }
+        guard let text = value as? String else { throw CalendarToolArgumentError("Use text for \(key).") }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count <= limit else { throw CalendarToolArgumentError("Keep \(key) under \(limit) characters.") }
+        return trimmed.isEmpty ? nil : trimmed
+    }
+    private func directDraft(_ fields: [String: Any], sourceText: String) throws -> EventDraft {
+        let title = try requiredString(fields, "title", limit: 500, message: "Enter an event title up to 500 characters.")
+        let day = try requiredString(fields, "date", limit: 10, message: "Choose the event date.")
+        let zoneID = try requiredString(fields, "timeZone", limit: 128, message: "Choose a valid time zone.")
+        guard let timeZone = TimeZone(identifier: zoneID) else {
+            throw CalendarToolArgumentError("Choose a valid time zone, such as America/Toronto.")
+        }
+        guard let allDayRaw = fields["allDay"], let allDay = allDayRaw as? Bool,
+              CFGetTypeID(allDayRaw as CFTypeRef) == CFBooleanGetTypeID() else {
+            throw CalendarToolArgumentError("Choose all-day or a start and end time.")
+        }
+        let dateFormatter = DateFormatter(); dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.calendar = Calendar(identifier: .gregorian); dateFormatter.timeZone = timeZone
+        dateFormatter.dateFormat = "yyyy-MM-dd"; dateFormatter.isLenient = false
+        guard let date = dateFormatter.date(from: day), dateFormatter.string(from: date) == day else {
+            throw CalendarToolArgumentError("Choose the event date.")
+        }
+        let start: Date
+        let end: Date
+        if allDay {
+            var calendar = Calendar(identifier: .gregorian); calendar.timeZone = timeZone
+            start = calendar.startOfDay(for: date)
+            end = calendar.date(byAdding: .day, value: 1, to: start)!
+        } else {
+            let startText = try requiredString(fields, "startTime", limit: 5, message: "Choose a start time.")
+            let endText = try requiredString(fields, "endTime", limit: 5, message: "Choose a later end time.")
+            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian); formatter.timeZone = timeZone
+            formatter.dateFormat = "yyyy-MM-dd'T'HH:mm"; formatter.isLenient = false
+            guard let parsedStart = formatter.date(from: day + "T" + startText),
+                  let parsedEnd = formatter.date(from: day + "T" + endText),
+                  parsedEnd > parsedStart,
+                  formatter.string(from: parsedStart) == day + "T" + startText,
+                  formatter.string(from: parsedEnd) == day + "T" + endText else {
+                throw CalendarToolArgumentError("Choose valid start and end times, with the end after the start.")
+            }
+            start = parsedStart; end = parsedEnd
+        }
+        let urlText = try optionalString(fields, "url", limit: 2048)
+        let url = urlText.flatMap(URL.init(string:))
+        guard urlText == nil || (url?.host != nil && ["http", "https"].contains(url?.scheme?.lowercased() ?? "")) else {
+            throw CalendarToolArgumentError("Enter a valid https or http link.")
+        }
+        return EventDraft(title: title, startDate: start, endDate: end, isAllDay: allDay,
+                          timeZoneIdentifier: zoneID,
+                          location: try optionalString(fields, "location", limit: 500),
+                          url: url,
+                          notes: try optionalString(fields, "notes", limit: 8000),
+                          sourceText: sourceText, confidence: 1, ambiguities: [])
+    }
+    private func changedFields(before: EventDraft, after: EventDraft) -> [String] {
+        var fields: [String] = []
+        if before.title != after.title { fields.append("title") }
+        if before.startDate != after.startDate { fields.append(before.isAllDay || after.isAllDay ? "date" : "startTime") }
+        if before.endDate != after.endDate { fields.append(before.isAllDay || after.isAllDay ? "date" : "endTime") }
+        if before.isAllDay != after.isAllDay { fields.append("allDay") }
+        if before.timeZoneIdentifier != after.timeZoneIdentifier { fields.append("timeZone") }
+        if before.location != after.location { fields.append("location") }
+        if before.url != after.url { fields.append("url") }
+        if before.notes != after.notes { fields.append("notes") }
+        return Array(Set(fields)).sorted()
+    }
     private func browseEvents(start: Date, end: Date, calendarID: String, depth: Int = 0) async throws -> (events: [CalendarEventSnapshot], truncated: Bool) {
         let events = try await model.calendarService.searchEvents(query: nil, start: start, end: end, in: .resolve(identifier: calendarID))
         // Agent searches cap their results at 40. Subdivide busy ranges for the calendar UI.
@@ -251,6 +433,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         viewState["settingsSection"] = .string(settingsSection)
         viewState["calendarView"] = calendarView
         viewState["calendarTaskNotices"] = model.account.canUseWorkspace ? .object(calendarTaskNotices) : .object([:])
+        viewState["calendarChange"] = model.account.canUseWorkspace ? calendarChange : .null
+        viewState["directWriteNotice"] = model.directWriteNotice.map(JSONValue.string) ?? .null
         let snapshot = JSONValue.object(viewState).jsonString()
         guard snapshot != lastSnapshot else { return }
         lastSnapshot = snapshot
@@ -269,7 +453,14 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         Task { try? await webView.callAsyncJavaScript("window.__calshotReply(reply)", arguments: ["reply": ["id": id, "ok": error == nil, "error": error ?? ""]], in: nil, contentWorld: .page) }
     }
     private func requireIdle() throws {
-        guard !calendarTaskLinkBusy, !model.isSaving, !model.isCapturing, !model.agentIsRunning, !model.isRecognizing else { throw CalendarToolArgumentError("Finish or stop the current task first.") }
+        guard !calendarTaskLinkBusy, !calendarDirectActionBusy, !model.isSaving, !model.isCapturing, !model.agentIsRunning, !model.isRecognizing else { throw CalendarToolArgumentError("Finish or stop the current task first.") }
+    }
+    /// An open conversation doesn't block your own edits; the coordinator rejects any row it makes stale.
+    private func requireCalendarDirectWrite() throws {
+        guard model.account.canUseWorkspace else { throw CalendarToolArgumentError("Sign in and connect a calendar first.") }
+        guard !calendarTaskLinkBusy, !calendarDirectActionBusy, !model.isSaving, !model.directCalendarWriter.isWriting else {
+            throw CalendarToolArgumentError("Wait for the current save to finish.")
+        }
     }
     private func resetConversation() {
         model.analysisTask?.cancel(); model.analysisTask = nil; model.ocrTask?.cancel(); model.ocrTask = nil
@@ -375,21 +566,32 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             }
             model.workspaceSelection = page
             if page == .settings && settingsSection == "friends" { Task { await model.refreshSharing() } }
-            if page == .tasks { model.loadTasks(); Task { await model.syncTasks() } }
+            if page == .tasks { model.loadTasks(); Task { await model.recoverDirectCalendarWrites(); await model.syncTasks() } }
             if page == .library { model.refreshMemory() }
             if page == .settings && ["privacy", "ai"].contains(settingsSection) && !isNotch { Task { _ = try? await model.openAgentPermissionStore() } }
-            if page == .calendars || (page == .settings && settingsSection == "calendars") { Task { await model.loadCalendars(); refreshAccounts() } }
+            if page == .calendars || (page == .settings && settingsSection == "calendars") {
+                Task { await model.loadCalendars(); refreshAccounts(); if page == .calendars { await model.recoverDirectCalendarWrites() } }
+            }
         case "saveTask":
             guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Manage tasks on the Tasks page.") }
             try await model.saveTask(body)
         case "completeTask", "reorderTask", "archiveTask":
             guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Manage tasks on the Tasks page.") }
             try model.changeTask(body)
-        case "reviewTaskDeadline":
-            guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Open Tasks to review this deadline.") }
+        case "publishTaskDeadline":
+            guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Open Tasks to update this deadline.") }
             try model.validateTaskAction(body)
-            guard let raw = body["taskID"] as? String, let id = UUID(uuidString: raw) else { throw CalendarToolArgumentError("Choose a task.") }
-            try await model.reviewTaskDeadline(id)
+            guard Set(body.keys).isSubset(of: ["id", "action", "token", "taskID", "allowDuplicate"]),
+                  let raw = body["taskID"] as? String, let id = UUID(uuidString: raw) else { throw CalendarToolArgumentError("Choose a task.") }
+            var allowDuplicate = false
+            if let flag = body["allowDuplicate"] {
+                guard let value = flag as? Bool, CFGetTypeID(flag as CFTypeRef) == CFBooleanGetTypeID() else { throw CalendarToolArgumentError("Choose a task.") }
+                allowDuplicate = value
+            }
+            await model.publishTaskDeadline(id, allowDuplicate: allowDuplicate)
+        case "deleteTask":
+            guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Manage tasks on the Tasks page.") }
+            try await model.deleteTask(body)
         case "syncTasks", "keepTaskCopies":
             guard !isNotch, model.workspaceSelection == .tasks else { throw CalendarToolArgumentError("Sync tasks on the Tasks page.") }
             try model.validateTaskAction(body); await model.syncTasks(keepBoth: action == "keepTaskCopies")
@@ -427,6 +629,9 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             let renew = (body["renew"] as? Bool) == true && CFGetTypeID((body["renew"] ?? false) as CFTypeRef) == CFBooleanGetTypeID()
             try await model.saveAgentTaskPermissions(revision: UInt64(revisionNumber.int64Value), families: families, days: days, renew: renew)
         case "linkCalendarEventTask": try await linkCalendarEventTask(body)
+        case "changeCalendarEvent": try await changeCalendarEvent(body)
+        case "dismissCalendarChange": calendarChange = .null
+        case "dismissDirectWriteNotice": model.directWriteNotice = nil
         case "loadCalendarEvents": try await loadCalendarView(body)
         case "dismissNotice": notice = nil
         case "capture":

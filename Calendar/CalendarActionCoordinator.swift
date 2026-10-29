@@ -189,7 +189,7 @@ final class CalendarActionCoordinator: ObservableObject {
                             proposals[index].error = "The interrupted change has no target identifier."
                             continue
                         }
-                        let existing = try await service.event(identifier: target, in: .resolve(identifier: originalDestination))
+                        let existing = try await resolvedEvent(item, identifier: target, in: .resolve(identifier: originalDestination))
                         guard revision == token else { return }
                         let recovered = item.operation == .delete ? existing == nil : existing.map { Self.exactDraft($0.draft, item.draft) } == true
                         proposals[index].state = recovered ? (item.operation == .delete ? .deleted : .updated) : .failed
@@ -283,7 +283,7 @@ final class CalendarActionCoordinator: ObservableObject {
                     }
                 } else {
                     guard let identifier = item.targetEventIdentifier,
-                          let current = try await service.event(identifier: identifier, in: destination) else {
+                          let current = try await resolvedEvent(item, identifier: identifier, in: destination) else {
                         throw CalendarDestinationError.calendarUnavailable
                     }
                     guard let before = item.before, Self.exactDraft(current.draft, before) else {
@@ -299,10 +299,19 @@ final class CalendarActionCoordinator: ObservableObject {
                 switch item.operation {
                 case .move: throw CalendarDestinationError.invalidDraft("transfer must use the move journal")
                 case .create: identifier = try await service.save(item.draft, to: destination)
-                case .update: identifier = try await service.update(item.draft, identifier: item.targetEventIdentifier!, in: destination)
+                case .update:
+                    if let selected = item.targetOccurrence {
+                        identifier = try await service.update(item.draft, matching: selected, in: destination)
+                    } else {
+                        identifier = try await service.update(item.draft, identifier: item.targetEventIdentifier!, in: destination)
+                    }
                 case .delete:
                     identifier = item.targetEventIdentifier!
-                    try await service.delete(identifier: identifier, in: destination)
+                    if let selected = item.targetOccurrence {
+                        try await service.delete(matching: selected, in: destination)
+                    } else {
+                        try await service.delete(identifier: identifier, in: destination)
+                    }
                 }
                 proposals[index].receipt = CalendarActionReceipt(destinationID: writeDestinationID, calendarName: writeCalendarName,
                                                                 eventIdentifier: identifier, savedAt: .now)
@@ -322,6 +331,13 @@ final class CalendarActionCoordinator: ObservableObject {
         }
         let failed = proposals.filter { $0.state == .failed }.count
         message = message ?? "\(addedCount) added · \(updatedCount) updated · \(deletedCount) deleted · \(movedCount) moved · \(failed) failed\(stopRequested ? " · Remaining items stopped" : "")"
+    }
+
+    private func resolvedEvent(_ item: CalendarActionProposal, identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? {
+        if let selected = item.targetOccurrence {
+            return try await service.event(matching: selected, in: destination)
+        }
+        return try await service.event(identifier: identifier, in: destination)
     }
 
     private func executeMove(_ item: CalendarActionProposal, index: Int) async throws {
@@ -426,5 +442,94 @@ final class CalendarActionCoordinator: ObservableObject {
     private func storeChanges() {
         do { try persist?(proposals) }
         catch { message = "Couldn’t save your edits: \(error.localizedDescription)" }
+    }
+}
+
+/// One change the user typed and confirmed in Calendar or Tasks. There is no agent, conversation or
+/// History record, but the write runs through a private coordinator: it re-reads the event, rejects a
+/// stale change, journals the row before calling the provider and returns the provider receipt.
+@MainActor
+final class DirectCalendarWriter {
+    /// Shared with the WebUI, which offers "Add anyway" only for this error.
+    static let duplicatePrefix = "A matching event is already in "
+    enum WriteError: LocalizedError {
+        case duplicate(calendarName: String)
+        case failed(String)
+        var errorDescription: String? {
+            switch self {
+            case .duplicate(let name): return DirectCalendarWriter.duplicatePrefix + name + "."
+            case .failed(let message): return message
+            }
+        }
+    }
+    private let service: any CalendarDestinationService
+    private let journalURL: () -> URL
+    private(set) var isWriting = false
+
+    init(service: any CalendarDestinationService, journalURL: @escaping () -> URL) {
+        self.service = service; self.journalURL = journalURL
+    }
+
+    /// Writes exactly this row and returns it with its receipt. Nothing is written when the event
+    /// changed, the calendar is unavailable, or a matching event exists without `allowDuplicate`.
+    func apply(_ proposal: CalendarActionProposal, destinationID: String, calendarName: String) async throws -> CalendarActionProposal {
+        guard !isWriting else { throw WriteError.failed("Another calendar change is still saving.") }
+        isWriting = true
+        defer { isWriting = false }
+        let url = journalURL()
+        var row = proposal
+        row.isSelected = true
+        let coordinator = CalendarActionCoordinator(service: service)
+        coordinator.persist = { rows in try Self.writeJournal(rows, to: url) }
+        coordinator.replace(with: [row])
+        await coordinator.checkDuplicates(destinationID: destinationID)
+        if let message = coordinator.message { throw WriteError.failed(message) }
+        // The check resets the choice for a new destination; apply "Add anyway" after it, as Assistant does.
+        if proposal.allowDuplicate { coordinator.update(row.id) { $0.allowDuplicate = true; $0.isSelected = true } }
+        guard let checked = coordinator.proposals.first else { throw WriteError.failed("This change is no longer available.") }
+        if checked.operation == .create, !checked.duplicateIdentifiers.isEmpty, !checked.allowDuplicate {
+            throw WriteError.duplicate(calendarName: calendarName)
+        }
+        guard coordinator.canApprove else {
+            throw WriteError.failed(checked.issues.first ?? "This change can’t be saved. Check its details and try again.")
+        }
+        await coordinator.execute(destinationID: destinationID, calendarName: calendarName)
+        guard let result = coordinator.proposals.first, result.isFinished, result.receipt != nil else {
+            let failed = coordinator.proposals.first
+            throw WriteError.failed(failed?.error.map { "Couldn’t save to \(calendarName): \($0)" } ?? coordinator.message ?? "Couldn’t save to \(calendarName).")
+        }
+        return result
+    }
+
+    /// Confirms changes interrupted mid-write (for example by a crash or quit). Never retries them.
+    /// Rows that still can't be checked stay in the journal for the next attempt.
+    func recoverInterrupted() async -> [CalendarActionProposal] {
+        let url = journalURL()
+        guard !isWriting, let data = try? Data(contentsOf: url),
+              let rows = try? JSONDecoder().decode([CalendarActionProposal].self, from: data), !rows.isEmpty else { return [] }
+        isWriting = true
+        defer { isWriting = false }
+        var settled: [CalendarActionProposal] = [], unresolved: [CalendarActionProposal] = []
+        for row in rows {
+            let coordinator = CalendarActionCoordinator(service: service)
+            coordinator.replace(with: [row])
+            await coordinator.checkDuplicates(destinationID: row.attemptedDestinationID ?? row.targetDestinationID ?? "")
+            let result = coordinator.proposals.first ?? row
+            if result.state == .saving { unresolved.append(row) } else { settled.append(result) }
+        }
+        try? Self.writeJournal(unresolved, to: url)
+        return settled
+    }
+
+    private static func writeJournal(_ rows: [CalendarActionProposal], to url: URL) throws {
+        let pending = rows.filter { $0.state == .saving }
+        let files = FileManager.default
+        guard !pending.isEmpty else {
+            if files.fileExists(atPath: url.path) { try files.removeItem(at: url) }
+            return
+        }
+        try files.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try JSONEncoder().encode(pending).write(to: url, options: .atomic)
+        try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

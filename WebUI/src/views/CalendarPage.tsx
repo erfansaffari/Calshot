@@ -16,6 +16,8 @@ import {
   Sparkles,
   Plus,
   ArrowUp,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { useCalendarSwipe } from "../useCalendarSwipe";
 import type { AppState, CalendarEvent, Command } from "../types";
@@ -28,12 +30,11 @@ import {
   timeRange,
 } from "../components/ui";
 import {
-  allDayConversionRequest,
-  changeRequestPrefix,
   eventInfo,
   isAllDayEvent,
   keyToDate,
   occursOn,
+  zoneDayKey,
 } from "../calendarEvents";
 import {
   calendarColor,
@@ -41,6 +42,7 @@ import {
   monthDays,
   useCalendar,
 } from "../calendarPresentation";
+import { deadlineTaskID, duplicatePrefix, requestTaskEditor } from "../taskPresentation";
 
 export const dayKey = dateKey;
 export { occursOn };
@@ -56,6 +58,17 @@ const labelDay = (date: Date) =>
 const eventKey = (event: CalendarEvent) =>
   event.calendarIdentifier + event.eventIdentifier + event.start;
 const minuteOfDay = (date: Date) => date.getHours() * 60 + date.getMinutes();
+function localTime(value: string, zone?: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone || undefined,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(value));
+  const get = (name: string) =>
+    parts.find((part) => part.type === name)?.value || "00";
+  return `${get("hour")}:${get("minute")}`;
+}
 export function dayInterval(event: CalendarEvent, day: Date) {
   const next = new Date(day);
   next.setDate(next.getDate() + 1);
@@ -125,6 +138,8 @@ export function CalendarPage({
   const [askSelection, setAskSelection] = useState<{ eventHandle: string; viewToken: string }>();
   const [sending, setSending] = useState(false);
   const [newEvent, setNewEvent] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<CalendarEvent>();
+  const [deletingEvent, setDeletingEvent] = useState<CalendarEvent>();
   const [now, setNow] = useState(() => new Date());
   const scroller = useRef<HTMLDivElement>(null);
   const board = useRef<HTMLDivElement>(null);
@@ -209,6 +224,21 @@ export function CalendarPage({
       !detailCalendar.isReadOnly &&
       !detailCalendar.unavailable,
   );
+  const canDirectChange = Boolean(
+    canChange && detail?.selectionHandle && detail.selectionGeneration,
+  );
+  // A task's own deadline entry is changed through the task, so both stay in step.
+  const detailTaskID = deadlineTaskID(detail?.notes);
+  const deadlineTask = detailTaskID
+    ? state.tasks?.items.find((t) => t.id.toLowerCase() === detailTaskID)
+    : undefined;
+  // Your own edits wait only for a save in progress; an open conversation doesn't block them.
+  const writeBusy = state.saving;
+  const changeSaved = () => setRefresh((n) => n + 1);
+  const openTask = (id: string) => {
+    requestTaskEditor(id);
+    void command({ action: "navigate", page: "tasks" }).catch((e) => setError(e.message));
+  };
   const taskNotice = detail?.selectionHandle ? state.calendarTaskNotices?.[detail.selectionHandle] : undefined;
   const canLink = Boolean(!readOnly && detail?.selectionHandle && detail.selectionGeneration && detailCalendar && !detailCalendar.unavailable && !detail?.calendarIdentifier.startsWith("shared:"));
   const linkSelected = async () => {
@@ -226,8 +256,6 @@ export function CalendarPage({
       setLinking(false);
     }
   };
-  const conversionRequest =
-    canChange && detail ? allDayConversionRequest(detail) : undefined;
   const askAbout = (text: string) => {
     setAskSelection(detail?.selectionHandle && detail.selectionGeneration ? { eventHandle: detail.selectionHandle, viewToken: detail.selectionGeneration } : undefined);
     setAsk(text);
@@ -288,6 +316,7 @@ export function CalendarPage({
     state.running ||
     state.saving ||
     state.waitingApproval ||
+    state.proposals.some((proposal) => !proposal.isFinished) ||
     Boolean(state.question) ||
     state.isCapturing ||
     state.isRecognizing;
@@ -440,7 +469,7 @@ export function CalendarPage({
             className="button primary calendar-new"
             aria-label="New event"
             title="New event"
-            disabled={blocked || sending}
+            disabled={writeBusy}
             onClick={() => setNewEvent(true)}
           >
             <Plus size={18} />
@@ -449,6 +478,22 @@ export function CalendarPage({
       </header>
       <div className="calendar-notices">
         <InlineError message={error} />
+        {state.directWriteNotice && (
+          <div className="notice" role="alert">
+            <p>{state.directWriteNotice}</p>
+            <button className="text-button" onClick={() => void command({ action: "dismissDirectWriteNotice" }).catch(() => {})}>
+              Dismiss
+            </button>
+          </div>
+        )}
+        {state.calendarChange && (
+          <p className="notice calendar-change-notice" role="status">
+            {calendarChangeText(state.calendarChange)}{" "}
+            <button className="text-button" onClick={() => void command({ action: "dismissCalendarChange" }).catch(() => {})}>
+              Dismiss
+            </button>
+          </p>
+        )}
         {!!errors.length && (
           <div className="calendar-load-errors" role="alert">
             <strong>Some calendars couldn’t be loaded</strong>
@@ -812,7 +857,17 @@ export function CalendarPage({
             {detail.notes && <p className="event-notes">{detail.notes}</p>}
             {detail.timeZone && <small>{detail.timeZone}</small>}
             {detail.calendarIdentifier.startsWith("shared:") && <Badge>Shared · Read-only</Badge>}
-            {canLink && (
+            {deadlineTask && !readOnly && (
+              <>
+                <p className="fine-print">
+                  This is the deadline for “{deadlineTask.title}” in Tasks. Edit the task to change or remove it.
+                </p>
+                <button className="button secondary" onClick={() => openTask(deadlineTask.id)}>
+                  <Pencil size={14} /> Edit task
+                </button>
+              </>
+            )}
+            {canLink && !deadlineTask && (
               <>
                 {taskNotice?.status === "success" && taskNotice.receipt ? (
                   <div role="status">
@@ -830,23 +885,38 @@ export function CalendarPage({
                 <button className="button secondary" disabled={blocked || linking} onClick={() => askAbout("For this selected event, ")}>Ask Calshot about this</button>
               </>
             )}
-            {canChange && (
+            {canChange && !deadlineTask && (
               <>
                 <button
                   className="button secondary"
-                  disabled={blocked}
-                  onClick={() => askAbout(changeRequestPrefix(detail))}
+                  disabled={writeBusy || !canDirectChange}
+                  onClick={() => {
+                    setEditingEvent(detail);
+                    setDetailKey(undefined);
+                  }}
                 >
-                  Ask Calshot to change this
+                  <Pencil size={14} /> Edit event
                 </button>
-                {conversionRequest && (
-                  <button
-                    className="button secondary"
-                    disabled={blocked}
-                    onClick={() => askAbout(conversionRequest)}
-                  >
-                    Make all-day
-                  </button>
+                <button
+                  className="button secondary danger"
+                  disabled={writeBusy || !canDirectChange}
+                  onClick={() => {
+                    setDeletingEvent(detail);
+                    setDetailKey(undefined);
+                  }}
+                >
+                  <Trash2 size={14} /> Delete event
+                </button>
+                {detail.isRecurring === true && (
+                  <p className="fine-print">
+                    Edit and delete change only this date. Other dates in the
+                    series stay the same.
+                  </p>
+                )}
+                {writeBusy && (
+                  <p className="fine-print">
+                    Wait for the current save to finish before changing this event.
+                  </p>
                 )}
               </>
             )}
@@ -858,23 +928,50 @@ export function CalendarPage({
           state={state}
           date={dayKey(anchor)}
           onClose={() => setNewEvent(false)}
-          onSend={send}
+          onSaved={changeSaved}
+          onCommand={command}
+        />
+      )}
+      {editingEvent && (
+        <DirectEventEditor
+          event={editingEvent}
+          onClose={() => setEditingEvent(undefined)}
+          onSaved={changeSaved}
+          onCommand={command}
+        />
+      )}
+      {deletingEvent && (
+        <DeleteEventConfirm
+          event={deletingEvent}
+          onClose={() => setDeletingEvent(undefined)}
+          onSaved={changeSaved}
+          onCommand={command}
         />
       )}
     </div>
   );
 }
 
+function calendarChangeText(change: NonNullable<AppState["calendarChange"]>) {
+  const title = `“${change.title || "Untitled event"}”`;
+  if (change.operation === "create") return `Added ${title} to ${change.calendarName}.`;
+  if (change.operation === "delete")
+    return `Deleted ${title} from ${change.calendarName}.${change.thisDateOnly ? " Other dates in the series stay." : ""}`;
+  return `Saved changes to ${title} in ${change.calendarName}.${change.thisDateOnly ? " Only this date changed." : ""}`;
+}
+
 function NewEvent({
   state,
   date,
   onClose,
-  onSend,
+  onSaved,
+  onCommand,
 }: {
   state: AppState;
   date: string;
   onClose: () => void;
-  onSend: (text: string) => Promise<void>;
+  onSaved: () => void;
+  onCommand: (message: Command) => Promise<void>;
 }) {
   const writable = state.calendars.filter(
     (c) => !c.isReadOnly && !c.unavailable,
@@ -892,7 +989,7 @@ function NewEvent({
   const [error, setError] = useState("");
   const [invalid, setInvalid] = useState("");
   const [sending, setSending] = useState(false);
-  const submit = async () => {
+  const submit = async (allowDuplicate = false) => {
     setError("");
     setInvalid("");
     if (!title.trim()) {
@@ -918,15 +1015,30 @@ function NewEvent({
     }
     setSending(true);
     try {
-      await onSend(
-        `Create one event titled ${JSON.stringify(title.trim())} on ${day}, ${allDay ? "all day (confirmed)" : `from ${start} to ${end} in ${Intl.DateTimeFormat().resolvedOptions().timeZone}`}, in calendar ${JSON.stringify(calendar.title)} (${calendar.sourceName}). Show it for my approval.`,
-      );
+      await onCommand({
+        action: "changeCalendarEvent",
+        operation: "create",
+        fields: {
+          title: title.trim(),
+          date: day,
+          allDay,
+          startTime: start,
+          endTime: end,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          calendarID,
+        },
+        ...(allowDuplicate ? { allowDuplicate: true } : {}),
+      });
+      onSaved();
+      onClose();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setSending(false);
     }
   };
+  const destination = writable.find((c) => c.id === calendarID);
+  const duplicate = error.startsWith(duplicatePrefix);
   return (
     <Modal title="New event" onClose={onClose}>
       <form
@@ -1003,20 +1115,286 @@ function NewEvent({
           </select>
         </label>
         {(!invalid || invalid === "calendar") && (
+          <InlineError message={error}>
+            {duplicate && (
+              <button type="button" className="text-button" disabled={sending} onClick={() => void submit(true)}>
+                Add anyway
+              </button>
+            )}
+          </InlineError>
+        )}
+        {destination && (
+          <p className="fine-print">Adds this event to {destination.title}.</p>
+        )}
+        <footer>
+          <button type="button" className="button secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="button primary"
+            type="submit"
+            disabled={sending || !writable.length}
+          >
+            {sending ? <Spinner /> : <Plus size={14} />} {sending ? "Adding…" : "Add event"}
+          </button>
+        </footer>
+      </form>
+    </Modal>
+  );
+}
+
+function eventFormDefaults(event: CalendarEvent) {
+  const info = eventInfo(event);
+  return {
+    title: event.title || "",
+    date: info.allDay
+      ? info.first
+      : zoneDayKey(Date.parse(event.start), event.timeZone),
+    startTime: info.allDay ? "" : localTime(event.start, event.timeZone),
+    endTime: info.allDay ? "" : localTime(event.end, event.timeZone),
+    allDay: info.allDay,
+    timeZone:
+      event.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    location: event.location || "",
+    url: event.url || "",
+    notes: event.notes || "",
+  };
+}
+
+function DirectEventEditor({
+  event,
+  onClose,
+  onSaved,
+  onCommand,
+}: {
+  event: CalendarEvent;
+  onClose: () => void;
+  onSaved: () => void;
+  onCommand: (message: Command) => Promise<void>;
+}) {
+  const [form, setForm] = useState(() => eventFormDefaults(event));
+  const [error, setError] = useState("");
+  const [invalid, setInvalid] = useState("");
+  const [saving, setSaving] = useState(false);
+  const change = (key: keyof typeof form, value: string | boolean) =>
+    setForm((old) => ({ ...old, [key]: value }));
+  const submit = async () => {
+    setError("");
+    setInvalid("");
+    if (!form.title.trim()) {
+      setInvalid("title");
+      setError("Give your event a title.");
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(form.date)) {
+      setInvalid("date");
+      setError("Choose the event date.");
+      return;
+    }
+    if (!form.allDay && (!form.startTime || !form.endTime || form.endTime <= form.startTime)) {
+      setInvalid("time");
+      setError("Choose a start time and a later end time, or select All day.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await onCommand({
+        action: "changeCalendarEvent",
+        operation: "update",
+        selectionHandle: event.selectionHandle,
+        selectionGeneration: event.selectionGeneration,
+        fields: {
+          title: form.title.trim(),
+          date: form.date,
+          allDay: form.allDay,
+          startTime: form.startTime,
+          endTime: form.endTime,
+          timeZone: form.timeZone,
+          location: form.location,
+          url: form.url,
+          notes: form.notes,
+        },
+      });
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal title="Edit event" onClose={onClose}>
+      <form
+        className="calendar-new-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <label>
+          Title
+          <input
+            autoFocus
+            value={form.title}
+            aria-invalid={invalid === "title"}
+            maxLength={500}
+            onChange={(e) => change("title", e.target.value)}
+          />
+        </label>
+        {invalid === "title" && <InlineError message={error} />}
+        <label>
+          Date
+          <input
+            type="date"
+            value={form.date}
+            aria-invalid={invalid === "date"}
+            onChange={(e) => change("date", e.target.value)}
+          />
+        </label>
+        {invalid === "date" && <InlineError message={error} />}
+        <label className="calendar-all-day-check">
+          <input
+            type="checkbox"
+            checked={form.allDay}
+            onChange={(e) => change("allDay", e.target.checked)}
+          />
+          All day
+        </label>
+        {!form.allDay && (
+          <div className="calendar-time-fields">
+            <label>
+              Starts
+              <input
+                type="time"
+                value={form.startTime}
+                onChange={(e) => change("startTime", e.target.value)}
+              />
+            </label>
+            <label>
+              Ends
+              <input
+                type="time"
+                value={form.endTime}
+                onChange={(e) => change("endTime", e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+        {invalid === "time" && <InlineError message={error} />}
+        <label>
+          Time zone
+          <input
+            value={form.timeZone}
+            onChange={(e) => change("timeZone", e.target.value)}
+          />
+        </label>
+        <div className="calendar-time-fields">
+          <label>
+            Location
+            <input
+              value={form.location}
+              onChange={(e) => change("location", e.target.value)}
+            />
+          </label>
+          <label>
+            Link
+            <input
+              type="url"
+              value={form.url}
+              onChange={(e) => change("url", e.target.value)}
+            />
+          </label>
+        </div>
+        <label>
+          Notes
+          <textarea
+            value={form.notes}
+            rows={3}
+            onChange={(e) => change("notes", e.target.value)}
+          />
+        </label>
+        {(!invalid || !["title", "date", "time"].includes(invalid)) && (
           <InlineError message={error} />
         )}
         <p className="fine-print">
-          Calshot will prepare this event for review. Nothing is added until you
-          approve.
+          Saves to {event.calendarName}.
+          {event.isRecurring === true ? " Only this date changes; other dates in the series stay." : ""}
         </p>
-        <button
-          className="button primary"
-          type="submit"
-          disabled={sending || !writable.length}
-        >
-          {sending ? <Spinner /> : <Sparkles size={14} />} Review with Calshot
-        </button>
+        <footer>
+          <button type="button" className="button secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="button primary" disabled={saving}>
+            {saving ? <Spinner /> : <Pencil size={14} />} {saving ? "Saving…" : "Save changes"}
+          </button>
+        </footer>
       </form>
+    </Modal>
+  );
+}
+
+function DeleteEventConfirm({
+  event,
+  onClose,
+  onSaved,
+  onCommand,
+}: {
+  event: CalendarEvent;
+  onClose: () => void;
+  onSaved: () => void;
+  onCommand: (message: Command) => Promise<void>;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const info = eventInfo(event);
+  const submit = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await onCommand({
+        action: "changeCalendarEvent",
+        operation: "delete",
+        selectionHandle: event.selectionHandle,
+        selectionGeneration: event.selectionGeneration,
+      });
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal title="Delete event?" onClose={onClose}>
+      <div className="calendar-new-form">
+        <div className="delete-preview">
+          <strong>{event.title || "Untitled event"}</strong>
+          <span>
+            {timeRange(event.start, event.end, undefined, info.allDay)}
+          </span>
+          <span>{event.calendarName}</span>
+        </div>
+        <p className="fine-print">
+          Removes this event from {event.calendarName}.
+          {event.isRecurring === true ? " Only this date is removed; other dates in the series stay." : ""}
+        </p>
+        <InlineError message={error} />
+        <footer>
+          <button type="button" className="button secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="button primary danger-fill"
+            disabled={saving}
+            onClick={() => void submit()}
+          >
+            {saving ? <Spinner /> : <Trash2 size={14} />} {saving ? "Deleting…" : "Delete event"}
+          </button>
+        </footer>
+      </div>
     </Modal>
   );
 }

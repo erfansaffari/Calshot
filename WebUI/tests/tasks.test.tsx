@@ -11,6 +11,7 @@ import { HomeTasks } from "../src/components/HomeTasks";
 import { preview } from "../src/preview";
 import type { AppState, CalshotTask } from "../src/types";
 afterEach(cleanup);
+const publishButton = /^(Add to calendar|Update calendar|Remove from calendar|Try again|Add anyway)$/;
 const task: CalshotTask = {
   id: "fixture-a",
   version: "v1",
@@ -111,7 +112,7 @@ it("sends the captured edit token and preserves unsaved text after a stale edit"
     />,
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "Save task & review deadline" }),
+    screen.getByRole("button", { name: "Save & add to calendar" }),
   );
   await waitFor(() =>
     expect(action).toHaveBeenCalledWith(
@@ -148,17 +149,63 @@ it("reorders with the current token without passing deadline fields", async () =
     }),
   );
 });
-it("keeps calendar failures beside the saved task with an explicit review action", () => {
+it("keeps calendar failures beside the saved task with a direct retry", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
   render(
     <TasksPage
       state={state([
         { ...task, calendarError: "Calendar offline. Your task is saved." },
       ])}
-      onCommand={vi.fn()}
+      onCommand={action}
     />,
   );
   expect(screen.getByRole("alert").textContent).toContain("Calendar offline");
-  expect(screen.getByRole("button", { name: "Review deadline" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith({ action: "publishTaskDeadline", token: "current", taskID: task.id }));
+});
+it("offers Add anyway only when the deadline matched an existing event", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  render(<TasksPage state={state([{ ...task, calendarError: "A matching event is already in School." }])} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: "Add anyway" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith({ action: "publishTaskDeadline", token: "current", taskID: task.id, allowDuplicate: true }));
+});
+it("deletes a task after one confirmation and removes its deadline only when chosen", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  const published = { ...task, calendarIntent: "new" as const, intentProvenance: "explicit" as const, receiptDeviceID: "this-mac", receipt: { eventIdentifier: "owned", destinationID: "school", calendarName: "School" } };
+  render(<TasksPage state={state([published])} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: task.title }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  const option = screen.getByRole("checkbox", { name: "Also remove its deadline from School" }) as HTMLInputElement;
+  expect(option.checked).toBe(false);
+  expect(screen.getByText(/stays in School as a normal event/)).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "Delete task" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith({ action: "deleteTask", token: "current", taskID: task.id, removeDeadline: false }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  cleanup();
+  action.mockClear();
+  render(<TasksPage state={state([{ ...published, deleted: true }])} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: "Archived" }));
+  fireEvent.click(screen.getByRole("button", { name: `Delete ${task.title}` }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Also remove its deadline from School" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete task" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith({ action: "deleteTask", token: "current", taskID: task.id, removeDeadline: true }));
+});
+it("keeps a delete failure in its dialog", async () => {
+  const action = vi.fn().mockRejectedValue(new Error("Couldn’t reach School."));
+  render(<TasksPage state={state()} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: task.title }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  expect(screen.queryByRole("checkbox", { name: /Also remove/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Delete task" }));
+  const dialog = await screen.findByRole("dialog", { name: "Delete task?" });
+  await waitFor(() => expect(dialog.textContent).toContain("Couldn’t reach School."));
+});
+it("lets you change tasks while a conversation is open, and opens a task sent from Calendar", async () => {
+  sessionStorage.setItem("calshot.openTask", task.id);
+  render(<TasksPage state={{ ...state(), running: true, waitingApproval: true }} onCommand={vi.fn()} />);
+  expect(screen.getByRole("dialog", { name: "Edit task" })).toBeDefined();
+  expect(sessionStorage.getItem("calshot.openTask")).toBeNull();
+  expect((screen.getByRole("button", { name: "Save & add to calendar" }) as HTMLButtonElement).disabled).toBe(false);
 });
 it("keeps the web view read-only with a Mac handoff", () => {
   render(<TasksPage state={state()} onCommand={vi.fn()} readOnly />);
@@ -180,7 +227,7 @@ it("opens archived tasks separately without calendar publication actions", () =>
   expect(screen.queryByRole("button", { name: task.title })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Archived" }));
   expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Review deadline" })).toBeNull();
+  expect(screen.queryByRole("button", { name: publishButton })).toBeNull();
 });
 it("shows dense rows with concise metadata and no filler header", () => {
   render(
@@ -237,7 +284,7 @@ it("keeps the stale-edit reload action beside the editor", async () => {
   render(<TasksPage state={state()} onCommand={action} />);
   fireEvent.click(screen.getByRole("button", { name: task.title }));
   fireEvent.click(
-    screen.getByRole("button", { name: "Save task & review deadline" }),
+    screen.getByRole("button", { name: "Save & add to calendar" }),
   );
   await waitFor(() =>
     expect(
@@ -270,7 +317,7 @@ it("shows confirmed deadlines from receipts and the other Mac's reminder", () =>
   render(<TasksPage state={state([confirmed])} onCommand={vi.fn()} />);
   expect(screen.getByText("On Personal")).toBeTruthy();
   expect(screen.getByText(/1 hour before · source Mac/)).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Review deadline" })).toBeNull();
+  expect(screen.queryByRole("button", { name: publishButton })).toBeNull();
 });
 const home = (
   items: CalshotTask[],
@@ -373,7 +420,7 @@ it("keeps source-linked tasks task-only while editing their own dates and remind
   const action = vi.fn().mockResolvedValue(undefined);
   const linked: CalshotTask = { ...task, calendarIntent: "existing", intentProvenance: "explicit", sourceLink: { deviceID: "this-mac", calendarID: "school", eventID: "source-event", occurrenceKey: "single", observedStart: "2026-11-10T22:00:00Z", observedEnd: "2026-11-10T23:00:00Z", observedAt: "2026-10-23T00:00:00Z", calendarName: "Fictional school", sourceName: "Fixture" } };
   render(<TasksPage state={state([linked])} onCommand={action} />);
-  expect(screen.queryByRole("button", { name: "Review deadline" })).toBeNull();
+  expect(screen.queryByRole("button", { name: publishButton })).toBeNull();
   expect(screen.getByText(/Linked to source/)).toBeDefined();
   fireEvent.click(screen.getByRole("button", { name: task.title }));
   expect(screen.queryByRole("combobox", { name: "Calendar use" })).toBeNull();
@@ -393,19 +440,55 @@ it("sends Tasks-only intent only after an explicit choice and needs no writable 
   await waitFor(() => expect(action).toHaveBeenCalledWith(expect.objectContaining({ action: "saveTask", calendarIntent: "none", dueDate: task.dueDate })));
   expect(action.mock.calls[0][0]).not.toHaveProperty("calendarID");
 });
-it("preserves omitted intent for ordinary edits and locks owned publication transitions", async () => {
+it("preserves omitted intent for ordinary edits and lets a published task become Tasks only", async () => {
   const action = vi.fn().mockResolvedValue(undefined);
   const published = { ...task, calendarIntent: "new" as const, intentProvenance: "explicit" as const, receiptDeviceID: "this-mac", receipt: { eventIdentifier: "owned", destinationID: "school", calendarName: "School" } };
   render(<TasksPage state={state([published])} onCommand={action} />);
   fireEvent.click(screen.getByRole("button", { name: task.title }));
-  expect(screen.queryByRole("combobox", { name: "Calendar use" })).toBeNull();
-  expect(screen.getByText(/retain or remove that entry/)).toBeDefined();
-  fireEvent.click(screen.getByRole("button", { name: "Save task & review deadline" }));
+  expect(screen.getByText("Saving updates its deadline in School. Completing or archiving keeps its calendar deadline.")).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "Save task" }));
   await waitFor(() => expect(action).toHaveBeenCalled());
   expect(action.mock.calls[0][0]).not.toHaveProperty("calendarIntent");
+  cleanup(); action.mockClear();
+  render(<TasksPage state={state([published])} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: task.title }));
+  fireEvent.change(screen.getByRole("combobox", { name: "Calendar use" }), { target: { value: "none" } });
+  expect(screen.getByText("Saving removes its deadline from School.")).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "Save task" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith(expect.objectContaining({ action: "saveTask", calendarIntent: "none" })));
 });
 it("does not offer deadline review for Tasks-only dated tasks", () => {
   render(<TasksPage state={state([{ ...task, calendarIntent: "none", intentProvenance: "explicit" }])} onCommand={async () => {}} />);
-  expect(screen.queryByRole("button", { name: "Review deadline" })).toBeNull();
+  expect(screen.queryByRole("button", { name: publishButton })).toBeNull();
   expect(screen.queryByText("Not on calendar yet")).toBeNull();
+});
+it("sends the chosen reminder, with a reminder time for a date-only task", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  render(<TasksPage state={state([{ ...task, dueTime: undefined }])} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: task.title }));
+  fireEvent.change(screen.getByLabelText("Remind on this Mac"), { target: { value: "1440" } });
+  fireEvent.change(screen.getByLabelText("Reminder time"), { target: { value: "08:30" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save & add to calendar" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith(expect.objectContaining({ action: "saveTask", reminderMinutes: 1440, reminderTime: "08:30", dueTime: null })));
+});
+it("clears the reminder when the date is removed and blocks a date-only reminder without a time", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  render(<TasksPage state={state([{ ...task, dueTime: undefined, reminderMinutes: 0, reminderTime: undefined }])} onCommand={action} />);
+  fireEvent.click(screen.getByRole("button", { name: task.title }));
+  fireEvent.change(screen.getByLabelText("Reminder time"), { target: { value: "" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save & add to calendar" }));
+  expect(await screen.findByText("Choose a time for the reminder.")).toBeDefined();
+  expect(action).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "" } });
+  expect(screen.queryByLabelText("Remind on this Mac")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Save task" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith(expect.objectContaining({ action: "saveTask", dueDate: null, reminderMinutes: null })));
+});
+it("keeps a reminder permission error on Tasks with a way to fix it", async () => {
+  const action = vi.fn().mockResolvedValue(undefined);
+  render(<TasksPage state={{ ...state([{ ...task, reminderMinutes: 60, reminderDeviceID: "this-mac" }]), tasks: { ...state().tasks!, items: [{ ...task, reminderMinutes: 60, reminderDeviceID: "this-mac" }], reminderError: "Mac reminders are not enabled. Allow notifications for Calshot in System Settings." } }} onCommand={action} />);
+  expect(screen.getByText(/Mac reminders are not enabled/)).toBeDefined();
+  expect(screen.getByText("1 hour before")).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "Notification settings" }));
+  await waitFor(() => expect(action).toHaveBeenCalledWith({ action: "taskNotificationSettings", token: "current" }));
 });

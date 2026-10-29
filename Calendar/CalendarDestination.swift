@@ -88,6 +88,9 @@ protocol CalendarDestinationService: Sendable {
     func event(matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws -> CalendarEventSnapshot?
     func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String
     func delete(identifier: String, in destination: CalendarDestination) async throws
+    /// Changes only the selected occurrence. Series-wide edits are not offered here.
+    func update(_ draft: EventDraft, matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws -> String
+    func delete(matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws
     func save(_ draft: EventDraft, to destination: CalendarDestination) async throws -> String
 }
 
@@ -99,6 +102,13 @@ extension CalendarDestinationService {
     }
     func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String { throw CalendarDestinationError.calendarUnavailable }
     func delete(identifier: String, in destination: CalendarDestination) async throws { throw CalendarDestinationError.calendarUnavailable }
+    /// Changes the selected occurrence. The default uses the event identifier, which is one instance for provider calendars.
+    func update(_ draft: EventDraft, matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws -> String {
+        try await update(draft, identifier: selected.eventIdentifier, in: destination)
+    }
+    func delete(matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws {
+        try await delete(identifier: selected.eventIdentifier, in: destination)
+    }
 }
 
 enum CalendarDestinationError: LocalizedError, Sendable {

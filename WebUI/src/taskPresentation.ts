@@ -105,3 +105,24 @@ export function nextTasks(items: CalshotTask[], today = localDay(), limit = 3) {
     )
     .slice(0, limit);
 }
+
+/** Matches the native DirectCalendarWriter error that offers "Add anyway". */
+export const duplicatePrefix = "A matching event is already in ";
+
+/** The task that owns a published deadline entry, from the marker native code writes into its notes. */
+export function deadlineTaskID(notes?: string) {
+  return notes?.match(/(?:^|\n)Calshot task: ([0-9a-f-]{36})(?:\n|$)/i)?.[1].toLowerCase();
+}
+
+// Presentation-only handoff from Calendar to the Tasks editor. Never authority for a change.
+const openTaskKey = "calshot.openTask";
+export function requestTaskEditor(id: string) {
+  try { sessionStorage.setItem(openTaskKey, id.toLowerCase()); } catch {}
+}
+export function takeRequestedTaskEditor() {
+  try {
+    const id = sessionStorage.getItem(openTaskKey);
+    sessionStorage.removeItem(openTaskKey);
+    return id || undefined;
+  } catch { return undefined; }
+}

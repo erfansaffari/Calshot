@@ -11,15 +11,18 @@ import {
   ListTodo,
   Plus,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import type { AppState, CalshotTask, Command } from "../types";
 import { Empty, InlineError, Modal, Spinner } from "../components/ui";
 import {
+  duplicatePrefix,
   localDay,
   reminderLabel,
   taskCounts,
   taskDueLabel,
   taskNeedsPublication,
+  takeRequestedTaskEditor,
 } from "../taskPresentation";
 
 export { taskDue, taskNeedsPublication } from "../taskPresentation";
@@ -61,6 +64,8 @@ export function TasksPage({
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState("manual");
   const [editing, setEditing] = useState<CalshotTask | "new">();
+  const [deleting, setDeleting] = useState<CalshotTask>();
+  const requested = useRef(takeRequestedTaskEditor());
   const [editToken, setEditToken] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -95,10 +100,8 @@ export function TasksPage({
   const fullOrder = items
     .filter((t) => !t.deleted && !t.completed)
     .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
-  const conversationBusy =
-    state.running || state.isCapturing || state.isRecognizing;
-  const pending =
-    busy || Boolean(tasks?.busy) || state.saving || conversationBusy;
+  // Only a calendar save in progress pauses task changes; an open conversation doesn't.
+  const pending = busy || Boolean(tasks?.busy) || state.saving;
   const reviewRef = useRef<HTMLElement>(null);
   const reviewedTaskIDs = new Set(
     state.proposals
@@ -122,6 +125,18 @@ export function TasksPage({
     setEditing(task);
     setError("");
   };
+  // Opened from a deadline entry in Calendar.
+  useEffect(() => {
+    if (!requested.current || !tasks?.loaded) return;
+    const task = items.find((t) => t.id.toLowerCase() === requested.current);
+    requested.current = undefined;
+    if (task) open(task);
+  }, [tasks?.loaded, items.length]);
+  const publish = (task: CalshotTask) =>
+    void run("publishTaskDeadline", {
+      taskID: task.id,
+      ...(task.calendarError?.startsWith(duplicatePrefix) ? { allowDuplicate: true } : {}),
+    }).catch(() => {});
   const move = async (task: CalshotTask, offset: number) => {
     try {
       await run("reorderTask", { taskID: task.id, offset });
@@ -258,20 +273,13 @@ export function TasksPage({
             {deadlineReview}
           </section>
         )}
-        {conversationBusy && (
-          <p className="tasks-notice">
-            Finish or stop the current conversation before changing tasks.{" "}
-            <button
-              className="button secondary"
-              onClick={() =>
-                void onCommand({ action: "navigate", page: "chat" }).catch(
-                  () => {},
-                )
-              }
-            >
-              View conversation
+        {state.directWriteNotice && (
+          <div className="tasks-notice" role="alert">
+            <p>{state.directWriteNotice}</p>
+            <button className="button secondary" onClick={() => void onCommand({ action: "dismissDirectWriteNotice" }).catch(() => {})}>
+              Dismiss
             </button>
-          </p>
+          </div>
         )}
         <div className="tasks-toolbar">
           <div className="tasks-filters" role="group" aria-label="Task views">
@@ -441,7 +449,7 @@ export function TasksPage({
                           {needs && !task.calendarError && (
                             <span className="task-pending">
                               {task.receipt
-                                ? "Deadline change needs review"
+                                ? "Calendar entry not updated yet"
                                 : "Not on calendar yet"}
                             </span>
                           )}
@@ -460,13 +468,17 @@ export function TasksPage({
                         className="button secondary"
                         disabled={pending || locked}
                         title={lockReason(task)}
-                        onClick={() =>
-                          void run("reviewTaskDeadline", {
-                            taskID: task.id,
-                          }).catch(() => {})
-                        }
+                        onClick={() => publish(task)}
                       >
-                        Review deadline
+                        {task.calendarError?.startsWith(duplicatePrefix)
+                          ? "Add anyway"
+                          : task.calendarError
+                            ? "Try again"
+                            : !task.receipt
+                              ? "Add to calendar"
+                              : task.dueDate
+                                ? "Update calendar"
+                                : "Remove from calendar"}
                       </button>
                     )}
                     {canMove && (
@@ -495,18 +507,29 @@ export function TasksPage({
                     )}
                     {!readOnly &&
                       (task.deleted ? (
-                        <button
-                          className="button secondary"
-                          disabled={pending || locked}
-                          onClick={() =>
-                            void run("archiveTask", {
-                              taskID: task.id,
-                              archived: false,
-                            }).catch(() => {})
-                          }
-                        >
-                          Restore
-                        </button>
+                        <>
+                          <button
+                            className="button secondary"
+                            disabled={pending || locked}
+                            onClick={() =>
+                              void run("archiveTask", {
+                                taskID: task.id,
+                                archived: false,
+                              }).catch(() => {})
+                            }
+                          >
+                            Restore
+                          </button>
+                          <button
+                            className="icon-button"
+                            aria-label={`Delete ${task.title}`}
+                            title="Delete"
+                            disabled={pending || locked}
+                            onClick={() => setDeleting(task)}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </>
                       ) : (
                         <button
                           className="icon-button"
@@ -547,6 +570,11 @@ export function TasksPage({
               token={editToken}
               readOnly={readOnly}
               onCancel={() => setEditing(undefined)}
+              onDelete={
+                editing === "new" || readOnly
+                  ? undefined
+                  : () => setDeleting(editing)
+              }
               onSave={async (body) => {
                 await run("saveTask", body);
                 setAnnouncement("Saved “" + String(body.title) + "” to Tasks.");
@@ -567,8 +595,95 @@ export function TasksPage({
             />
           </Modal>
         )}
+        {deleting && (
+          <DeleteTaskConfirm
+            task={deleting}
+            deviceID={tasks?.deviceID}
+            onCancel={() => setDeleting(undefined)}
+            onDelete={async (removeDeadline) => {
+              await run("deleteTask", { taskID: deleting.id, removeDeadline });
+              setAnnouncement(`Deleted “${deleting.title}” from Tasks.`);
+              setDeleting(undefined);
+              setEditing(undefined);
+            }}
+          />
+        )}
       </div>
     </div>
+  );
+}
+
+function DeleteTaskConfirm({
+  task,
+  deviceID,
+  onCancel,
+  onDelete,
+}: {
+  task: CalshotTask;
+  deviceID?: string;
+  onCancel: () => void;
+  onDelete: (removeDeadline: boolean) => Promise<void>;
+}) {
+  // Removing the calendar entry is a separate, unchecked choice.
+  const [removeDeadline, setRemoveDeadline] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const calendar = task.receipt?.calendarName || task.calendarName || "your calendar";
+  const ownsEntry = Boolean(task.receipt && task.receiptDeviceID === deviceID);
+  return (
+    <Modal title="Delete task?" onClose={onCancel}>
+      <div className="task-delete">
+        <p>
+          “{task.title}” will be removed from Tasks on all your Macs. This can’t
+          be undone.
+        </p>
+        {ownsEntry && (
+          <label className="task-delete-option">
+            <input
+              type="checkbox"
+              checked={removeDeadline}
+              onChange={(e) => setRemoveDeadline(e.target.checked)}
+            />
+            Also remove its deadline from {calendar}
+          </label>
+        )}
+        {ownsEntry && !removeDeadline && (
+          <p className="fine-print">The deadline stays in {calendar} as a normal event.</p>
+        )}
+        {task.receipt && !ownsEntry && (
+          <p className="fine-print">
+            Its deadline stays in {calendar}. Remove it on the Mac that added it, or in your calendar app.
+          </p>
+        )}
+        {task.sourceLink && (
+          <p className="fine-print">The linked calendar event stays unchanged.</p>
+        )}
+        <InlineError message={error} />
+        <footer>
+          <button type="button" className="button secondary" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="button primary danger-fill"
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true);
+              setError("");
+              try {
+                await onDelete(removeDeadline);
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            {saving ? <Spinner /> : <Trash2 size={14} />} {saving ? "Deleting…" : "Delete task"}
+          </button>
+        </footer>
+      </div>
+    </Modal>
   );
 }
 function TaskEditor({
@@ -578,6 +693,7 @@ function TaskEditor({
   onSave,
   onReload,
   onCancel,
+  onDelete,
   readOnly,
 }: {
   task?: CalshotTask;
@@ -586,6 +702,7 @@ function TaskEditor({
   onSave: (body: Record<string, unknown>) => Promise<void>;
   onReload: () => void;
   onCancel: () => void;
+  onDelete?: () => void;
   readOnly: boolean;
 }) {
   const [title, setTitle] = useState(task?.title || "");
@@ -619,6 +736,11 @@ function TaskEditor({
     task?.receipt && task.receiptDeviceID !== state.tasks?.deviceID,
   );
   const locked = readOnly || remote;
+  const entryCalendar =
+    task?.receipt?.calendarName ||
+    state.calendars.find((c) => c.id === calendar)?.title ||
+    task?.calendarName ||
+    "your calendar";
   return (
     <form
       className="task-editor"
@@ -730,17 +852,16 @@ function TaskEditor({
           </label>
         )}
       </div>
-      {!linked && !task?.receipt && (
+      {!linked && (
         <label>
           Calendar use
           <select value={intent} disabled={locked} onChange={(e) => setIntentChoice(e.target.value as "none" | "new")}>
-            <option value="none">Tasks only</option>
-            <option value="new">Publish deadline</option>
+            <option value="none">{task?.receipt ? `Tasks only (removes it from ${entryCalendar})` : "Tasks only"}</option>
+            <option value="new">Add deadline to calendar</option>
           </select>
         </label>
       )}
       {linked && <p className="fine-print">Linked to source · {task?.sourceLink?.calendarName || "calendar"}. Edits change this task only; the source event stays unchanged.{task?.sourceLink?.deviceID !== state.tasks?.deviceID ? " Source details belong to the source Mac." : " This link belongs to this Mac."}</p>}
-      {task?.receipt && <p className="fine-print">This task owns a published deadline. Changing to Tasks only requires a choice to retain or remove that entry; that transition is not available here yet.</p>}
       {day && publishes && (
         <label>
           Deadline calendar
@@ -831,15 +952,27 @@ function TaskEditor({
       <p className="fine-print">
         {linked
           ? "Task edits never change the linked source event."
-          : !publishes
-            ? "Tasks only. No calendar entry is created."
-            : day
-          ? "Adds one all-day, free entry to your calendar after you review it. An exact time stays in the title and notes."
-          : "No date: stays in Inbox and adds nothing to your calendar."}
+          : task?.receipt && !publishes
+            ? `Saving removes its deadline from ${entryCalendar}.`
+            : task?.receipt && !day
+              ? `No date: saving removes its deadline from ${entryCalendar}.`
+              : task?.receipt
+                ? `Saving updates its deadline in ${entryCalendar}.`
+                : !publishes
+                  ? "Tasks only. No calendar entry is created."
+                  : day
+                    ? `Saving adds one all-day, free entry to ${entryCalendar}. An exact time stays in the title and notes.`
+                    : "No date: stays in Inbox and adds nothing to your calendar."}
         {task?.receipt &&
+          publishes &&
           " Completing or archiving keeps its calendar deadline."}
       </p>
       <div className="task-editor-foot">
+        {onDelete && (
+          <button type="button" className="button secondary danger" onClick={onDelete}>
+            <Trash2 size={14} /> Delete
+          </button>
+        )}
         {error && !readOnly && (
           <button type="button" className="button secondary" onClick={onReload}>
             {task
@@ -854,7 +987,7 @@ function TaskEditor({
         {!readOnly && !remote && (
           <button className="button primary" disabled={saving}>
             {saving ? <Spinner /> : null}
-            {day && publishes ? "Save task & review deadline" : "Save task"}
+            {day && publishes && !task?.receipt ? "Save & add to calendar" : "Save task"}
           </button>
         )}
       </div>

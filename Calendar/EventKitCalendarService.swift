@@ -138,8 +138,63 @@ actor EventKitCalendarService: CalendarDestinationService {
         guard let event = store.event(withIdentifier: identifier), Self.belongsToCalendar(event, calendar: calendar) else {
             throw CalendarDestinationError.calendarUnavailable
         }
+        try apply(draft, to: event)
+        try store.save(event, span: .thisEvent, commit: true)
+        return event.eventIdentifier ?? event.calendarItemIdentifier
+    }
+
+    func update(_ draft: EventDraft, matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws -> String {
+        guard selected.isRecurring == true else { return try await update(draft, identifier: selected.eventIdentifier, in: destination) }
+        try await ensureFullAccess()
+        let event = try occurrenceEvent(matching: selected, in: destination)
+        try apply(draft, to: event)
+        try store.save(event, span: .thisEvent, commit: true)
+        return event.eventIdentifier ?? event.calendarItemIdentifier
+    }
+
+    func delete(matching selected: CalendarEventSnapshot, in destination: CalendarDestination) async throws {
+        guard selected.isRecurring == true else { return try await delete(identifier: selected.eventIdentifier, in: destination) }
+        try await ensureFullAccess()
+        let event = try occurrenceEvent(matching: selected, in: destination)
+        try store.remove(event, span: .thisEvent, commit: true)
+    }
+
+    func delete(identifier: String, in destination: CalendarDestination) async throws {
+        try await ensureFullAccess()
+        let calendar = try writableCalendar(destination)
+        guard let event = store.event(withIdentifier: identifier), Self.belongsToCalendar(event, calendar: calendar) else {
+            throw CalendarDestinationError.calendarUnavailable
+        }
+        try store.remove(event, span: .thisEvent, commit: true)
+    }
+
+    /// Finds the opened date. Saving uses this occurrence, so other dates in a series stay unchanged.
+    private func occurrenceEvent(matching selected: CalendarEventSnapshot, in destination: CalendarDestination) throws -> EKEvent {
+        let calendar = try writableCalendar(destination)
+        guard selected.start.timeIntervalSince1970.isFinite, selected.end.timeIntervalSince1970.isFinite,
+              selected.end > selected.start, selected.end.timeIntervalSince(selected.start) <= 366 * 86400 else {
+            throw CalendarDestinationError.invalidDraft("The selected occurrence has an invalid date range.")
+        }
+        let predicate = store.predicateForEvents(withStart: selected.start.addingTimeInterval(-1),
+                                                end: selected.end.addingTimeInterval(1), calendars: [calendar])
+        let events = store.events(matching: predicate).filter { Self.belongsToCalendar($0, calendar: calendar) }
+        let snapshots = events.map(snapshot)
+        let chosen = Self.exactOccurrence(selected, candidates: snapshots) ?? {
+            let same = snapshots.filter { $0.eventIdentifier == selected.eventIdentifier && $0.start == selected.start && $0.end == selected.end }
+            return same.count == 1 ? same[0] : nil
+        }()
+        guard let chosen else { throw CalendarDestinationError.calendarUnavailable }
+        let matches = events.filter {
+            let item = snapshot($0)
+            return item.eventIdentifier == chosen.eventIdentifier && item.start == chosen.start && item.end == chosen.end &&
+            item.recurrenceDate == chosen.recurrenceDate && item.originalOccurrenceStart == chosen.originalOccurrenceStart
+        }
+        guard matches.count == 1, let event = matches.first else { throw CalendarDestinationError.calendarUnavailable }
+        return event
+    }
+
+    private func apply(_ draft: EventDraft, to event: EKEvent) throws {
         let (start, end) = try validatedDates(draft)
-        // Preserve unrelated fields even if another client changes them after review.
         let fields = Set(draft.changedFieldNames ?? ["title", "date", "startTime", "endTime", "allDay", "timeZone", "location", "url", "notes"])
         if fields.contains("title") { event.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines) }
         if !fields.isDisjoint(with: ["date", "allDay", "timeZone"]) { event.startDate = start; event.endDate = end }
@@ -153,17 +208,6 @@ actor EventKitCalendarService: CalendarDestinationService {
         if fields.contains("location") { event.location = draft.location }
         if fields.contains("url") { event.url = draft.url }
         if fields.contains("notes") { event.notes = draft.notes }
-        try store.save(event, span: .thisEvent, commit: true)
-        return event.eventIdentifier ?? event.calendarItemIdentifier
-    }
-
-    func delete(identifier: String, in destination: CalendarDestination) async throws {
-        try await ensureFullAccess()
-        let calendar = try writableCalendar(destination)
-        guard let event = store.event(withIdentifier: identifier), Self.belongsToCalendar(event, calendar: calendar) else {
-            throw CalendarDestinationError.calendarUnavailable
-        }
-        try store.remove(event, span: .thisEvent, commit: true)
     }
 
     private func readableCalendar(_ destination: CalendarDestination) throws -> EKCalendar {

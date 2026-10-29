@@ -1,5 +1,6 @@
 import XCTest
 import Auth
+import UserNotifications
 @testable import Calshot
 
 @MainActor
@@ -502,7 +503,7 @@ final class TaskDomainPhaseOneTests: XCTestCase {
         XCTAssertEqual(linked.resolvedCalendarIntent, .existing); XCTAssertNil(linked.receipt)
         XCTAssertNil(linked.dueTime); XCTAssertFalse(linked.needsPublication)
         let updated = try m.mutateTask(taskID: linked.id, expectedVersion: linked.version, patch: ["title": .string("Task-only rename"), "completed": .bool(true), "archived": .bool(true)], context: context, operationID: UUID())
-        try await m.reviewTaskDeadline(updated.taskID)
+        await m.publishTaskDeadline(updated.taskID)
         XCTAssertTrue(m.calendarActions.proposals.isEmpty)
         let repeated = try await m.linkExistingEvent(snapshot: service.snapshot, destinationID: "fictional-readonly", expectedFingerprint: fingerprint, context: context, operationID: UUID())
         XCTAssertEqual(repeated.outcome, "alreadyLinkedArchived"); XCTAssertEqual(repeated.taskID, linked.id)
@@ -574,6 +575,43 @@ extension TaskDomainPhaseOneTests {
             }
         }
     }
+    func testTaskDeletionSyncsWithoutResurrectingOrLosingAnotherMacsEdit() async throws {
+        func signedIn(_ m: CalshotModel, _ user: UUID) {
+            m.account.onAuthenticated = nil
+            m.account.accept(User(id: user, appMetadata: [:], userMetadata: [:], aud: "authenticated", email: "fictional@example.invalid", createdAt: .now, updatedAt: .now), provider: "email")
+            m.activeLocalAccountID = user
+        }
+        let user = UUID()
+        let kept = CalshotTask(title: "Fictional kept"), removed = CalshotTask(title: "Fictional removed"), editedElsewhere = CalshotTask(title: "Fictional edited elsewhere")
+        let baseline = Dictionary(uniqueKeysWithValues: [kept, removed, editedElsewhere].map { ($0.id.uuidString, $0.version) })
+        // This Mac deletes two synced tasks; another Mac edited one of them after the last sync.
+        let m = model(); signedIn(m, user)
+        try m.persistTasks(.init(items: [kept], baseline: baseline))
+        var remoteEdit = editedElsewhere; remoteEdit.title = "Fictional edited on another Mac"; remoteEdit.version = UUID()
+        let remote = try JSONDecoder().decode(JSONValue.self, from: CalshotTaskStore.encoder.encode([kept, removed, remoteEdit]))
+        var written: [JSONValue]?
+        m.taskRPC = { name, body, _ in
+            if name == "read_task_state_v2" { return .object(["protocol_version": .number(2), "revision": .number(4), "items": remote]) }
+            written = body.objectValue?["items"]?.arrayValue; return .number(5)
+        }
+        await m.syncTasks()
+        XCTAssertNil(m.taskError)
+        XCTAssertEqual(Set(m.taskDocument.items.map(\.title)), ["Fictional kept", "Fictional edited on another Mac"])
+        XCTAssertEqual(written?.count, 2, "The deleted task is not uploaded again")
+        // The other Mac drops the task deleted elsewhere instead of uploading it again.
+        let other = model(); signedIn(other, user)
+        try other.persistTasks(.init(items: [kept, removed], baseline: [kept.id.uuidString: kept.version, removed.id.uuidString: removed.version]))
+        let after = try JSONDecoder().decode(JSONValue.self, from: CalshotTaskStore.encoder.encode([kept]))
+        other.taskRPC = { name, _, _ in name == "read_task_state_v2" ? .object(["protocol_version": .number(2), "revision": .number(5), "items": after]) : .number(6) }
+        await other.syncTasks()
+        XCTAssertEqual(other.taskDocument.items.map(\.title), ["Fictional kept"])
+        // Without saved server state, nothing local is treated as deleted.
+        let fresh = model(); signedIn(fresh, user)
+        try fresh.persistTasks(.init(items: [kept], baseline: [kept.id.uuidString: kept.version]))
+        fresh.taskRPC = { name, _, _ in name == "read_task_state_v2" ? .object(["protocol_version": .number(2), "revision": .number(0), "items": .array([])]) : .number(1) }
+        await fresh.syncTasks()
+        XCTAssertEqual(fresh.taskDocument.items.map(\.title), ["Fictional kept"])
+    }
     func testTaskSyncV2MissingMigrationRetainsPersistedLocalEdits() async throws {
         let m = model(); m.account.onAuthenticated = nil
         let user = UUID()
@@ -624,9 +662,10 @@ extension TaskDomainPhaseOneTests {
         XCTAssertEqual(inbox.calendarIntent, CalshotTaskCalendarIntent.none); XCTAssertEqual(inbox.intentProvenance, .defaulted)
         try await m.saveTask(["token": m.tasksToken, "taskID": inbox.id.uuidString, "title": inbox.title, "dueDate": "2026-11-13", "calendarID": "demo"])
         XCTAssertEqual(m.taskDocument.items[2].calendarIntent, .new); XCTAssertEqual(m.taskDocument.items[2].intentProvenance, .defaulted)
-        XCTAssertEqual(m.calendarActions.proposals.count, 1)
+        XCTAssertTrue(m.calendarActions.proposals.isEmpty)
+        XCTAssertNotNil(m.taskDocument.items[2].receipt)
         let events = try await m.calendarService.searchEvents(query: nil, start: .distantPast, end: .distantFuture, in: .resolve(identifier: "demo"))
-        XCTAssertTrue(events.isEmpty)
+        XCTAssertEqual(events.count, 1, "Only the task that publishes a deadline adds one entry")
     }
     func testSaveTaskWrapperRejectsInvalidIntentAndOwnedTransitions() async throws {
         let m = model()
@@ -636,9 +675,9 @@ extension TaskDomainPhaseOneTests {
         XCTAssertTrue(m.taskDocument.items.isEmpty)
         var task = CalshotTask(title: "Fictional owned", dueDate: "2026-11-10")
         task.receipt = .init(destinationID: "demo", calendarName: "Fictional", eventIdentifier: "fixture-owned", savedAt: .now)
-        task.receiptDeviceID = CalshotModel.syncDeviceID
+        task.receiptDeviceID = UUID().uuidString
         try m.persistTasks(.init(items: [task]))
-        do { try await m.saveTask(["token": m.tasksToken, "taskID": task.id.uuidString, "title": task.title, "calendarIntent": "none"]); XCTFail("Owned publication detached") } catch {}
+        do { try await m.saveTask(["token": m.tasksToken, "taskID": task.id.uuidString, "title": task.title, "calendarIntent": "none"]); XCTFail("Another Mac's publication detached") } catch {}
         XCTAssertNotNil(m.taskDocument.items[0].receipt)
         let service = TaskLinkFixtureService(), linkedModel = model(service); await linkedModel.loadCalendars()
         _ = try await linkedModel.linkExistingEvent(snapshot: service.snapshot, destinationID: "fictional-readonly", expectedFingerprint: CalshotModel.taskSourceFingerprint(service.snapshot), context: linkedModel.taskContext(origin: .workspace), operationID: UUID())
@@ -820,5 +859,135 @@ extension TaskDomainPhaseOneTests {
         let m2 = model(); try writeStoreFile(m2, duplicate); XCTAssertThrowsError(try m2.taskStore.load())
         var malformed = m.taskDocument; malformed.operations![0] = CalshotTaskOperationReceipt(operationID: UUID(), requestDigest: "short", taskID: first.taskID, taskVersion: first.taskVersion, outcome: "saved", savedAt: .now)
         XCTAssertThrowsError(try m.taskStore.save(malformed))
+    }
+}
+
+
+/// Records what Calshot asks macOS to schedule, so reminders are tested without real notifications.
+@MainActor
+private final class RecordingReminderCenter: TaskReminderCenter {
+    var pending: [UNNotificationRequest] = []
+    var allowed = true, failAdds = false, authorizationRequests = 0
+    func pendingReminderIdentifiers() async -> [String] { pending.map(\.identifier) }
+    func removeReminders(_ identifiers: [String]) { pending.removeAll { identifiers.contains($0.identifier) } }
+    func remindersAllowed() async -> Bool { allowed }
+    func requestReminderAuthorization() async -> Bool { authorizationRequests += 1; return allowed }
+    func addReminder(_ request: UNNotificationRequest) async throws {
+        if failAdds { throw CalendarToolArgumentError("Fixture scheduling failure") }
+        pending.append(request)
+    }
+    var taskTitles: [String] { pending.filter { $0.identifier.hasPrefix(CalshotTask.reminderPrefix) }.map(\.content.title).sorted() }
+}
+
+@MainActor
+final class TaskReminderTests: XCTestCase {
+    private func signedInModel(_ center: RecordingReminderCenter) -> CalshotModel {
+        let m = CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("reminder-fixture-" + UUID().uuidString)), loadsAIConnection: false)
+        m.taskReminderCenterOverride = center
+        m.account.onAuthenticated = nil
+        let user = UUID(), onboardedKey = "calshot.onboarded.\(user.uuidString)"
+        UserDefaults.standard.set(true, forKey: onboardedKey)
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: onboardedKey) }
+        m.account.accept(User(id: user, appMetadata: [:], userMetadata: [:], aud: "authenticated", email: "fictional@example.invalid", createdAt: .now, updatedAt: .now), provider: "email")
+        XCTAssertTrue(m.account.canUseWorkspace)
+        m.activeLocalAccountID = m.account.userID
+        m.loadTasks()
+        return m
+    }
+    private func settle(_ m: CalshotModel) async { await m.taskReminderWork?.value }
+    private func utc(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
+
+    func testReminderTimeCoversLeadTimesDateOnlyTasksAndDaylightSaving() {
+        let now = utc("2026-10-01T00:00:00Z")
+        var task = CalshotTask(title: "Fictional essay", dueDate: "2026-11-10", dueTime: "17:00", timeZone: "America/Toronto", reminderMinutes: 0)
+        XCTAssertEqual(task.reminderFireDate(now: now), utc("2026-11-10T22:00:00Z"), "At deadline")
+        task.reminderMinutes = 60
+        XCTAssertEqual(task.reminderFireDate(now: now), utc("2026-11-10T21:00:00Z"), "1 hour before")
+        task.reminderMinutes = 1440
+        XCTAssertEqual(task.reminderFireDate(now: now), utc("2026-11-09T22:00:00Z"), "1 day before")
+        // Date-only: the chosen reminder time, never an invented deadline time.
+        var dateOnly = CalshotTask(title: "Fictional reading", dueDate: "2026-11-10", timeZone: "America/Toronto", reminderMinutes: 0, reminderTime: "09:00")
+        XCTAssertEqual(dateOnly.reminderFireDate(now: now), utc("2026-11-10T14:00:00Z"))
+        dateOnly.reminderTime = nil
+        XCTAssertNil(dateOnly.reminderFireDate(now: now))
+        // Daylight saving ends Nov 1: "1 day before" a 9:00 AM deadline still fires at 9:00 AM.
+        let acrossDST = CalshotTask(title: "Fictional lab", dueDate: "2026-11-02", dueTime: "09:00", timeZone: "America/Toronto", reminderMinutes: 1440)
+        XCTAssertEqual(acrossDST.reminderFireDate(now: now), utc("2026-11-01T14:00:00Z"))
+        let beforeChange = CalshotTask(title: "Fictional quiz", dueDate: "2026-11-01", dueTime: "09:00", timeZone: "America/Toronto", reminderMinutes: 1440)
+        XCTAssertEqual(beforeChange.reminderFireDate(now: now), utc("2026-10-31T13:00:00Z"))
+        // Past, missing or undated reminders schedule nothing.
+        XCTAssertNil(task.reminderFireDate(now: utc("2026-11-10T00:00:00Z")))
+        XCTAssertNil(CalshotTask(title: "No reminder", dueDate: "2026-11-10", dueTime: "17:00").reminderFireDate(now: now))
+        XCTAssertNil(CalshotTask(title: "Inbox").reminderFireDate(now: now))
+    }
+    func testReminderNotificationHasTitleReadableDueTextSoundAndExactTrigger() throws {
+        let now = utc("2026-10-01T00:00:00Z"), owner = UUID(), generation = UUID()
+        let task = CalshotTask(title: "Fictional essay", dueDate: "2026-11-10", dueTime: "17:00", timeZone: "America/Toronto", reminderMinutes: 60)
+        let request = try XCTUnwrap(task.reminderRequest(owner: owner, generation: generation, now: now, locale: Locale(identifier: "en_US")))
+        XCTAssertEqual(request.content.title, "Fictional essay")
+        XCTAssertTrue(request.content.body.hasPrefix("Due Tue, Nov 10"), request.content.body)
+        XCTAssertTrue(request.content.body.contains("5:00"), request.content.body)
+        XCTAssertFalse(request.content.body.contains("2026-11-10"), "No raw ISO date in the banner")
+        XCTAssertEqual(request.content.sound, .default)
+        XCTAssertEqual(request.content.userInfo["taskID"] as? String, task.id.uuidString)
+        XCTAssertEqual(request.identifier, "calshot.task.\(owner.uuidString).\(generation.uuidString).\(task.id.uuidString)")
+        let trigger = try XCTUnwrap(request.trigger as? UNCalendarNotificationTrigger)
+        XCTAssertFalse(trigger.repeats)
+        XCTAssertEqual(trigger.dateComponents.timeZone?.identifier, "America/Toronto")
+        XCTAssertEqual([trigger.dateComponents.year, trigger.dateComponents.month, trigger.dateComponents.day, trigger.dateComponents.hour, trigger.dateComponents.minute], [2026, 11, 10, 16, 0])
+        let dateOnly = CalshotTask(title: "Fictional reading", dueDate: "2026-11-10", timeZone: TimeZone.current.identifier, reminderMinutes: 0, reminderTime: "09:00")
+        let body = try XCTUnwrap(dateOnly.reminderRequest(owner: owner, generation: generation, now: now, locale: Locale(identifier: "en_US"))).content.body
+        XCTAssertEqual(body, "Due Tue, Nov 10", "A date-only task shows no invented time")
+    }
+    func testOnlyThisMacsOpenFutureRemindersAreScheduledAndChangesReplaceThem() async throws {
+        let center = RecordingReminderCenter()
+        center.pending = [UNNotificationRequest(identifier: "calshot.task.stale", content: UNNotificationContent(), trigger: nil),
+                          UNNotificationRequest(identifier: "other.app.request", content: UNNotificationContent(), trigger: nil)]
+        let m = signedInModel(center)
+        func task(_ title: String, _ change: (inout CalshotTask) -> Void = { _ in }) -> CalshotTask {
+            var t = CalshotTask(title: title, dueDate: "2030-11-10", dueTime: "17:00", timeZone: "America/Toronto", reminderMinutes: 60, reminderDeviceID: CalshotModel.syncDeviceID)
+            t.calendarIntent = CalshotTaskCalendarIntent.none; t.intentProvenance = .explicit; change(&t); return t
+        }
+        let open = task("Fictional open")
+        try m.persistTasks(.init(items: [open,
+            task("Fictional completed") { $0.completed = true },
+            task("Fictional archived") { $0.deleted = true },
+            task("Fictional other Mac") { $0.reminderDeviceID = "another-mac" },
+            task("Fictional past") { $0.dueDate = "2020-01-01" },
+            task("Fictional no reminder") { $0.reminderMinutes = nil; $0.reminderDeviceID = nil }]))
+        await settle(m)
+        XCTAssertEqual(center.taskTitles, ["Fictional open"])
+        XCTAssertFalse(center.pending.contains { $0.identifier == "calshot.task.stale" }, "Old reminders are replaced")
+        XCTAssertTrue(center.pending.contains { $0.identifier == "other.app.request" }, "Other notifications are left alone")
+        XCTAssertNil(m.taskReminderError)
+        try m.changeTask(["action": "completeTask", "token": m.tasksToken, "taskID": open.id.uuidString, "completed": true]); await settle(m)
+        XCTAssertEqual(center.taskTitles, [], "Completing cancels the reminder")
+        try m.changeTask(["action": "completeTask", "token": m.tasksToken, "taskID": open.id.uuidString, "completed": false]); await settle(m)
+        XCTAssertEqual(center.taskTitles, ["Fictional open"], "Reopening schedules it again")
+        try m.changeTask(["action": "archiveTask", "token": m.tasksToken, "taskID": open.id.uuidString, "archived": true]); await settle(m)
+        XCTAssertEqual(center.taskTitles, [], "Archiving cancels the reminder")
+        try m.changeTask(["action": "archiveTask", "token": m.tasksToken, "taskID": open.id.uuidString, "archived": false]); await settle(m)
+        try await m.deleteTask(["token": m.tasksToken, "taskID": open.id.uuidString, "removeDeadline": false]); await settle(m)
+        XCTAssertEqual(center.taskTitles, [], "Deleting cancels the reminder")
+    }
+    func testSavingAReminderAsksForPermissionAndFailuresStayVisibleOnTasks() async throws {
+        let center = RecordingReminderCenter()
+        let m = signedInModel(center); await m.loadCalendars()
+        try await m.saveTask(["token": m.tasksToken, "title": "Fictional report", "dueDate": "2030-11-10", "dueTime": "17:00", "timeZone": "America/Toronto", "reminderMinutes": NSNumber(value: 60), "calendarIntent": "none"])
+        await settle(m)
+        XCTAssertEqual(center.authorizationRequests, 1)
+        XCTAssertEqual(center.taskTitles, ["Fictional report"])
+        center.allowed = false
+        m.refreshTaskReminders(); await settle(m)
+        XCTAssertEqual(m.taskReminderError, "Mac reminders are not enabled. Allow notifications for Calshot in System Settings.")
+        XCTAssertEqual(center.taskTitles, [], "Nothing is scheduled without permission")
+        XCTAssertEqual(WebWorkspaceState.make(m, imageURL: nil, notice: nil, accounts: [], googleReady: true, comparisons: [:]).objectValue?["tasks"]?.objectValue?["reminderError"], .string("Mac reminders are not enabled. Allow notifications for Calshot in System Settings."))
+        center.allowed = true; center.failAdds = true
+        m.refreshTaskReminders(); await settle(m)
+        XCTAssertEqual(m.taskReminderError, "A Mac reminder could not be scheduled. Reopen Tasks and try again.")
+        center.failAdds = false
+        m.refreshTaskReminders(); await settle(m)
+        XCTAssertNil(m.taskReminderError)
+        XCTAssertEqual(center.taskTitles, ["Fictional report"])
     }
 }

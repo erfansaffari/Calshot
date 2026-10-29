@@ -201,7 +201,7 @@ async function renderWeek(events: CalendarEvent[]) {
     <CalendarPresentationProvider>
       <CalendarPage
         onCommand={command}
-        state={{ ...preview, waitingApproval: false, calendarView }}
+        state={{ ...preview, waitingApproval: false, proposals: [], calendarView }}
       />
     </CalendarPresentationProvider>
   );
@@ -218,7 +218,7 @@ async function renderWeek(events: CalendarEvent[]) {
         loading: false,
         start: String(request.start),
         end: String(request.end),
-        events: events.map((e) => ({ ...e, calendarIdentifier: preview.calendars[0].id })),
+        events: events.map((e) => ({ ...e, isRecurring: e.isRecurring ?? false, selectionHandle: e.selectionHandle ?? e.eventIdentifier, selectionGeneration: e.selectionGeneration ?? "native-view", calendarIdentifier: preview.calendars[0].id })),
         errors: [],
       }),
     );
@@ -308,26 +308,25 @@ const timedLegacy = (d: Date, overrides: Partial<CalendarEvent> = {}): CalendarE
   ...overrides,
 });
 
-it("offers a review-driven Make all-day request for timed events on writable calendars", async () => {
+it("saves a direct edit that makes a timed event all-day on writable calendars", async () => {
   const d = local(3);
   const view = await renderWeek([timedLegacy(d)]);
   await userEvent.click(view.getByRole("button", { name: /Lab report/ }));
   const dialog = screen.getByRole("dialog", { name: "Lab report" });
-  expect(within(dialog).getByRole("button", { name: "Ask Calshot to change this" })).toBeDefined();
-  await userEvent.click(within(dialog).getByRole("button", { name: "Make all-day" }));
-  const input = screen.getByLabelText("Ask Calshot about your calendar") as HTMLInputElement;
-  expect(input.value).toMatch(/Make “Lab report” in “School” an all-day event on \d{4}-\d{2}-\d{2}/);
-  expect(input.value).toContain("currently a timed event");
-  expect(input.value).toContain("for review before saving");
-  // Prefilled only: nothing is sent or written until the user submits it.
+  await userEvent.click(within(dialog).getByRole("button", { name: "Edit event" }));
+  await userEvent.click(screen.getByRole("checkbox", { name: "All day" }));
+  await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  expect(command).toHaveBeenCalledWith(expect.objectContaining({
+    action: "changeCalendarEvent",
+    operation: "update",
+    selectionHandle: "legacy",
+    selectionGeneration: "native-view",
+    fields: expect.objectContaining({ title: "Lab report", allDay: true }),
+  }));
   expect(vi.mocked(command).mock.calls.some(([c]) => c.action === "startCalendarTask")).toBe(false);
-  await userEvent.click(screen.getByRole("button", { name: "Send calendar question" }));
-  expect(command).toHaveBeenCalledWith(
-    expect.objectContaining({ action: "startCalendarTask", text: expect.stringContaining("an all-day event on") }),
-  );
 });
 
-it("hides Make all-day for provider all-day, read-only and unavailable calendars", async () => {
+it("hides direct edit controls for read-only and unavailable calendars", async () => {
   const d = local(3);
   const next = new Date(d);
   next.setDate(d.getDate() + 1);
@@ -336,22 +335,22 @@ it("hides Make all-day for provider all-day, read-only and unavailable calendars
     await userEvent.click(view.getAllByRole("button", { name: new RegExp(event.title) })[0]);
     const dialog = screen.getByRole("dialog", { name: event.title });
     const result = {
-      change: within(dialog).queryByRole("button", { name: "Ask Calshot to change this" }),
-      convert: within(dialog).queryByRole("button", { name: "Make all-day" }),
+      edit: within(dialog).queryByRole("button", { name: "Edit event" }),
+      remove: within(dialog).queryByRole("button", { name: "Delete event" }),
     };
     view.unmount();
     cleanup();
     return result;
   };
   const allDay = await open(timedLegacy(d, { isAllDay: true, end: iso(next) }));
-  expect(allDay.change).not.toBeNull();
-  expect(allDay.convert).toBeNull();
+  expect(allDay.edit).not.toBeNull();
+  expect(allDay.remove).not.toBeNull();
   const original = preview.calendars[0].isReadOnly;
   preview.calendars[0].isReadOnly = true;
   try {
     const readOnly = await open(timedLegacy(d));
-    expect(readOnly.change).toBeNull();
-    expect(readOnly.convert).toBeNull();
+    expect(readOnly.edit).toBeNull();
+    expect(readOnly.remove).toBeNull();
   } finally {
     preview.calendars[0].isReadOnly = original;
   }

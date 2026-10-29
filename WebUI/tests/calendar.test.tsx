@@ -5,6 +5,7 @@ import {
   screen,
   waitFor,
   fireEvent,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CalendarPage, occursOn } from "../src/views/CalendarPage";
@@ -12,7 +13,7 @@ import { SettingsPage } from "../src/views/Pages";
 import { preview } from "../src/preview";
 import { CalendarPresentationProvider } from "../src/calendarPresentation";
 import { Sidebar } from "../src/components/Sidebar";
-import type { CalendarEvent } from "../src/types";
+import type { CalendarEvent, CalshotTask } from "../src/types";
 vi.mock("../src/bridge", () => ({
   command: vi.fn().mockResolvedValue(undefined),
 }));
@@ -173,7 +174,7 @@ it("keeps calendar questions and their failure beside the input", async () => {
     <CalendarPresentationProvider>
       <CalendarPage
         onCommand={command}
-        state={{ ...preview, waitingApproval: false }}
+        state={{ ...preview, waitingApproval: false, proposals: [] }}
       />
     </CalendarPresentationProvider>,
   );
@@ -210,7 +211,7 @@ it("new events keep missing time unresolved and ask for approval instead of writ
     <CalendarPresentationProvider>
       <CalendarPage
         onCommand={command}
-        state={{ ...preview, waitingApproval: false }}
+        state={{ ...preview, waitingApproval: false, proposals: [] }}
       />
     </CalendarPresentationProvider>,
   );
@@ -220,7 +221,7 @@ it("new events keep missing time unresolved and ask for approval instead of writ
     "Example appointment",
   );
   await userEvent.click(
-    screen.getByRole("button", { name: "Review with Calshot" }),
+    screen.getByRole("button", { name: "Add event" }),
   );
   expect(await screen.findByRole("alert")).toHaveProperty(
     "textContent",
@@ -228,12 +229,17 @@ it("new events keep missing time unresolved and ask for approval instead of writ
   );
   await userEvent.click(screen.getByRole("checkbox", { name: "All day" }));
   await userEvent.click(
-    screen.getByRole("button", { name: "Review with Calshot" }),
+    screen.getByRole("button", { name: "Add event" }),
   );
   expect(command).toHaveBeenCalledWith(
     expect.objectContaining({
-      action: "startCalendarTask",
-      text: expect.stringContaining("all day (confirmed)"),
+      action: "changeCalendarEvent",
+      operation: "create",
+      fields: expect.objectContaining({
+        title: "Example appointment",
+        allDay: true,
+        calendarID: preview.selectedCalendarID,
+      }),
     }),
   );
   expect(
@@ -245,7 +251,7 @@ it("new events keep missing time unresolved and ask for approval instead of writ
   ).toBe(false);
 });
 
-it("does not start a second command during an existing approval", async () => {
+it("keeps Ask paused during an existing approval but still allows adding an event directly", async () => {
   render(
     <CalendarPresentationProvider>
       <CalendarPage onCommand={command} state={preview} />
@@ -254,7 +260,7 @@ it("does not start a second command during an existing approval", async () => {
   expect(
     (screen.getByRole("button", { name: "New event" }) as HTMLButtonElement)
       .disabled,
-  ).toBe(true);
+  ).toBe(false);
   await userEvent.type(
     screen.getByRole("textbox", { name: "Ask Calshot about your calendar" }),
     "Add another event",
@@ -317,7 +323,7 @@ it("matches the reference's five-row October while allowing six-row months", asy
 });
 
 it("opens event details from Month and restores keyboard focus when dismissed", async () => {
-  const base = { ...preview, waitingApproval: false };
+  const base = { ...preview, waitingApproval: false, proposals: [] };
   const content = (state: typeof base) => (
     <CalendarPresentationProvider>
       <CalendarPage onCommand={command} state={state} />
@@ -413,7 +419,7 @@ it("starts calendar questions as a fresh task instead of continuing the previous
     <CalendarPresentationProvider>
       <CalendarPage
         onCommand={command}
-        state={{ ...preview, waitingApproval: false }}
+        state={{ ...preview, waitingApproval: false, proposals: [] }}
       />
     </CalendarPresentationProvider>,
   );
@@ -476,7 +482,7 @@ it("swipes by a day or month according to the selected view and leaves dialogs a
       <CalendarPresentationProvider>
         <CalendarPage
           onCommand={command}
-          state={{ ...preview, waitingApproval: false }}
+          state={{ ...preview, waitingApproval: false, proposals: [] }}
         />
       </CalendarPresentationProvider>,
     );
@@ -522,7 +528,7 @@ it("shares a read-only calendar without offering unsupported web writes", async 
   render(
     <CalendarPresentationProvider>
       <CalendarPage
-        state={{ ...preview, waitingApproval: false }}
+        state={{ ...preview, waitingApproval: false, proposals: [] }}
         onCommand={command}
         readOnly
       />
@@ -558,7 +564,7 @@ it("resizes the native sidebar with bounded keyboard controls and reset", async 
 });
 
 async function selectedPersonalEvent(readOnly = false) {
-  const base = { ...preview, waitingApproval: false, running: false, saving: false, question: undefined, calendars: [{ ...preview.calendars[0], isReadOnly: true }] };
+  const base = { ...preview, waitingApproval: false, running: false, saving: false, question: undefined, proposals: [], calendars: [{ ...preview.calendars[0], isReadOnly: true }] };
   const content = (state: typeof base) => <CalendarPresentationProvider><CalendarPage state={state} onCommand={command} readOnly={readOnly} /></CalendarPresentationProvider>;
   const rendered = render(content(base));
   await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: "loadCalendarEvents" })));
@@ -570,6 +576,107 @@ async function selectedPersonalEvent(readOnly = false) {
   fireEvent.click(screen.getByRole("button", { name: /Fictional source event/ }));
   return { rendered, content, loaded };
 }
+async function selectedWritableEvent(recurring = false) {
+  const base = { ...preview, waitingApproval: false, running: false, saving: false, question: undefined, proposals: [], calendars: [{ ...preview.calendars[0], isReadOnly: false, unavailable: false }] };
+  const content = (state: typeof base) => <CalendarPresentationProvider><CalendarPage state={state} onCommand={command} /></CalendarPresentationProvider>;
+  const rendered = render(content(base));
+  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: "loadCalendarEvents" })));
+  const request = vi.mocked(command).mock.calls.filter(([c]) => c.action === "loadCalendarEvents").at(-1)![0];
+  const start = new Date(); start.setHours(10, 0, 0, 0);
+  const selected = { ...event, title: "Fictional source event", calendarIdentifier: base.calendars[0].id, start: start.toISOString(), end: new Date(start.getTime() + 3600000).toISOString(), isAllDay: false, isRecurring: recurring, selectionHandle: "native-handle", selectionGeneration: "native-view" };
+  const loaded = { ...base, calendarView: { loaded: true, loading: false, start: String(request.start), end: String(request.end), events: [selected], errors: [] } };
+  rendered.rerender(content(loaded));
+  fireEvent.click(screen.getByRole("button", { name: /Fictional source event/ }));
+  return { rendered, content, loaded };
+}
+it("saves direct edits and deletes for writable selected events and reloads the range", async () => {
+  await selectedWritableEvent();
+  fireEvent.click(screen.getByRole("button", { name: "Edit event" }));
+  expect(screen.getByText(/Saves to School/)).toBeDefined();
+  await userEvent.clear(screen.getByRole("textbox", { name: "Title" }));
+  await userEvent.type(screen.getByRole("textbox", { name: "Title" }), "Renamed fictional event");
+  const loads = vi.mocked(command).mock.calls.filter(([c]) => c.action === "loadCalendarEvents").length;
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({
+    action: "changeCalendarEvent",
+    operation: "update",
+    selectionHandle: "native-handle",
+    selectionGeneration: "native-view",
+    fields: expect.objectContaining({ title: "Renamed fictional event" }),
+  })));
+  await waitFor(() => expect(vi.mocked(command).mock.calls.filter(([c]) => c.action === "loadCalendarEvents").length).toBeGreaterThan(loads));
+  expect(screen.queryByRole("dialog", { name: "Edit event" })).toBeNull();
+  expect(vi.mocked(command).mock.calls.some(([c]) => ["approve", "navigate", "startCalendarTask"].includes(c.action))).toBe(false);
+  cleanup();
+  vi.mocked(command).mockClear();
+  await selectedWritableEvent();
+  fireEvent.click(screen.getByRole("button", { name: "Delete event" }));
+  const dialog = screen.getByRole("dialog", { name: "Delete event?" });
+  expect(within(dialog).getByText(/Removes this event from/)).toBeDefined();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete event" }));
+  await waitFor(() => expect(command).toHaveBeenCalledWith({
+    action: "changeCalendarEvent",
+    operation: "delete",
+    selectionHandle: "native-handle",
+    selectionGeneration: "native-view",
+  }));
+});
+it("edits one date of a recurring event and keeps Ask available", async () => {
+  await selectedWritableEvent(true);
+  expect(screen.getByText(/Only this date changes|change only this date/i)).toBeDefined();
+  expect((screen.getByRole("button", { name: "Edit event" }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Edit event" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({
+    action: "changeCalendarEvent",
+    operation: "update",
+    selectionHandle: "native-handle",
+  })));
+});
+it("keeps edits available while Assistant waits, and only a save in progress pauses them", async () => {
+  const { rendered, content, loaded } = await selectedWritableEvent();
+  rendered.rerender(content({ ...loaded, waitingApproval: true, running: true, proposals: preview.proposals }));
+  expect((screen.getByRole("button", { name: "Edit event" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "Delete event" }) as HTMLButtonElement).disabled).toBe(false);
+  rendered.rerender(content({ ...loaded, saving: true }));
+  expect((screen.getByRole("button", { name: "Edit event" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(/Wait for the current save to finish/)).toBeDefined();
+});
+it("shows the saved change from the native receipt and offers Add anyway only for a duplicate", async () => {
+  const { rendered, content, loaded } = await selectedWritableEvent();
+  rendered.rerender(content({ ...loaded, calendarChange: { operation: "update", title: "Fictional source event", calendarName: "Fictional calendar", thisDateOnly: true } }));
+  expect(screen.getByText("Saved changes to “Fictional source event” in Fictional calendar. Only this date changed.")).toBeDefined();
+  cleanup();
+  vi.mocked(command).mockImplementation(async (c) => {
+    if (c.action === "changeCalendarEvent" && !c.allowDuplicate) throw new Error("A matching event is already in Fictional calendar.");
+  });
+  render(<CalendarPresentationProvider><CalendarPage state={{ ...preview, waitingApproval: false, proposals: [] }} onCommand={command} /></CalendarPresentationProvider>);
+  fireEvent.click(screen.getByRole("button", { name: "New event" }));
+  await userEvent.type(screen.getByRole("textbox", { name: "Title" }), "Fictional duplicate");
+  await userEvent.click(screen.getByRole("checkbox", { name: "All day" }));
+  await userEvent.click(screen.getByRole("button", { name: "Add event" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Add anyway" }));
+  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: "changeCalendarEvent", operation: "create", allowDuplicate: true })));
+  vi.mocked(command).mockReset(); vi.mocked(command).mockResolvedValue(undefined);
+});
+it("opens a task's own deadline entry in Tasks instead of editing the calendar copy", async () => {
+  const taskID = "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0";
+  const base = { ...preview, waitingApproval: false, running: false, saving: false, proposals: [], calendars: [{ ...preview.calendars[0], isReadOnly: false, unavailable: false }], tasks: { token: "fixture-token", loaded: true, busy: false, deviceID: "fixture-mac", items: [{ id: taskID, version: "fixture-version", title: "Fictional essay", dueDate: "2026-11-10", dueTime: "17:00", timeZone: "UTC", notes: "", completed: false, deleted: false, rank: 0 } as CalshotTask] } };
+  const content = (state: typeof base) => <CalendarPresentationProvider><CalendarPage state={state} onCommand={command} /></CalendarPresentationProvider>;
+  const rendered = render(content(base));
+  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: "loadCalendarEvents" })));
+  const request = vi.mocked(command).mock.calls.filter(([c]) => c.action === "loadCalendarEvents").at(-1)![0];
+  const start = new Date(); start.setHours(10, 0, 0, 0);
+  const deadline = { ...event, title: "Fictional essay · due 17:00", calendarIdentifier: base.calendars[0].id, start: start.toISOString(), end: new Date(start.getTime() + 3600000).toISOString(), isAllDay: false, notes: "\nCalshot task: " + taskID + "\nDeadline: 2026-11-10 at 17:00", selectionHandle: "native-handle", selectionGeneration: "native-view" };
+  rendered.rerender(content({ ...base, calendarView: { loaded: true, loading: false, start: String(request.start), end: String(request.end), events: [deadline], errors: [] } }));
+  fireEvent.click(screen.getByRole("button", { name: /Fictional essay · due/ }));
+  expect(screen.queryByRole("button", { name: "Edit event" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Delete event" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Edit task" }));
+  await waitFor(() => expect(command).toHaveBeenCalledWith({ action: "navigate", page: "tasks" }));
+  expect(sessionStorage.getItem("calshot.openTask")).toBe(taskID.toLowerCase());
+  sessionStorage.clear();
+});
 it("links a personal read-only source using only native authority and waits for the receipt", async () => {
   const { rendered, content, loaded } = await selectedPersonalEvent();
   fireEvent.click(screen.getByRole("button", { name: "Add to Tasks" }));

@@ -1537,10 +1537,15 @@ details p {
 .calendar-event-detail .event-notes { display: block; white-space: pre-wrap; max-height: 160px; overflow-y: auto; font-size: 12px; }
 .calendar-new-form { display: flex; flex-direction: column; gap: 14px; }
 .calendar-new-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-weight: 500; }
-.calendar-new-form input, .calendar-new-form select { color: var(--text); min-width: 0; border: 1px solid var(--input-border); border-radius: 8px; padding: 8px 10px; background: var(--surface); width: 100%; }
+.calendar-new-form input, .calendar-new-form select, .calendar-new-form textarea { color: var(--text); min-width: 0; border: 1px solid var(--input-border); border-radius: 8px; padding: 8px 10px; background: var(--surface); width: 100%; }
+.calendar-new-form textarea { resize: vertical; min-height: 78px; }
 .calendar-new-form .calendar-all-day-check { flex-direction: row; align-items: center; gap: 8px; }
 .calendar-all-day-check input { width: 16px; height: 16px; }
 .calendar-time-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.calendar-new-form footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.delete-preview { display: flex; flex-direction: column; gap: 5px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-inset); overflow-wrap: anywhere; }
+.danger-fill { background: var(--danger); color: white; }
+.danger-fill:hover:not(:disabled) { filter: brightness(0.95); }
 @media (max-width: 1050px) {
   .calendar-toolbar { flex-wrap: wrap; padding-block: 5px 10px; gap: 6px; }
   .calendar-ask { order: 8; flex-basis: 100%; max-width: none; height: 30px; }
@@ -1731,6 +1736,12 @@ details p {
 .task-editor-notice { margin: 0; }
 .task-editor-foot { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); }
 .task-foot-spacer { flex: 1; }
+/* Delete confirmation: the calendar entry is a separate, unchecked choice. */
+.task-delete { display: flex; flex-direction: column; gap: 12px; overflow-wrap: anywhere; }
+.task-delete p { margin: 0; }
+.task-delete-option { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.task-delete-option input { margin-top: 2px; }
+.task-delete footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .home-tasks { margin: 0 0 var(--space-2); background: var(--surface); border: 1px solid var(--panel-border); border-radius: var(--radius); box-shadow: 0 2px 4px var(--soft-shadow); overflow: hidden; }
 .home-tasks-head { display: flex; align-items: baseline; gap: var(--space-2); padding: 8px 14px 2px; }
 .home-tasks-head h2 { font-size: 13px; letter-spacing: 0; font-weight: 600; }

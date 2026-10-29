@@ -152,6 +152,7 @@ export interface CalendarEvent {
   sourceName: string;
   url?: string;
   notes?: string;
+  isRecurring?: boolean | null;
 }
 export interface CalendarViewState {
   loading: boolean;
@@ -246,6 +247,10 @@ export interface AppState {
   };
   settingsSection?: "general" | "calendars" | "friends" | "ai" | "privacy";
   calendarView?: CalendarViewState;
+  /** From the provider receipt of the last direct Calendar change. */
+  calendarChange?: { operation: "create" | "update" | "delete"; title: string; calendarName: string; thisDateOnly?: boolean } | null;
+  /** An interrupted Calendar or Tasks save that was confirmed, or couldn't be. */
+  directWriteNotice?: string | null;
   calendarTaskNotices?: Record<string, { status: "loading" | "success" | "error"; message?: string; receipt?: { operationID: string; taskID: string; taskVersion: string; outcome: string; savedAt: string } }>;
   sharing?: SharingState;
   sidebarExpanded: boolean;

@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import UserNotifications
+import AppKit
 
 enum CalshotTaskCalendarIntent: String, Codable { case none, existing, new }
 enum CalshotTaskIntentProvenance: String, Codable { case defaulted, explicit, suppressed }
@@ -251,11 +252,11 @@ extension CalshotModel {
         taskImport = nil; taskDocument = .init(); taskDataReady = false; taskError = nil; taskConflict = false; taskReminderError = nil
         let session = taskSessionID
         guard account.enabled else { return }
+        let center = taskReminderCenter
         Task { [weak self] in
-            let center = UNUserNotificationCenter.current()
-            let requests = await center.pendingNotificationRequests()
+            let pending = await center.pendingReminderIdentifiers()
             guard self?.taskSessionID == session, self?.account.userID == nil else { return }
-            center.removePendingNotificationRequests(withIdentifiers: requests.filter { $0.identifier.hasPrefix("calshot.task.") }.map(\.identifier))
+            center.removeReminders(pending.filter { $0.hasPrefix(CalshotTask.reminderPrefix) })
         }
     }
     func persistTasks(_ doc: CalshotTaskDocument) throws {
@@ -267,7 +268,9 @@ extension CalshotModel {
     }
     func validateTaskAction(_ body: [String: Any]) throws {
         guard account.canUseWorkspace, taskDataReady, body["token"] as? String == tasksToken, !taskSyncBusy else { throw CalendarToolArgumentError("Tasks changed. Refresh and try again.") }
-        guard !isSaving, !isCapturing, !agentIsRunning, !isRecognizing, agentQuestion == nil else { throw CalendarToolArgumentError("Finish or stop the current conversation first.") }
+        // An open conversation doesn't block your own edits: its pending rows carry task versions and
+        // fail safely if a task changes. Only a calendar save in progress must finish first.
+        guard !isSaving, !directCalendarWriter.isWriting else { throw CalendarToolArgumentError("Wait for the current calendar save to finish.") }
     }
     func saveTask(_ body: [String: Any]) async throws {
         try validateTaskAction(body)
@@ -286,9 +289,14 @@ extension CalshotModel {
             guard let raw = rawIntent as? String, let intent = CalshotTaskCalendarIntent(rawValue: raw), intent != .existing else {
                 throw CalendarToolArgumentError("Choose task only or a new deadline. Link an existing event separately.")
             }
-            guard task.sourceLink == nil,
-                  task.receipt == nil || intent == task.resolvedCalendarIntent else {
-                throw CalendarToolArgumentError("Use the source or published deadline transition flow before changing this task’s calendar intent.")
+            guard task.sourceLink == nil else {
+                throw CalendarToolArgumentError("This task is linked to a calendar event. Its calendar use can’t change here.")
+            }
+            if task.receipt != nil && intent != task.resolvedCalendarIntent {
+                // Choosing Tasks only for a published task is the user's request to remove that entry.
+                try await removeTaskDeadline(task)
+                guard let latest = taskDocument.items.first(where: { $0.id == task.id && !$0.deleted }) else { throw CalendarToolArgumentError("This task is no longer available.") }
+                task = latest; task.resolveCalendarIntent()
             }
             task.calendarIntent = intent; task.intentProvenance = .explicit
         }
@@ -306,14 +314,8 @@ extension CalshotModel {
         try task.validate(); task.version = UUID(); task.updatedAt = .now
         if let i = doc.items.firstIndex(where: { $0.id == task.id }) { doc.items[i] = task } else { doc.items.append(task) }
         try persistTasks(doc)
-        if task.reminderMinutes != nil, account.enabled { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) ; refreshTaskReminders() }
-        if task.needsPublication {
-            do { try await reviewTaskDeadline(task.id) }
-            catch {
-                var latest = taskDocument
-                if let i = latest.items.firstIndex(where: { $0.id == task.id && $0.version == task.version }) { latest.items[i].calendarError = error.localizedDescription; try persistTasks(latest) }
-            }
-        }
+        if task.reminderMinutes != nil, taskRemindersActive { _ = await taskReminderCenter.requestReminderAuthorization(); refreshTaskReminders() }
+        if task.needsPublication { await publishTaskDeadline(task.id) }
         Task { await self.syncTasks() }
     }
     func changeTask(_ body: [String: Any]) throws {
@@ -342,24 +344,87 @@ extension CalshotModel {
         doc.items[i].version = UUID(); doc.items[i].updatedAt = .now; try persistTasks(doc)
         Task { await self.syncTasks() }
     }
-    func reviewTaskDeadline(_ id: UUID) async throws {
-        guard !agentIsRunning, !isSaving, !isCapturing, !isRecognizing, agentQuestion == nil else { throw CalendarToolArgumentError("Finish the current task first.") }
-        guard let task = taskDocument.items.first(where: { $0.id == id && !$0.deleted }), task.needsPublication else { return }
-        guard task.receipt == nil || task.receiptDeviceID == Self.syncDeviceID else { throw CalendarToolArgumentError("Review this deadline on its source Mac.") }
-        guard !calendarActions.proposals.contains(where: { !$0.isFinished && $0.isSelected }) else { throw CalendarToolArgumentError("Finish or skip the current calendar review first. Your task is saved.") }
-        let owner = account.userID, storeURL = taskStore.url, generation = currentCaptureSessionID
-        var proposal = try task.deadline(owner: owner, deviceID:Self.syncDeviceID)
-        if let receipt = task.receipt {
-            guard let before = try await calendarService.event(identifier: receipt.eventIdentifier, in: .resolve(identifier: receipt.destinationID)) else { throw CalendarToolArgumentError("The linked calendar entry is unavailable. Check the source calendar before retrying; a second entry was not created.") }
-            guard account.userID == owner, taskStore.url == storeURL, currentCaptureSessionID == generation, !agentIsRunning, !isSaving, taskDocument.items.first(where: { $0.id == id })?.version == task.version else { throw CancellationError() }
-            proposal.before = before.draft
+    /// Adds, updates or removes the task's own deadline entry. Called only from the user's Save or
+    /// Retry in Tasks. Success comes from the provider receipt; a failure stays on the task row.
+    func publishTaskDeadline(_ id: UUID, allowDuplicate: Bool = false) async {
+        do {
+            guard account.canUseWorkspace, taskDataReady, !taskSyncBusy else { throw CalendarToolArgumentError("Reload Tasks before making changes.") }
+            guard let task = taskDocument.items.first(where: { $0.id == id && !$0.deleted }), task.needsPublication else { return }
+            guard task.receipt == nil || task.receiptDeviceID == Self.syncDeviceID else { throw CalendarToolArgumentError("Change this deadline on its source Mac.") }
+            guard !task.completed else { throw CalendarToolArgumentError("Reopen the task before adding its deadline.") }
+            guard !calendarActions.proposals.contains(where: { $0.draft.taskID == id && !$0.isFinished && $0.isSelected }) else { throw CalendarToolArgumentError("Finish or skip this task’s deadline review in Assistant first.") }
+            var proposal = try task.deadline(owner: account.userID, deviceID: Self.syncDeviceID)
+            guard let destinationID = proposal.targetDestinationID,
+                  let calendar = destinations.first(where: { $0.id == destinationID }) else { throw CalendarToolArgumentError("Choose a connected writable calendar for this deadline.") }
+            let owner = account.userID, storeURL = taskStore.url
+            if let receipt = task.receipt {
+                guard let before = try await calendarService.event(identifier: receipt.eventIdentifier, in: .resolve(identifier: receipt.destinationID)) else {
+                    throw CalendarToolArgumentError("The deadline entry is no longer in \(receipt.calendarName). Check that calendar before trying again; no second entry was created.")
+                }
+                proposal.before = before.draft
+            }
+            proposal.allowDuplicate = allowDuplicate
+            guard account.userID == owner, taskStore.url == storeURL, taskDocument.items.first(where: { $0.id == id })?.version == task.version else { throw CalendarToolArgumentError("This task changed. Try again.") }
+            let result = try await directCalendarWriter.apply(proposal, destinationID: calendar.id, calendarName: calendar.title)
+            guard account.userID == owner, taskStore.url == storeURL else { return }
+            try reconcileTaskReceipts([result])
+        } catch {
+            var latest = taskDocument
+            if let i = latest.items.firstIndex(where: { $0.id == id }) { latest.items[i].calendarError = error.localizedDescription; try? persistTasks(latest) }
         }
-        guard task.calendarID != nil else { throw CalendarToolArgumentError("Choose a writable deadline calendar.") }
-        guard !task.completed else { throw CalendarToolArgumentError("Reopen the task before publishing its deadline.") }
-        image = nil; recognizedText = ""; agentMessages = []; agentTranscriptPrefix = []; agentSummary = nil; agentError = nil; agentStreamingText = ""; activeAgentRunID = nil
-        let record = try memoryStore.recordCommand("Review deadline: " + task.title)
-        currentMemoryRecordID = record.id; currentCaptureSessionID = UUID(); selectedCalendarID = task.calendarID
-        calendarActions.replace(with: [proposal]); try memoryStore.updateProposals(for: record.id, proposals: [proposal]).map { _ in () }; refreshMemory()
+    }
+    /// Removes the deadline entry this Mac published for the task. Never touches a linked source event.
+    func removeTaskDeadline(_ task: CalshotTask) async throws {
+        guard let receipt = task.receipt else { return }
+        guard task.receiptDeviceID == Self.syncDeviceID else { throw CalendarToolArgumentError("Remove this deadline on its source Mac (\(receipt.calendarName)).") }
+        guard !calendarActions.proposals.contains(where: { $0.draft.taskID == task.id && !$0.isFinished && $0.isSelected }) else { throw CalendarToolArgumentError("Finish or skip this task’s deadline review in Assistant first.") }
+        var removal = task; removal.dueDate = nil; removal.dueTime = nil
+        var proposal = try removal.deadline(owner: account.userID, deviceID: Self.syncDeviceID)
+        guard proposal.operation == .delete else { throw CalendarToolArgumentError("This deadline can’t be removed here.") }
+        let owner = account.userID, storeURL = taskStore.url
+        guard let before = try await calendarService.event(identifier: receipt.eventIdentifier, in: .resolve(identifier: receipt.destinationID)) else {
+            // Already gone from the calendar: only the task's record of it remains.
+            var doc = taskDocument
+            guard account.userID == owner, taskStore.url == storeURL,
+                  let i = doc.items.firstIndex(where: { $0.id == task.id && $0.version == task.version }) else { throw CalendarToolArgumentError("This task changed. Try again.") }
+            doc.items[i].receipt = nil; doc.items[i].receiptDeviceID = nil; doc.items[i].publishedFingerprint = nil
+            doc.items[i].calendarError = nil; doc.items[i].version = UUID(); doc.items[i].updatedAt = .now
+            try persistTasks(doc); return
+        }
+        proposal.before = before.draft
+        guard account.userID == owner, taskStore.url == storeURL, taskDocument.items.first(where: { $0.id == task.id })?.version == task.version else { throw CalendarToolArgumentError("This task changed. Try again.") }
+        let result = try await directCalendarWriter.apply(proposal, destinationID: receipt.destinationID, calendarName: receipt.calendarName)
+        guard account.userID == owner, taskStore.url == storeURL else { throw CancellationError() }
+        try reconcileTaskReceipts([result])
+    }
+    /// Deletes the task from Tasks on every synced Mac. Its deadline entry is removed only when asked.
+    func deleteTask(_ body: [String: Any]) async throws {
+        try validateTaskAction(body)
+        guard Set(body.keys).isSubset(of: ["id", "action", "token", "taskID", "removeDeadline"]),
+              let raw = body["taskID"] as? String, let id = UUID(uuidString: raw),
+              let flag = body["removeDeadline"], let removeDeadline = flag as? Bool,
+              CFGetTypeID(flag as CFTypeRef) == CFBooleanGetTypeID() else { throw CalendarToolArgumentError("Choose a task to delete.") }
+        guard let task = taskDocument.items.first(where: { $0.id == id }) else { throw CalendarToolArgumentError("This task is no longer available.") }
+        guard !calendarActions.proposals.contains(where: { $0.draft.taskID == id && !$0.isFinished && $0.isSelected }) else { throw CalendarToolArgumentError("Finish or skip this task’s deadline review in Assistant first.") }
+        if removeDeadline {
+            guard task.receipt != nil else { throw CalendarToolArgumentError("This task has no deadline entry to remove.") }
+            try await removeTaskDeadline(task)
+        }
+        var doc = taskDocument
+        doc.items.removeAll { $0.id == id }
+        try persistTasks(doc)
+        Task { await self.syncTasks() }
+    }
+    /// Confirms an interrupted Calendar or Tasks save and applies any task receipt it proves.
+    func recoverDirectCalendarWrites() async {
+        let settled = await directCalendarWriter.recoverInterrupted()
+        guard !settled.isEmpty else { return }
+        let deadlines = settled.filter { $0.draft.taskID != nil }
+        if taskDataReady, !deadlines.isEmpty { try? reconcileTaskReceipts(deadlines) }
+        let unconfirmed = settled.filter { !$0.isFinished }
+        directWriteNotice = unconfirmed.isEmpty
+            ? "Calshot confirmed a calendar change that was interrupted: " + settled.map { "“\($0.before?.title ?? $0.draft.title)”" }.joined(separator: ", ") + "."
+            : "A calendar change was interrupted and couldn’t be confirmed: " + unconfirmed.map { "“\($0.before?.title ?? $0.draft.title)” in \($0.attemptedCalendarName ?? "your calendar")" }.joined(separator: ", ") + ". Check the calendar before trying again."
     }
     func validateTaskApproval() throws {
         for p in calendarActions.proposals where p.isSelected && !p.isFinished && p.draft.taskID != nil {
@@ -396,9 +461,18 @@ extension CalshotModel {
             guard remote.revision >= 0, remote.items.count <= 1000, Set(remote.items.map(\.id)).count == remote.items.count else { throw CalendarToolArgumentError("The synced task list could not be validated.") }
             guard taskSessionID == session, account.userID == owner, taskStore.url == store.url, tasksToken == token, !agentIsRunning, !isSaving else { return }
             var merged = taskDocument.items
+            let remoteIDs = Set(remote.items.map(\.id))
+            // With saved server state, a synced task missing remotely and unchanged here was deleted elsewhere.
+            if remote.revision > 0 {
+                merged.removeAll { !remoteIDs.contains($0.id) && taskDocument.baseline[$0.id.uuidString] == $0.version }
+            }
             for var r in remote.items {
                 r.normalizeUnownedPublicationMetadata(); try r.validate()
-                guard let i = merged.firstIndex(where: { $0.id == r.id }) else { merged.append(r); continue }
+                guard let i = merged.firstIndex(where: { $0.id == r.id }) else {
+                    // Deleted here after the last sync; keep the deletion unless another Mac edited it since.
+                    if taskDocument.baseline[r.id.uuidString] == r.version, !taskDocument.items.contains(where: { $0.id == r.id }) { continue }
+                    merged.append(r); continue
+                }
                 let local = merged[i], baseline = taskDocument.baseline[r.id.uuidString]
                 if local.version == r.version { continue }
                 if baseline == local.version { merged[i] = r }
@@ -433,33 +507,86 @@ extension CalshotModel {
     }
     func refreshTaskReminders() {
         taskReminderWork?.cancel(); let generation = UUID(); taskReminderGeneration = generation
-        guard account.enabled, let owner = account.userID, account.canUseWorkspace else { return }
-        let tasks = taskDocument.items; let token = tasksToken
+        guard taskRemindersActive, let owner = account.userID, account.canUseWorkspace else { return }
+        let tasks = taskDocument.items; let token = tasksToken; let center = taskReminderCenter
         taskReminderWork = Task { @MainActor [weak self] in
             guard let self else { return }
-            let center = UNUserNotificationCenter.current()
-            let pending = await center.pendingNotificationRequests()
+            let pending = await center.pendingReminderIdentifiers()
             guard self.account.userID == owner, self.tasksToken == token, self.taskReminderGeneration == generation, !Task.isCancelled else { return }
-            center.removePendingNotificationRequests(withIdentifiers: pending.filter { $0.identifier.hasPrefix("calshot.task.") }.map(\.identifier))
+            center.removeReminders(pending.filter { $0.hasPrefix(CalshotTask.reminderPrefix) })
             let active = tasks.filter { !$0.deleted && !$0.completed && $0.reminderMinutes != nil && $0.reminderDeviceID == Self.syncDeviceID }
             guard !active.isEmpty else { self.taskReminderError = nil; return }
-            let settings = await center.notificationSettings()
+            let allowed = await center.remindersAllowed()
             guard self.account.userID == owner, self.tasksToken == token, self.taskReminderGeneration == generation, !Task.isCancelled else { return }
-            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { self.taskReminderError = "Mac reminders are not enabled. Allow notifications for Calshot in System Settings."; return }
+            guard allowed else { self.taskReminderError = "Mac reminders are not enabled. Allow notifications for Calshot in System Settings."; return }
             self.taskReminderError = nil
             for t in active {
                 guard self.account.userID == owner, self.tasksToken == token, self.taskReminderGeneration == generation, !Task.isCancelled else { return }
+                guard let request = t.reminderRequest(owner: owner, generation: generation) else { continue }
                 do {
-                    guard let day = t.dueDate, let date = try? CalshotTask.date(day, time: t.dueTime ?? t.reminderTime, zone: t.timeZone).addingTimeInterval(-Double(t.reminderMinutes! * 60)), date > .now else { continue }
-                    var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: t.timeZone)!
-                    var components = cal.dateComponents([.year,.month,.day,.hour,.minute], from: date); components.timeZone = cal.timeZone
-                    let content = UNMutableNotificationContent(); content.title = t.title; content.body = "Task deadline: \(day)\(t.dueTime.map { " at " + $0 } ?? "")"; content.sound = .default
-                    let identifier = "calshot.task." + owner.uuidString + "." + generation.uuidString + "." + t.id.uuidString
-                    try await center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false)))
-                    if Task.isCancelled || self.taskReminderGeneration != generation || self.account.userID != owner { center.removePendingNotificationRequests(withIdentifiers: [identifier]); return }
+                    try await center.addReminder(request)
+                    if Task.isCancelled || self.taskReminderGeneration != generation || self.account.userID != owner { center.removeReminders([request.identifier]); return }
                 } catch { self.taskReminderError = "A Mac reminder could not be scheduled. Reopen Tasks and try again." }
             }
         }
+    }
+}
+
+/// The parts of the notification center reminders use. Tests substitute a recorder.
+@MainActor
+protocol TaskReminderCenter: AnyObject {
+    func pendingReminderIdentifiers() async -> [String]
+    func removeReminders(_ identifiers: [String])
+    func remindersAllowed() async -> Bool
+    func requestReminderAuthorization() async -> Bool
+    func addReminder(_ request: UNNotificationRequest) async throws
+}
+extension UNUserNotificationCenter: TaskReminderCenter {
+    func pendingReminderIdentifiers() async -> [String] { await pendingNotificationRequests().map(\.identifier) }
+    func removeReminders(_ identifiers: [String]) { removePendingNotificationRequests(withIdentifiers: identifiers) }
+    func remindersAllowed() async -> Bool {
+        let status = await notificationSettings().authorizationStatus
+        return status == .authorized || status == .provisional
+    }
+    func requestReminderAuthorization() async -> Bool { (try? await requestAuthorization(options: [.alert, .sound])) ?? false }
+    func addReminder(_ request: UNNotificationRequest) async throws { try await add(request) }
+}
+
+extension CalshotTask {
+    static let reminderPrefix = "calshot.task."
+    /// When the Mac reminder fires: the due time (or the chosen reminder time for a date-only task)
+    /// minus the chosen lead time, in the task's time zone. Nil when there is none or it has passed.
+    func reminderFireDate(now: Date = .now) -> Date? {
+        guard let minutes = reminderMinutes, let day = dueDate, let zone = TimeZone(identifier: timeZone),
+              let time = dueTime ?? reminderTime,
+              let due = try? CalshotTask.date(day, time: time, zone: timeZone) else { return nil }
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = zone
+        // "1 day before" keeps the same clock time across a daylight-saving change.
+        let fire = minutes == 1440 ? cal.date(byAdding: .day, value: -1, to: due) : due.addingTimeInterval(-Double(minutes * 60))
+        guard let fire, fire > now else { return nil }
+        return fire
+    }
+    /// "Due Tue, Nov 10, 5:00 PM", or "Due Tue, Nov 10" for a date-only task, in the task's zone.
+    func reminderBody(locale: Locale = .current) -> String {
+        guard let day = dueDate, let zone = TimeZone(identifier: timeZone),
+              let due = try? CalshotTask.date(day, time: dueTime, zone: timeZone) else { return "Task deadline" }
+        let f = DateFormatter(); f.locale = locale; f.timeZone = zone
+        f.setLocalizedDateFormatFromTemplate(dueTime == nil ? "EEEMMMd" : "EEEMMMdjmm")
+        let text = f.string(from: due)
+        // The time zone is named only when it differs from this Mac's.
+        let suffix = zone.identifier == TimeZone.current.identifier ? "" : " (" + (zone.localizedName(for: .shortGeneric, locale: locale) ?? zone.identifier) + ")"
+        return "Due " + text + suffix
+    }
+    func reminderRequest(owner: UUID, generation: UUID, now: Date = .now, locale: Locale = .current) -> UNNotificationRequest? {
+        guard let fire = reminderFireDate(now: now), let zone = TimeZone(identifier: timeZone) else { return nil }
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = zone
+        var components = cal.dateComponents([.year, .month, .day, .hour, .minute], from: fire); components.timeZone = zone
+        let content = UNMutableNotificationContent()
+        content.title = title; content.body = reminderBody(locale: locale); content.sound = .default
+        content.threadIdentifier = "calshot.tasks"
+        content.userInfo = ["taskID": id.uuidString]
+        return UNNotificationRequest(identifier: Self.reminderPrefix + owner.uuidString + "." + generation.uuidString + "." + id.uuidString,
+                                     content: content, trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false))
     }
 }
 private enum UUIDToken { static func hash(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() } }
@@ -547,6 +674,31 @@ extension CalshotModel {
 #if DEBUG
 @MainActor
 extension CalshotModel {
+    /// Debug-only delivery check: schedules one fictional reminder through the same request builder,
+    /// about a minute ahead, and prints what macOS reports. Writes no task and no calendar event.
+    func runReminderDeliveryCheck() async {
+        let center = UNUserNotificationCenter.current()
+        let granted = await center.requestReminderAuthorization()
+        let settings = await center.notificationSettings()
+        let zone = TimeZone.current
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = zone
+        let fire = cal.nextDate(after: .now.addingTimeInterval(60), matching: DateComponents(second: 0), matchingPolicy: .nextTime)!
+        let day = DateFormatter(); day.locale = Locale(identifier: "en_US_POSIX"); day.timeZone = zone; day.dateFormat = "yyyy-MM-dd"
+        let time = DateFormatter(); time.locale = day.locale; time.timeZone = zone; time.dateFormat = "HH:mm"
+        let task = CalshotTask(title: "Fictional reminder check", dueDate: day.string(from: fire), dueTime: time.string(from: fire), timeZone: zone.identifier, reminderMinutes: 0)
+        guard let built = task.reminderRequest(owner: UUID(), generation: UUID()) else { NSLog("%@", "REMINDER-CHECK no request"); return }
+        // A separate prefix, so refreshing real reminders never removes this check.
+        let request = UNNotificationRequest(identifier: "calshot.reminder-check." + UUID().uuidString, content: built.content, trigger: built.trigger)
+        do { try await center.add(request) } catch { NSLog("%@", "REMINDER-CHECK add failed: \(error.localizedDescription)"); return }
+        let pending = await center.pendingNotificationRequests().contains { $0.identifier == request.identifier }
+        NSLog("%@", "REMINDER-CHECK granted=\(granted) status=\(settings.authorizationStatus.rawValue) alert=\(settings.alertSetting.rawValue) style=\(settings.alertStyle.rawValue) sound=\(settings.soundSetting.rawValue) pending=\(pending)")
+        NSLog("%@", "REMINDER-CHECK title=\(built.content.title) | body=\(built.content.body) | hasSound=\(built.content.sound != nil) | fires=\(fire)")
+        try? await Task.sleep(for: .seconds(max(0, fire.timeIntervalSinceNow) + 5))
+        let delivered = await center.deliveredNotifications().contains { $0.request.identifier == request.identifier }
+        let stillPending = await center.pendingNotificationRequests().contains { $0.identifier == request.identifier }
+        let after = await center.notificationSettings()
+        NSLog("%@", "REMINDER-CHECK after-fire delivered=\(delivered) stillPending=\(stillPending) frontmost=\(NSApp.isActive) alert=\(after.alertSetting.rawValue) style=\(after.alertStyle.rawValue) sound=\(after.soundSetting.rawValue) center=\(after.notificationCenterSetting.rawValue)")
+    }
     static func tasksPreviewModel() -> CalshotModel {
         let model = CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("CalshotTasksPreview-" + UUID().uuidString)), loadsAIConnection: false, agentClient: CalendarAgentDemoClient())
         model.workspaceSelection = .tasks

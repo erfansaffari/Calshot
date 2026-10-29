@@ -4,6 +4,7 @@ import Security
 import ScreenCaptureKit
 import SwiftUI
 import Combine
+import UserNotifications
 
 /// Ephemeral, native-only authority for one selected personal event in a conversation.
 /// Never persisted into history or accepted from model/JavaScript snapshot fields.
@@ -43,7 +44,7 @@ struct CalshotApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let model: CalshotModel = {
 #if DEBUG
         if NSClassFromString("XCTestCase") != nil { return CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("CalshotTestHost-" + UUID().uuidString)), loadsAIConnection: false) }
@@ -64,6 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if NSClassFromString("XCTestCase") != nil { return }
         NSApp.setActivationPolicy(.regular)
+        // Without a delegate, macOS drops the banner and sound while Calshot is frontmost.
+        UNUserNotificationCenter.current().delegate = self
         model.appearanceMode.apply()
         if NSClassFromString("XCTestCase") == nil { model.softwareUpdates.start() }
         HotKeyController.shared.onPress = { [weak model = self.model] in
@@ -84,12 +87,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.model.workspaceWindowController?.hide()
                 self?.model.screenPermissionFlow?.show(preview: true)
             }
+            if ProcessInfo.processInfo.arguments.contains("--reminder-check") {
+                Task { await self?.model.runReminderDeliveryCheck() }
+            }
             if ProcessInfo.processInfo.arguments.contains("--calendar-agent-demo") {
                 self?.model.calendarActions.replace(with: [])
                 self?.model.agentCommand = "Read this syllabus and add its deadlines and exams."
                 Task { await self?.model.startAgentCommand() }
             }
 #endif
+        }
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+#if DEBUG
+        NSLog("%@", "REMINDER-CHECK willPresent \(notification.request.identifier)")
+#endif
+        return notification.request.content.userInfo["taskID"] == nil ? [] : [.banner, .list, .sound]
+    }
+    /// Clicking a task reminder opens Tasks. It never changes the task.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard response.notification.request.content.userInfo["taskID"] != nil else { return }
+        await MainActor.run {
+            model.workspaceSelection = .tasks
+            model.loadTasks()
+            model.openPanel()
         }
     }
 
@@ -187,6 +209,12 @@ final class CalshotModel: ObservableObject {
     var ocrObserverTask: Task<Void, Never>?
     let agentClient: (any CalendarAgentModelClient)?
     let calendarActions: CalendarActionCoordinator
+    /// Changes the user confirms in Calendar or Tasks. Separate from the agent's review session.
+    private(set) lazy var directCalendarWriter = DirectCalendarWriter(service: calendarService) { [weak self] in
+        (self?.memoryStore.locationURL ?? FileManager.default.temporaryDirectory).appendingPathComponent("calendar-direct-journal.json")
+    }
+    /// Result of confirming an interrupted direct change. Shown on Calendar and Tasks until dismissed.
+    @Published var directWriteNotice: String?
     @Published var isCapturing = false
     @Published var isRecognizing = false
     @Published var status: String?
@@ -223,6 +251,11 @@ final class CalshotModel: ObservableObject {
     var taskSessionID = UUID()
     var taskReminderGeneration = UUID()
     var taskReminderWork: Task<Void, Never>?
+    /// Replaced only by tests; the app always uses the system notification center.
+    var taskReminderCenterOverride: (any TaskReminderCenter)?
+    var taskReminderCenter: any TaskReminderCenter { taskReminderCenterOverride ?? UNUserNotificationCenter.current() }
+    /// Demo and fixture models have no account and never schedule; tests opt in with a recording center.
+    var taskRemindersActive: Bool { account.enabled || taskReminderCenterOverride != nil }
     var taskRPC: ((String, JSONValue, UUID) async throws -> JSONValue)?
     @Published var workspaceSelection: WorkspaceSection = .capture
     @Published var selectionOverlay: RegionSelectionOverlay?

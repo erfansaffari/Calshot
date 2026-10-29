@@ -38,18 +38,40 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertFalse(model.taskDataReady); XCTAssertTrue(model.taskDocument.items.isEmpty); XCTAssertNotNil(model.taskError)
         XCTAssertEqual(try Data(contentsOf:model.taskStore.url),corrupt)
     }
-    func testDatedTaskSavesLocallyButNeedsExplicitCalendarApproval() async throws {
+    func testSavingADatedTaskAddsItsDeadlineFromTheReceiptWithoutAReview() async throws {
         let model = fixture(service: CalendarDemoService())
         await model.loadCalendars()
         try await model.saveTask(["token":model.tasksToken,"title":"Field report","dueDate":"2026-11-10","dueTime":"17:00","timeZone":"America/Toronto","calendarID":"demo"])
-        let task = try XCTUnwrap(model.taskDocument.items.first)
-        XCTAssertNil(task.receipt); XCTAssertTrue(task.needsPublication)
-        XCTAssertEqual(model.calendarActions.proposals.count, 1); XCTAssertTrue(model.calendarActions.proposals[0].isSelected)
+        var task = try XCTUnwrap(model.taskDocument.items.first)
+        XCTAssertNotNil(task.receipt); XCTAssertFalse(task.needsPublication); XCTAssertNil(task.calendarError)
+        XCTAssertTrue(model.calendarActions.proposals.isEmpty, "Your own Save is the confirmation; no second review")
+        XCTAssertTrue(model.memoryStore.listRecords().isEmpty)
+        var events = try await model.calendarService.searchEvents(query:nil,start:.distantPast,end:.distantFuture,in:.resolve(identifier:"demo"))
+        XCTAssertEqual(events.map(\.title), ["Field report · due 17:00"])
+        // Editing the task updates the same entry.
+        try await model.saveTask(["token":model.tasksToken,"taskID":task.id.uuidString,"title":"Field report draft","dueDate":"2026-11-11","dueTime":"17:00","timeZone":"America/Toronto"])
+        task = model.taskDocument.items[0]
+        events = try await model.calendarService.searchEvents(query:nil,start:.distantPast,end:.distantFuture,in:.resolve(identifier:"demo"))
+        XCTAssertEqual(events.map(\.title), ["Field report draft · due 17:00"]); XCTAssertFalse(task.needsPublication)
+        // Tasks only removes the published entry.
+        try await model.saveTask(["token":model.tasksToken,"taskID":task.id.uuidString,"title":task.title,"dueDate":"2026-11-11","dueTime":"17:00","timeZone":"America/Toronto","calendarIntent":"none"])
+        task = model.taskDocument.items[0]
+        XCTAssertNil(task.receipt); XCTAssertEqual(task.calendarIntent, CalshotTaskCalendarIntent.none)
+        events = try await model.calendarService.searchEvents(query:nil,start:.distantPast,end:.distantFuture,in:.resolve(identifier:"demo"))
+        XCTAssertTrue(events.isEmpty)
+    }
+    func testDeletingATaskRemovesItsDeadlineOnlyWhenAsked() async throws {
+        let model = fixture(service: CalendarDemoService()); await model.loadCalendars()
+        try await model.saveTask(["token":model.tasksToken,"title":"Fictional essay","dueDate":"2026-11-10","calendarID":"demo"])
+        try await model.saveTask(["token":model.tasksToken,"title":"Fictional quiz","dueDate":"2026-11-12","calendarID":"demo"])
+        let essay = model.taskDocument.items[0], quiz = model.taskDocument.items[1]
+        do { try await model.deleteTask(["token":model.tasksToken,"taskID":essay.id.uuidString,"removeDeadline":NSNumber(value:1)]); XCTFail("Accepted a number for removeDeadline") } catch {}
+        do { try await model.deleteTask(["token":"stale","taskID":essay.id.uuidString,"removeDeadline":false]); XCTFail("Accepted a stale token") } catch {}
+        try await model.deleteTask(["token":model.tasksToken,"taskID":essay.id.uuidString,"removeDeadline":false])
+        try await model.deleteTask(["token":model.tasksToken,"taskID":quiz.id.uuidString,"removeDeadline":true])
+        XCTAssertTrue(model.taskDocument.items.isEmpty); XCTAssertTrue(try model.taskStore.load().items.isEmpty)
         let events = try await model.calendarService.searchEvents(query:nil,start:.distantPast,end:.distantFuture,in:.resolve(identifier:"demo"))
-        XCTAssertTrue(events.isEmpty, "Saving a task must never auto-approve its calendar event")
-        await model.calendarActions.checkDuplicates(destinationID:"demo")
-        await model.saveEvents()
-        XCTAssertNotNil(model.taskDocument.items.first?.receipt); XCTAssertFalse(model.taskDocument.items[0].needsPublication)
+        XCTAssertEqual(events.map(\.title), ["Fictional essay"], "Kept deadlines stay as ordinary calendar entries")
     }
     func testTaskReceiptRecoveryUsesLocalHistoryWithoutReplayingWrites() async throws {
         for device in [CalshotModel.syncDeviceID,UUID().uuidString] {
@@ -231,6 +253,147 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertEqual(bridge.calendarTaskNotices[handle]?.objectValue?["status"]?.stringValue, "error")
         XCTAssertTrue(model.taskDocument.items.isEmpty)
         let writes = await service.writes; XCTAssertEqual(writes, 0)
+    }
+    func testDirectCalendarCreateSavesOnConfirmWithReceiptAndNoConversation() async throws {
+        let service = DirectCalendarFixture()
+        let model = fixture(service: service); await model.loadCalendars(); model.workspaceSelection = .calendars
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        try await bridge.handle("changeCalendarEvent", ["operation": "create", "fields": [
+            "title": "Fictional office hours", "date": "2026-11-10", "allDay": false,
+            "startTime": "09:00", "endTime": "10:00", "timeZone": "UTC", "calendarID": "direct-source"
+        ]])
+        let writes = await service.writeCount()
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(model.workspaceSelection, .calendars, "A direct change stays on Calendar")
+        XCTAssertTrue(model.calendarActions.proposals.isEmpty, "A direct change never opens the Assistant review")
+        XCTAssertTrue(model.memoryStore.listRecords().isEmpty, "A direct change adds no History record")
+        XCTAssertEqual(bridge.calendarChange.objectValue?["operation"], .string("create"))
+        XCTAssertEqual(bridge.calendarChange.objectValue?["title"], .string("Fictional office hours"))
+        XCTAssertEqual(bridge.calendarChange.objectValue?["calendarName"], .string("Personal writable fixture"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: model.memoryStore.locationURL.appendingPathComponent("calendar-direct-journal.json").path))
+    }
+    func testDirectCalendarCreateStopsAtADuplicateUntilAddAnyway() async throws {
+        let model = fixture(); await model.loadCalendars(); model.workspaceSelection = .calendars
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        let body: [String: Any] = ["operation": "create", "fields": [
+            "title": "Fictional seminar", "date": "2026-11-10", "allDay": false,
+            "startTime": "09:00", "endTime": "10:00", "timeZone": "UTC", "calendarID": "demo"
+        ]]
+        try await bridge.handle("changeCalendarEvent", body)
+        do { try await bridge.handle("changeCalendarEvent", body); XCTFail("Added a duplicate without asking") }
+        catch { XCTAssertTrue(error.localizedDescription.hasPrefix(DirectCalendarWriter.duplicatePrefix)) }
+        var events = try await model.calendarService.searchEvents(query: nil, start: .distantPast, end: .distantFuture, in: .resolve(identifier: "demo"))
+        XCTAssertEqual(events.count, 1)
+        do { try await bridge.handle("changeCalendarEvent", body.merging(["allowDuplicate": NSNumber(value: 1)]) { $1 }); XCTFail("Accepted a number for allowDuplicate") } catch {}
+        try await bridge.handle("changeCalendarEvent", body.merging(["allowDuplicate": true]) { $1 })
+        events = try await model.calendarService.searchEvents(query: nil, start: .distantPast, end: .distantFuture, in: .resolve(identifier: "demo"))
+        XCTAssertEqual(events.count, 2)
+    }
+    func testDirectCalendarUpdateAndDeleteApplyToTheFreshSelectedEvent() async throws {
+        let service = DirectCalendarFixture()
+        let model = fixture(service: service); await model.loadCalendars(); model.workspaceSelection = .calendars
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        try await bridge.loadCalendarView(["start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z", "calendarIDs": ["direct-source"]])
+        let event = try XCTUnwrap(bridge.calendarView.objectValue?["events"]?.arrayValue?.first?.objectValue)
+        do {
+            try await bridge.handle("changeCalendarEvent", ["operation": "update", "selectionHandle": try XCTUnwrap(event["selectionHandle"]?.stringValue), "selectionGeneration": try XCTUnwrap(event["selectionGeneration"]?.stringValue), "fields": [
+                "title": "Fictional workshop", "date": "2026-11-10", "allDay": false,
+                "startTime": "08:00", "endTime": "09:00", "timeZone": "UTC", "location": "", "url": "", "notes": ""
+            ]])
+            XCTFail("Saved an edit with no changes")
+        } catch {}
+        try await bridge.handle("changeCalendarEvent", ["operation": "update", "selectionHandle": try XCTUnwrap(event["selectionHandle"]?.stringValue), "selectionGeneration": try XCTUnwrap(event["selectionGeneration"]?.stringValue), "fields": [
+            "title": "Fictional workshop moved", "date": "2026-11-10", "allDay": false,
+            "startTime": "11:00", "endTime": "12:00", "timeZone": "UTC", "location": "", "url": "", "notes": ""
+        ]])
+        let writesAfterUpdate = await service.writeCount()
+        XCTAssertEqual(writesAfterUpdate, 1)
+        XCTAssertEqual(bridge.calendarChange.objectValue?["operation"], .string("update"))
+        XCTAssertTrue(model.calendarActions.proposals.isEmpty)
+        try await bridge.loadCalendarView(["start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z", "calendarIDs": ["direct-source"]])
+        let changed = try XCTUnwrap(bridge.calendarView.objectValue?["events"]?.arrayValue?.first?.objectValue)
+        XCTAssertEqual(changed["title"], .string("Fictional workshop moved"))
+        try await bridge.handle("changeCalendarEvent", ["operation": "delete", "selectionHandle": try XCTUnwrap(changed["selectionHandle"]?.stringValue), "selectionGeneration": try XCTUnwrap(changed["selectionGeneration"]?.stringValue)])
+        let writesAfterDelete = await service.writeCount()
+        XCTAssertEqual(writesAfterDelete, 2)
+        XCTAssertEqual(bridge.calendarChange.objectValue?["operation"], .string("delete"))
+        XCTAssertEqual(bridge.calendarChange.objectValue?["title"], .string("Fictional workshop moved"))
+        XCTAssertTrue(model.memoryStore.listRecords().isEmpty)
+    }
+    func testDirectCalendarRecurringOccurrenceChangesThisDateOnly() async throws {
+        let service = DirectCalendarFixture()
+        await service.markRecurring()
+        let model = fixture(service: service); await model.loadCalendars(); model.workspaceSelection = .calendars
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        try await bridge.loadCalendarView(["start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z", "calendarIDs": ["direct-source"]])
+        let event = try XCTUnwrap(bridge.calendarView.objectValue?["events"]?.arrayValue?.first?.objectValue)
+        XCTAssertEqual(event["isRecurring"], .bool(true))
+        try await bridge.handle("changeCalendarEvent", ["operation": "update", "selectionHandle": try XCTUnwrap(event["selectionHandle"]?.stringValue), "selectionGeneration": try XCTUnwrap(event["selectionGeneration"]?.stringValue), "fields": [
+            "title": "This date only", "date": "2026-11-10", "allDay": false,
+            "startTime": "11:00", "endTime": "12:00", "timeZone": "UTC"
+        ]])
+        let writes = await service.writeCount()
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(bridge.calendarChange.objectValue?["thisDateOnly"], .bool(true))
+    }
+    func testDirectCalendarChangeRejectsStaleReadOnlyAndNotchWithoutWriting() async throws {
+        let writable = DirectCalendarFixture()
+        let model = fixture(service: writable); await model.loadCalendars(); model.workspaceSelection = .calendars
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        try await bridge.loadCalendarView(["start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z", "calendarIDs": ["direct-source"]])
+        let event = try XCTUnwrap(bridge.calendarView.objectValue?["events"]?.arrayValue?.first?.objectValue)
+        let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
+        do { try await notch.handle("changeCalendarEvent", ["operation": "delete", "selectionHandle": try XCTUnwrap(event["selectionHandle"]?.stringValue), "selectionGeneration": try XCTUnwrap(event["selectionGeneration"]?.stringValue)]); XCTFail("The notch changed a calendar event") } catch {}
+        await writable.changeSourceTitle()
+        do {
+            try await bridge.handle("changeCalendarEvent", ["operation": "update", "selectionHandle": try XCTUnwrap(event["selectionHandle"]?.stringValue), "selectionGeneration": try XCTUnwrap(event["selectionGeneration"]?.stringValue), "fields": [
+                "title": "Forged change", "date": "2026-11-10", "allDay": false,
+                "startTime": "11:00", "endTime": "12:00", "timeZone": "UTC"
+            ]])
+            XCTFail("Stale selected event was changed")
+        } catch {}
+        let staleWrites = await writable.writeCount()
+        XCTAssertEqual(staleWrites, 0)
+        XCTAssertEqual(bridge.calendarChange, .null)
+
+        let readOnly = SelectedTaskLinkFixture()
+        let readOnlyModel = fixture(service: readOnly); await readOnlyModel.loadCalendars(); readOnlyModel.workspaceSelection = .calendars
+        let readOnlyBridge = WebWorkspaceController(model: readOnlyModel, loadsResources: false)
+        try await readOnlyBridge.loadCalendarView(["start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z", "calendarIDs": ["selected-source"]])
+        let readOnlyEvent = try XCTUnwrap(readOnlyBridge.calendarView.objectValue?["events"]?.arrayValue?.first?.objectValue)
+        do {
+            try await readOnlyBridge.handle("changeCalendarEvent", ["operation": "delete", "selectionHandle": try XCTUnwrap(readOnlyEvent["selectionHandle"]?.stringValue), "selectionGeneration": try XCTUnwrap(readOnlyEvent["selectionGeneration"]?.stringValue)])
+            XCTFail("Read-only selected event was deleted")
+        } catch {}
+        let readOnlyWrites = await readOnly.writes
+        XCTAssertEqual(readOnlyWrites, 0)
+    }
+    func testDirectCalendarChangeIsNotBlockedByAPendingAssistantReview() async throws {
+        let model = fixture(); await model.loadCalendars(); model.workspaceSelection = .calendars
+        model.calendarActions.replace(with: [row()]); model.agentIsWaitingForApproval = true
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        try await bridge.handle("changeCalendarEvent", ["operation": "create", "fields": [
+            "title": "Fictional study block", "date": "2026-11-12", "allDay": true, "timeZone": "UTC", "calendarID": "demo"
+        ]])
+        XCTAssertEqual(model.calendarActions.proposals.count, 1, "The pending review is left as it was")
+        XCTAssertFalse(model.calendarActions.proposals[0].isFinished)
+    }
+    func testInterruptedDirectWriteIsConfirmedWithoutRetrying() async throws {
+        let model = fixture(); await model.loadCalendars()
+        let saved = EventDraft(title: "Fictional interrupted lab", startDate: Date(timeIntervalSince1970: 1_800_000_000), endDate: Date(timeIntervalSince1970: 1_800_003_600), isAllDay: false, timeZoneIdentifier: "UTC", location: nil, url: nil, notes: nil, sourceText: "Direct user entry", confidence: 1, ambiguities: [])
+        _ = try await model.calendarService.save(saved, to: .resolve(identifier: "demo"))
+        var landed = CalendarActionProposal(draft: saved); landed.state = .saving; landed.attemptedDestinationID = "demo"; landed.attemptedCalendarName = "Demo"
+        var lost = CalendarActionProposal(draft: EventDraft(title: "Fictional lost entry", startDate: Date(timeIntervalSince1970: 1_800_100_000), endDate: Date(timeIntervalSince1970: 1_800_103_600), isAllDay: false, timeZoneIdentifier: "UTC", location: nil, url: nil, notes: nil, sourceText: "Direct user entry", confidence: 1, ambiguities: []))
+        lost.state = .saving; lost.attemptedDestinationID = "demo"; lost.attemptedCalendarName = "Demo"
+        let journal = model.memoryStore.locationURL.appendingPathComponent("calendar-direct-journal.json")
+        try FileManager.default.createDirectory(at: journal.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode([landed, lost]).write(to: journal)
+        await model.recoverDirectCalendarWrites()
+        let notice = try XCTUnwrap(model.directWriteNotice)
+        XCTAssertTrue(notice.contains("Fictional lost entry") && notice.contains("couldn’t be confirmed"))
+        let events = try await model.calendarService.searchEvents(query: nil, start: .distantPast, end: .distantFuture, in: .resolve(identifier: "demo"))
+        XCTAssertEqual(events.count, 1, "Recovery never replays a write")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path))
     }
     func testNativeSelectedContextBindsOnlyToItsConversationAndCapture() throws {
         let model = fixture(); let record = try model.memoryStore.recordCommand("Fictional selected source")
@@ -1061,6 +1224,44 @@ private actor SelectedTaskLinkFixture: CalendarDestinationService {
     func save(_ draft: EventDraft, to destination: CalendarDestination) async throws -> String { writes += 1; throw CalendarDestinationError.calendarReadOnly }
     func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String { writes += 1; throw CalendarDestinationError.calendarReadOnly }
     func delete(identifier: String, in destination: CalendarDestination) async throws { writes += 1; throw CalendarDestinationError.calendarReadOnly }
+}
+
+private actor DirectCalendarFixture: CalendarDestinationService {
+    private var writes = 0
+    private var source = CalendarEventSnapshot(eventIdentifier: "native-source", title: "Fictional workshop", start: Date(timeIntervalSince1970: 1794297600), end: Date(timeIntervalSince1970: 1794301200), isAllDay: false, timeZone: "UTC", calendarName: "Personal writable fixture", isRecurring: false)
+    func availableDestinations() async throws -> [CalendarDestinationInfo] {
+        [.init(id: "direct-source", title: "Personal writable fixture", provider: .apple, isReadOnly: false, sourceName: "Fixture", timeZone: "UTC")]
+    }
+    func searchEvents(query: String?, start: Date, end: Date, in destination: CalendarDestination) async throws -> [CalendarEventSnapshot] {
+        guard destination == .resolve(identifier: "direct-source"), source.start < end, source.end > start else { return [] }
+        return [source]
+    }
+    func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? {
+        destination == .resolve(identifier: "direct-source") && identifier == source.eventIdentifier ? source : nil
+    }
+    func matchingEvents(_ draft: EventDraft, in destination: CalendarDestination) async throws -> [String] { [] }
+    func save(_ draft: EventDraft, to destination: CalendarDestination) async throws -> String {
+        writes += 1
+        source = CalendarEventSnapshot(eventIdentifier: draft.id.uuidString, title: draft.title, start: draft.startDate!, end: draft.endDate!, isAllDay: draft.isAllDay, timeZone: draft.timeZoneIdentifier, location: draft.location, calendarName: "Personal writable fixture", url: draft.url, notes: draft.notes, isRecurring: false)
+        return source.eventIdentifier
+    }
+    func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String {
+        guard identifier == source.eventIdentifier else { throw CalendarDestinationError.calendarUnavailable }
+        writes += 1
+        source = CalendarEventSnapshot(eventIdentifier: identifier, title: draft.title, start: draft.startDate!, end: draft.endDate!, isAllDay: draft.isAllDay, timeZone: draft.timeZoneIdentifier, location: draft.location, calendarName: "Personal writable fixture", url: draft.url, notes: draft.notes, isRecurring: false)
+        return identifier
+    }
+    func delete(identifier: String, in destination: CalendarDestination) async throws {
+        guard identifier == source.eventIdentifier else { throw CalendarDestinationError.calendarUnavailable }
+        writes += 1
+        source.end = source.start
+    }
+    func changeSourceTitle() { source.title = "Changed fictional workshop" }
+    func markRecurring() {
+        source.isRecurring = true
+        source.originalOccurrenceStart = source.start
+    }
+    func writeCount() -> Int { writes }
 }
 
 // MARK: - Task-only review and saved task permissions (isolated, fictional fixtures, no provider writes)
