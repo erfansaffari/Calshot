@@ -1,7 +1,7 @@
 # Calshot design system and interaction contract
 
 ## Source and hierarchy
-Calshot.html contains the approved reference boards: home, notch, syllabus review, clarification, partial failure, transfer, calendars, history and settings. Follow their light translucent desktop workspace, blue primary actions, compact left navigation, readable central conversation and optional right source panel. Adapt fixed mockup dimensions to a real resizable window. Do not ship its mock data or simulated writes.
+The optional local Calshot.html at the project root contains the approved reference boards: home, notch, syllabus review, clarification, partial failure, transfer, calendars, history and settings. It is ignored by Git and is not required to build or run the app. This tracked document is the interaction contract when that local reference is unavailable. Follow the light translucent desktop workspace, blue primary actions, compact left navigation, readable central conversation and optional right source panel. Adapt fixed mockup dimensions to a real resizable window. Do not ship the reference's mock data or simulated writes.
 
 WebUI/src/tokens.css is the implementation source for color, spacing, radii and focus tokens. Shared controls live in WebUI/src/components. Prefer Radix accessible primitives for overlays, native form controls and Lucide icons; avoid importing an unrelated component library theme.
 

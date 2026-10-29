@@ -1,4 +1,6 @@
 .DS_Store
+# Approved design reference kept locally; not app source or a build input.
+/Calshot.html
 DerivedData/
 build/
 *.xcuserstate

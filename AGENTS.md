@@ -1,6 +1,6 @@
 # Calshot project rules
 
-Read [Design system](Design/DESIGN_SYSTEM.md) before changing product behavior or UI. The approved visual reference is [Calshot.html](Calshot.html); the product context is [DESIGNER_HANDOFF.md](DESIGNER_HANDOFF.md). Preserve that reference file unchanged.
+Read [Design system](Design/DESIGN_SYSTEM.md) before changing product behavior or UI. The approved visual reference is the optional local `Calshot.html` at the project root; it is ignored by Git and is not required to build or run the app. Preserve it unchanged when present, and use the tracked design system when it is unavailable. The product context is [DESIGNER_HANDOFF.md](DESIGNER_HANDOFF.md).
 
 ## Architecture
 - React/TypeScript in WebUI owns workspace presentation. Swift owns permissions, capture, credentials, agent sessions, calendar operations, validation and persistence. Never duplicate write logic or credentials in JavaScript.

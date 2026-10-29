@@ -73,7 +73,7 @@ The Calendars section supports direct Google and Outlook/Microsoft 365 account s
 
 The main workspace uses React, TypeScript, Radix Dialog and Lucide inside a native WKWebView. Swift remains authoritative for capture, permission prompts, Keychain, account connections, agent tools, validation, write approvals and action history. The menu bar and notch shell remain native; the notch embeds the same React questions, reviews and editors as the workspace.
 
-Read [AGENTS.md](AGENTS.md) and [Design/DESIGN_SYSTEM.md](Design/DESIGN_SYSTEM.md) before changing product behavior or UI. [Calshot.html](Calshot.html) is the designer's original nine-board reference and is preserved unchanged. Shared UI tokens live in WebUI/src/tokens.css; reusable controls live in WebUI/src/components.
+Read [AGENTS.md](AGENTS.md) and [Design/DESIGN_SYSTEM.md](Design/DESIGN_SYSTEM.md) before changing product behavior or UI. The designer's original nine-board reference, `Calshot.html`, is kept locally at the project root and ignored by Git. It is optional and is not required to build or run the app; the tracked design system documents the interaction contract. Shared UI tokens live in WebUI/src/tokens.css; reusable controls live in WebUI/src/components.
 
 Install Node.js/npm before building. Xcode runs script/build_web_ui.sh, builds the frontend and packages it into the signed app. For frontend-only work run npm ci and npm run dev in WebUI. The browser preview requires an explicit ?preview=1 query and uses fictional data only; append &scenario=home, &scenario=syllabus, &scenario=partial or &scenario=question for state coverage. Without native services or explicit preview mode the interface reports an unavailable connection; it never substitutes demo calendar successes.
 
