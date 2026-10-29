@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowUp, Check, ExternalLink, ScanLine, Square, X } from "lucide-react";
+import { ArrowUp, Check, ExternalLink, Mic, ScanLine, Square, X } from "lucide-react";
 import Markdown from "react-markdown";
 import { command, useAppState } from "./bridge";
 import { Question } from "./components/Question";
@@ -17,6 +17,8 @@ export default function NotchApp() {
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
   const [dismissedOutcome, setDismissedOutcome] = useState("");
+  const voice = state.voice;
+  const voiceRun = (action: string, extra: Record<string, unknown> = {}) => run(action, { token: voice?.token, ...extra });
   const rows = state.proposals.filter(p => p.inScope && !p.isFinished);
   const selected = rows.filter(p => p.isSelected);
   const busy = state.running || state.saving || state.isRecognizing || state.isCapturing;
@@ -27,7 +29,7 @@ export default function NotchApp() {
   const finished = state.proposals.filter(p => p.isFinished && p.receipt);
   const destination = state.calendars.find(c => c.id === state.selectedCalendarID);
   const taskNotice = !busy && !captured && !state.summary ? state.status || (state.agentStatus?.includes("Connect ChatGPT") ? state.agentStatus : undefined) : undefined;
-  const detail = Boolean(taskNotice || state.question || taskReview || outcome || review || conversation || source || error || state.agentError || state.screenPermissionNeeded || state.notice);
+  const detail = Boolean(voice?.error || voice?.needsAcknowledgement || taskNotice || state.question || taskReview || outcome || review || conversation || source || error || state.agentError || state.screenPermissionNeeded || state.notice);
   // Only clean, selected creates get a one-click shortcut. Other operations need visible review.
   const quickApprove = !state.taskImport && rows.length > 0 && rows.every(p => p.operation === "create" && p.isSelected && p.isApprovable && p.state !== "failed");
   const run = async (action: string, extra: Record<string, unknown> = {}) => {
@@ -62,6 +64,9 @@ export default function NotchApp() {
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       if (e.metaKey && e.key === ".") { e.preventDefault(); void run("stop"); }
+      if (e.key === "Enter" && voice?.active && taskReview?.phase === "waiting") { e.preventDefault(); void run("approveTaskChange", { reviewID: taskReview.id, token: taskReview.token, digest: taskReview.digest }); return; }
+      if (e.key === "Enter" && voice?.active && state.canApprove && state.waitingApproval) { e.preventDefault(); void run("approve", { token: state.approvalToken }); return; }
+      if (e.key === "Escape" && voice?.active) { e.preventDefault(); void voiceRun("stopVoice"); return; }
       if (e.key === "Escape" && !document.querySelector('[role="dialog"]')) {
         e.preventDefault();
         if (review || conversation || source) { setReview(false); setConversation(false); setSource(false); }
@@ -70,7 +75,7 @@ export default function NotchApp() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [review, conversation, source]);
+  }, [review, conversation, source, voice?.active, voice?.token, state.canApprove, state.approvalToken, taskReview]);
   const submit = async () => {
     const message = text.trim();
     if ((!message && !captured) || busy || sending) return;
@@ -82,7 +87,12 @@ export default function NotchApp() {
   if (state.auth?.required && (!state.auth.signedIn || !state.auth.onboarded)) return <div className="notch-shell"><div className="notch-bar"><span className="notch-label">{state.auth.busy ? "Checking your account…" : "Welcome to Calshot"}</span><button className="button primary" onClick={() => void run("openWorkspace")}>Open Calshot</button></div></div>;
   return <div className="notch-shell">
     <div className="notch-bar">
-      {working ? <>
+      {voice?.active && !state.waitingApproval && !taskReview ? <>
+        <Mic size={16} /><div className="voice-level" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={1} aria-valuenow={voice.inputLevel}><i style={{ transform: `scaleX(${Math.max(.03, voice.inputLevel)})` }} /></div>
+        <span className="notch-label" role="status">{voice.state === "thinking" ? "Thinking…" : voice.caption || (voice.state === "connecting" ? "Connecting…" : "Listening · Hold ⌥ to draw")}</span>
+        <button className="button secondary" onClick={() => void voiceRun("stopVoice")}>Stop</button>
+        <button className="text-button" aria-label="Voice usage" onClick={() => setConversation(!conversation)}>Details</button>
+      </> : working ? <>
         <Spinner /><span className="notch-label" role="status">{state.streaming || state.agentStatus || (state.isRecognizing ? "Reading screenshot" : state.saving ? "Saving changes" : "Working…")}</span>
         <button className="button secondary" onClick={() => void run("stop")}><Square size={11} /> Stop</button>
       </> : taskReview ? <>
@@ -102,11 +112,15 @@ export default function NotchApp() {
           {(text.trim() || captured) && <button className={captured ? "button primary" : "icon-button"} disabled={sending || !state.ready} aria-label={captured ? "Add to calendar" : "Send message"}>{captured ? "Add to calendar" : <ArrowUp size={16} />}</button>}
         </form>
       </>}
+      {!voice?.active && <button className="icon-button" aria-label="Start voice" disabled={busy} onClick={() => void voiceRun("startVoice")}><Mic size={15} /></button>}
       <button className="icon-button notch-popout" aria-label="Open full app" title="Open full app" onClick={() => void run("openWorkspace")}><ExternalLink size={15} /></button>
     </div>
     {detail && <div className="notch-details">
       <div className="notch-detail-heading"><span>{state.question ? "Your answer stays in this task" : taskReview ? "Review task change" : outcome ? "Task result" : review ? "Review changes" : source ? "Captured screenshot" : "Calendar conversation"}</span><button className="icon-button" aria-label="Hide details" onClick={() => { if (outcome) setDismissedOutcome(outcome.id); else if (state.question || taskReview) void run("collapseNotch"); else { setReview(false); setConversation(false); setSource(false); } }}><X size={14} /></button></div>
       <InlineError message={error || state.notice} />
+      {voice?.active && <p>{voice.usage.seconds.toFixed(0)} audio seconds · estimated ${voice.usage.estimatedCost.toFixed(3)} <button className="text-button" onClick={() => void voiceRun("setVoiceDrawing", { drawing: !voice.drawing })}>{voice.drawing ? "Finish drawing" : "Draw focus"}</button></p>}
+      <InlineError message={voice?.error}>{voice?.needsKey ? <button onClick={() => void voiceRun("voiceAISettings")}>Open Settings → AI service</button> : <><button onClick={() => void voiceRun("voiceMicrophoneSettings")}>Microphone settings</button><button onClick={() => void run("screenSettings")}>Screen Recording settings</button></>}</InlineError>
+      {voice?.needsAcknowledgement && <div><p>Voice uses paid OpenAI Realtime API billing, including transcription, even when text uses your ChatGPT plan. Your text billing choice stays the same.</p><button className="button primary" onClick={() => void voiceRun("acknowledgeVoiceBilling")}>I understand</button></div>}
       {taskNotice && !state.screenPermissionNeeded && <p role="status">{taskNotice}</p>}
       <InlineError message={state.agentError}>{state.canRetry && <button className="text-button" onClick={() => void run("retryAgent")}>Try again</button>}</InlineError>
       {state.screenPermissionNeeded && <InlineError message={state.status || "Allow Screen Recording to capture your screen."}><button className="text-button" onClick={() => void run("screenSettings")}>Open Screen Recording settings</button></InlineError>}

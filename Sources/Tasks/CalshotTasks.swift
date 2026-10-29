@@ -749,7 +749,7 @@ extension CalshotModel {
         case .workspace:
             guard !agentIsRunning, agentQuestion == nil, !agentIsWaitingForApproval else { throw CalendarToolArgumentError("Finish or stop the current conversation first.") }
         case .agent(let runID):
-            guard agentIsRunning, activeAgentRunID == runID, agentQuestion == nil, !agentIsWaitingForApproval else { throw CancellationError() }
+            guard (agentIsRunning || voiceRunID == runID), activeAgentRunID == runID, agentQuestion == nil, !agentIsWaitingForApproval else { throw CancellationError() }
         }
     }
     private func taskOperationDigest(_ value: JSONValue) throws -> String {

@@ -492,6 +492,40 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             throw CalendarToolArgumentError("Set up your AI service before confirming calendars.")
         }
         switch action {
+        case "startVoice", "stopVoice", "setVoiceDrawing", "acknowledgeVoiceBilling", "voiceSettings", "voiceMicrophoneSettings", "voiceShortcut", "voiceAISettings", "voiceShortcutRecording":
+            let voice = model.voiceSession
+            var fields: Set<String> = ["action", "id", "token"]
+            if action == "setVoiceDrawing" { fields.insert("drawing") }
+            if action == "voiceShortcutRecording" { fields.insert("enabled") }
+            if action == "voiceSettings" { fields.formUnion(["model", "voice", "cap"]) }
+            if action == "voiceShortcut" { fields.formUnion(["keyCode", "modifiers", "label"]) }
+            guard Set(body.keys).isSubset(of: fields) else { throw CalendarToolArgumentError("Invalid voice control.") }
+            guard body["token"] as? String == voice.token else { throw CalendarToolArgumentError("Voice controls changed. Try again.") }
+            if action == "voiceAISettings" { settingsSection = "ai"; model.openSettings() }
+            else if action == "startVoice" { guard model.account.canUseWorkspace else { throw CalendarToolArgumentError("Sign in and finish onboarding to use voice.") }; await voice.toggle() }
+            else if action == "stopVoice" { voice.stop() }
+            else if action == "setVoiceDrawing" { guard let raw = body["drawing"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID(), let drawing = raw as? Bool else { throw CalendarToolArgumentError("Choose a drawing state.") }; voice.setDrawing(drawing) }
+            else if action == "acknowledgeVoiceBilling" { voice.acknowledge() }
+            else if action == "voiceMicrophoneSettings" { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!) }
+            else {
+                guard !isNotch, model.workspaceSelection == .settings, !voice.active else { throw CalendarToolArgumentError("Stop voice and change its preferences in Settings.") }
+                if action == "voiceShortcutRecording" {
+                    guard let value = body["enabled"], CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID(), let enabled = value as? Bool else { throw CalendarToolArgumentError("Choose a recording state.") }
+                    model.setShortcutRecording(enabled)
+                    return
+                } else if action == "voiceShortcut" {
+                    guard let code = body["keyCode"] as? UInt32, code < 128, let modifiers = body["modifiers"] as? UInt32, modifiers > 0, modifiers & ~UInt32(0x1F00) == 0,
+                          let label = body["label"] as? String, (1...40).contains(label.count), code != model.shortcut.keyCode || modifiers != model.shortcut.modifiers else { throw CalendarToolArgumentError("Choose a different modified shortcut.") }
+                    model.voiceShortcut = GlobalShortcut(keyCode: code, modifiers: modifiers, label: label)
+                    model.setShortcutRecording(false)
+                } else {
+                    guard let name = body["model"] as? String, (1...100).contains(name.count), name.range(of: "^[a-zA-Z0-9._-]+$", options: .regularExpression) != nil,
+                          let selectedVoice = body["voice"] as? String, ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"].contains(selectedVoice),
+                          let cap = body["cap"] as? Double, cap.isFinite, (0...10000).contains(cap) else { throw CalendarToolArgumentError("Choose a valid voice, model and monthly cap ($0–10,000).") }
+                    voice.defaults.set(name, forKey: "voice.model"); voice.defaults.set(selectedVoice, forKey: "voice.voice"); voice.defaults.set(cap, forKey: "voice.cap")
+                }
+                voice.invalidateControls()
+            }
         case "checkForUpdates":
             guard !isNotch else { throw CalendarToolArgumentError("Check for updates in Settings.") }
             try model.softwareUpdates.check()
@@ -558,10 +592,11 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 Task { await model.loadCalendars(); refreshAccounts() }
             }
         case "navigate":
+            if model.isRecordingShortcut { model.setShortcutRecording(false) }
             guard let raw = body["page"] as? String, let page = WorkspaceSection(rawValue: raw) else { return }
             if page == .settings {
                 let section = body["section"] as? String ?? "general"
-                guard ["general", "calendars", "friends", "ai", "privacy"].contains(section) else { throw CalendarToolArgumentError("Unknown settings section.") }
+                guard ["general", "calendars", "friends", "ai", "voice", "privacy"].contains(section) else { throw CalendarToolArgumentError("Unknown settings section.") }
                 settingsSection = section
             }
             model.workspaceSelection = page

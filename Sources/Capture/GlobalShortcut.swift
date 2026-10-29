@@ -6,6 +6,8 @@ struct GlobalShortcut: Codable, Equatable {
     var modifiers: UInt32
     var label: String
 
+    static let voiceDefault = GlobalShortcut(keyCode: UInt32(kVK_ANSI_V), modifiers: UInt32(controlKey | shiftKey), label: "⌃⇧V")
+
     static let `default` = GlobalShortcut(keyCode: UInt32(kVK_ANSI_C),
                                           modifiers: UInt32(controlKey | shiftKey),
                                           label: "⌃⇧C")
@@ -28,6 +30,10 @@ struct GlobalShortcut: Codable, Equatable {
 final class HotKeyController {
     static let shared = HotKeyController()
     var onPress: (() -> Void)?
+    var onVoicePress: (() -> Void)?
+    var onVoiceCancel: (() -> Void)?
+    private var cancelRef: EventHotKeyRef?
+    private var voiceRef: EventHotKeyRef?
     private var hotKeyRef: EventHotKeyRef?
     private var handlerInstalled = false
     private(set) var lastRegistrationStatus: OSStatus = noErr
@@ -39,10 +45,13 @@ final class HotKeyController {
         unregister()
         if !handlerInstalled {
             var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-            let handlerStatus = InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+            let handlerStatus = InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
                 guard let userData else { return noErr }
                 let controller = Unmanaged<HotKeyController>.fromOpaque(userData).takeUnretainedValue()
-                DispatchQueue.main.async { controller.onPress?() }
+                var key = EventHotKeyID()
+                if let event { GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &key) }
+                let id = key.id
+                DispatchQueue.main.async { controller.dispatch(id: id) }
                 return noErr
             }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), nil)
             guard handlerStatus == noErr else { lastRegistrationStatus = handlerStatus; return handlerStatus }
@@ -56,6 +65,20 @@ final class HotKeyController {
         return lastRegistrationStatus
     }
 
+    func dispatch(id: UInt32) {
+        switch id { case 1: onPress?(); case 2: onVoicePress?(); case 3: onVoiceCancel?(); default: break }
+    }
+    func setVoiceCancelEnabled(_ enabled: Bool) {
+        if enabled {
+            guard cancelRef == nil else { return }
+            RegisterEventHotKey(UInt32(kVK_Escape), 0, EventHotKeyID(signature: OSType(0x43414C53), id: 3), GetApplicationEventTarget(), 0, &cancelRef)
+        } else if let cancelRef { UnregisterEventHotKey(cancelRef); self.cancelRef = nil }
+    }
+    func unregisterVoice() { if let voiceRef { UnregisterEventHotKey(voiceRef); self.voiceRef = nil } }
+    @discardableResult func registerVoice(_ shortcut: GlobalShortcut) -> OSStatus {
+        if let voiceRef { UnregisterEventHotKey(voiceRef); self.voiceRef = nil }
+        return RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: OSType(0x43414C53), id: 2), GetApplicationEventTarget(), 0, &voiceRef)
+    }
     func unregister() {
         if let hotKeyRef { UnregisterEventHotKey(hotKeyRef); self.hotKeyRef = nil }
     }

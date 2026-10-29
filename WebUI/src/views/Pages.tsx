@@ -733,6 +733,7 @@ export function SettingsPage({ state }: { state: AppState }) {
               ["calendars", "Calendar accounts"],
               ["friends", "Friends & sharing"],
               ["ai", "AI service"],
+              ["voice", "Voice"],
               ["privacy", "Privacy & permissions"],
             ] as const
           ).map(([id, label]) => (
@@ -749,6 +750,7 @@ export function SettingsPage({ state }: { state: AppState }) {
             </button>
           ))}
         </nav>
+        {tab === "voice" && <VoiceSettings state={state} />}
         {tab === "calendars" && <CalendarConnections state={state} />}
         {tab === "friends" && (
           <FriendsSettings
@@ -801,6 +803,7 @@ export function SettingsPage({ state }: { state: AppState }) {
                   {state.shortcut}
                 </button>
               </div>
+              <div className="settings-row"><div><h3>Voice shortcut</h3><p>Configure voice and its shortcut.</p></div><button className="button secondary" onClick={() => { setTab("voice"); void a.run("navigate", { page: "settings", section: "voice" }); }}>{state.voiceShortcut || "⌃⇧V"}</button></div>
               <div className="settings-row">
                 <div>
                   <h3>Show Calshot in the notch</h3>
@@ -1403,4 +1406,34 @@ export function PersonalMemorySettings({ state }: { state: AppState }) {
       </div>
     </section>
   );
+}
+
+function VoiceSettings({ state }: { state: AppState }) {
+  const v = state.voice;
+  const a = useAction();
+  const [model, setModel] = useState(v?.model || "");
+  const [voice, setVoice] = useState(v?.voice || "marin");
+  const [cap, setCap] = useState(String(v?.monthlyCap ?? 10));
+  const [recording, setRecording] = useState(false);
+  if (!v) return <p>Voice settings are available in the Mac app.</p>;
+  return <section className="card settings-card voice-settings"><h2>Voice</h2>
+    <p>Voice uses paid OpenAI Realtime API billing and requires an OpenAI API key. ChatGPT plan billing does not cover voice. The estimate includes transcription.</p>
+    <InlineError message={a.error || v.error} />
+    <label>Voice shortcut <button className="button secondary" disabled={v.active} onClick={() => { setRecording(!recording); void a.run("voiceShortcutRecording", { token: v.token, enabled: !recording }); }} onKeyDown={e => {
+      if (!recording) return;
+      e.preventDefault();
+      if (e.key === "Escape") { setRecording(false); void a.run("voiceShortcutRecording", { token: v.token, enabled: false }); return; }
+      const codes: Record<string, number> = { KeyA: 0, KeyS: 1, KeyD: 2, KeyF: 3, KeyH: 4, KeyG: 5, KeyZ: 6, KeyX: 7, KeyC: 8, KeyV: 9, KeyB: 11, KeyQ: 12, KeyW: 13, KeyE: 14, KeyR: 15, KeyY: 16, KeyT: 17, KeyO: 31, KeyU: 32, KeyI: 34, KeyP: 35, KeyL: 37, KeyJ: 38, KeyK: 40, KeyN: 45, KeyM: 46 };
+      const modifiers = (e.metaKey ? 256 : 0) | (e.shiftKey ? 512 : 0) | (e.altKey ? 2048 : 0) | (e.ctrlKey ? 4096 : 0);
+      if (!modifiers || codes[e.code] === undefined) return;
+      const label = (e.ctrlKey ? "⌃" : "") + (e.altKey ? "⌥" : "") + (e.shiftKey ? "⇧" : "") + (e.metaKey ? "⌘" : "") + e.key.toUpperCase();
+      void a.run("voiceShortcut", { token: v.token, keyCode: codes[e.code], modifiers, label }).finally(() => { void command({ action: "voiceShortcutRecording", token: v.token, enabled: false }).catch(() => {}); }); setRecording(false);
+    }}>{recording ? "Press a modified letter…" : state.voiceShortcut || "⌃⇧V"}</button></label>
+    <label>Model <input value={model} disabled={v.active} onChange={e => setModel(e.target.value)} /></label>
+    <label>Voice <select value={voice} disabled={v.active} onChange={e => setVoice(e.target.value)}>{["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"].map(name => <option key={name}>{name}</option>)}</select></label>
+    <label>Monthly cap (USD) <input type="number" min="0" max="10000" value={cap} disabled={v.active} onChange={e => setCap(e.target.value)} /></label>
+    <button className="button primary" disabled={v.active || a.busy} onClick={() => void a.run("voiceSettings", { token: v.token, model, voice, cap: Number(cap) })}>Save voice settings</button>
+    <p>Microphone: {v.permissions.microphone ? "Allowed" : "Check access"} <button onClick={() => void a.run("voiceMicrophoneSettings", { token: v.token })}>Open microphone settings</button></p>
+    <p>Screen Recording: {v.permissions.screen ? "Allowed" : "Voice only until allowed"} <button onClick={() => void a.run("screenSettings")}>Set up Screen Recording</button></p>
+  </section>;
 }

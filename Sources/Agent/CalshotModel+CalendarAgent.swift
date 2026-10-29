@@ -27,7 +27,7 @@ extension CalshotModel {
             }, sourceContext: { [weak self] in self?.currentAgentPrompt ?? "" },
             sourceRegion: { [weak self] in self?.screenRecognition.region(for: $0) },
             sourceCaptureID: { [weak self] in self?.currentAgentSourceID },
-            onApproval: { [weak self] value in self?.agentIsWaitingForApproval = value },
+            onApproval: { [weak self] value in self?.agentIsWaitingForApproval = value; self?.voiceSession.review(value) },
             onQuestion: { [weak self] question in self?.agentQuestion = question },
             onStep: { [weak self] text in self?.agentStatus = text })
         executor.remember = { [weak self] kind, text in
@@ -638,9 +638,10 @@ extension CalshotModel {
 
     private func awaitAgentTaskReview(_ review: AgentTaskReview) async -> AgentTaskReviewDecision {
         await withCheckedContinuation { continuation in
-            guard agentTaskReview == nil, agentTaskReviewContinuation == nil, agentIsRunning,
+            guard agentTaskReview == nil, agentTaskReviewContinuation == nil, (agentIsRunning || voiceRunID == review.runID),
                   activeAgentRunID == review.runID, !Task.isCancelled else { continuation.resume(returning: .cancelled); return }
             agentTaskReviewContinuation = continuation
+            voiceSession.review(true)
             agentTaskReview = review
             agentStatus = "Review the task change"
         }
@@ -839,7 +840,7 @@ extension CalshotModel {
     /// review opens here. Never changes calendar approval state and never writes to a calendar provider.
     func authorizeAgentTaskChange(_ request: AgentPreparedTaskMutation, runID: UUID, preflighted: Bool = false) async throws -> JSONValue {
         // The review stays visible (as "saving") until the exact receipts exist, then always clears.
-        defer { if agentTaskReview?.id == request.id { agentTaskReview = nil } }
+        defer { if agentTaskReview?.id == request.id { agentTaskReview = nil }; voiceSession.review(false) }
         return try await performAgentTaskAuthorization(request, runID: runID, preflighted: preflighted)
     }
 
@@ -859,7 +860,7 @@ extension CalshotModel {
         var reviewReason: String?
         var viaPermission = true
         // Saved grants cover only requests the user typed. A screenshot-started run always asks.
-        if agentTypedRunID != runID { reviewReason = "A screenshot started this request, so Calshot asks before changing your tasks." }
+        if agentTypedRunID != runID { reviewReason = voiceRunID == runID ? "Voice requests always ask before changing your tasks." : "A screenshot started this request, so Calshot asks before changing your tasks." }
         do {
             for operation in plan.operations where reviewReason == nil {
                 let resources = await agentTaskResources(plan, runID: runID)

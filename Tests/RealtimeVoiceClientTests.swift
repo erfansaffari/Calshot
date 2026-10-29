@@ -255,3 +255,91 @@ final class RealtimeVoiceClientTests: XCTestCase {
         audio.stop(); audio.stop(); XCTAssertEqual(audio.flush(), 0)
     }
 }
+
+@MainActor
+final class VoiceSessionIntegrationTests: XCTestCase {
+    private var defaults: UserDefaults!
+    private var client: PreviewVoiceClient!
+    private var audio: PreviewVoiceAudio!
+    private var overlay: PreviewVoiceOverlay!
+    private var frames: PreviewVoiceFrames!
+    private func make(microphone: Bool = true, screen: Bool = true) -> VoiceSessionController {
+        defaults = UserDefaults(suiteName: "VoiceSessionTests.\(UUID())")!
+        defaults.set(true, forKey: "voice.billingAcknowledged")
+        client = PreviewVoiceClient(); audio = PreviewVoiceAudio(); overlay = PreviewVoiceOverlay(); frames = PreviewVoiceFrames()
+        let session = VoiceSessionController(client: client, audio: audio, overlay: overlay, frames: frames, defaults: defaults, permission: { microphone }, screenPermission: { screen })
+        session.eligible = { true }; session.hasKey = { true }; return session
+    }
+    private func settle() async { for _ in 0..<50 { await Task.yield() } }
+    func testStateTransitionsAndToggleReleasesMicrophone() async {
+        let s = make(); await s.toggle(); XCTAssertEqual(s.state, .connecting)
+        s.handle(.sessionUpdated); XCTAssertEqual(s.state, .listening); XCTAssertTrue(audio.running)
+        s.handle(.responseCreated); XCTAssertEqual(s.state, .thinking)
+        s.handle(.audio(itemID: "fictional", contentIndex: 0, data: Data())); XCTAssertEqual(s.state, .speaking)
+        s.review(true); XCTAssertEqual(s.state, .waitingForReview)
+        await s.toggle(); XCTAssertEqual(s.state, .ended); XCTAssertFalse(audio.running)
+    }
+    func testMissingKeyNeverConnects() async {
+        let s = make(); s.hasKey = { false }; await s.toggle(); XCTAssertTrue(s.needsKey); XCTAssertNil(client.configuration)
+    }
+    func testBillingAcknowledgementRequired() async {
+        let s = make(); defaults.set(false, forKey: "voice.billingAcknowledged"); await s.toggle()
+        XCTAssertTrue(s.needsAcknowledgement); XCTAssertNil(client.configuration)
+        s.acknowledge(); await s.toggle(); XCTAssertEqual(s.state, .connecting); s.stop()
+    }
+    func testMicrophoneDeniedBlocksStart() async { let s = make(microphone: false); await s.toggle(); XCTAssertEqual(s.state, .failed); XCTAssertNil(client.configuration) }
+    func testScreenDeniedContinuesVoiceOnly() async {
+        let s = make(screen: false); await s.toggle(); s.handle(.sessionUpdated); s.handle(.speechStopped); await settle()
+        XCTAssertEqual(client.images, 0); XCTAssertEqual(client.responses, 1); XCTAssertNotNil(s.error); s.stop()
+    }
+    func testExactlyOneFramePerTurnAndNoPeriodicFrames() async {
+        let s = make(); await s.toggle(); s.handle(.sessionUpdated)
+        s.tick(now: Date().addingTimeInterval(5)); XCTAssertEqual(frames.captures, 0)
+        overlay.marks = [FocusMark(kind: .point, points: [.zero], displayID: 1, timestamp: Date())]
+        s.handle(.speechStopped); await settle(); XCTAssertEqual(client.images, 1); XCTAssertEqual(frames.captures, 1); XCTAssertTrue(overlay.marks.isEmpty)
+        s.tick(now: Date().addingTimeInterval(10)); XCTAssertEqual(frames.captures, 1); s.stop()
+    }
+    func testDrawingIdleSendsOnceAndClearsMarks() async throws {
+        let s = make(); await s.toggle(); s.handle(.sessionUpdated)
+        overlay.marks = [FocusMark(kind: .point, points: [.zero], displayID: 1, timestamp: Date())]
+        overlay.onMarksChanged?(overlay.marks)
+        XCTAssertEqual(frames.captures, 0)
+        try await Task.sleep(for: .seconds(1.7))
+        XCTAssertEqual(frames.captures, 1); XCTAssertEqual(client.images, 1); XCTAssertTrue(overlay.marks.isEmpty); s.stop()
+    }
+    func testSpokenYesNeverApprovesAndToolResultUsesExecutorHook() async {
+        let s = make(); var executed = 0; s.execute = { _, _ in executed += 1; return "{\"saved\":false}" }
+        await s.toggle(); s.handle(.sessionUpdated); s.review(true)
+        s.handle(.userTranscript(itemID: "fictional", text: "yes", final: true)); s.handle(.speechStopped); await settle()
+        XCTAssertEqual(s.state, .waitingForReview); XCTAssertEqual(executed, 0)
+        s.review(false); s.handle(.functionCall(callID: "fictional", name: "recall", argumentsJSON: "{}")); await settle()
+        XCTAssertEqual(executed, 1); XCTAssertEqual(client.results.count, 1); s.stop()
+    }
+    func testReconnectSendsTranscriptsAndNeverReplaysTool() async {
+        let s = make(); await s.toggle(); s.handle(.sessionUpdated)
+        s.handle(.userTranscript(itemID: "fictional", text: "My fictional schedule", final: true))
+        client.onReconnect?(); s.handle(.sessionUpdated); await settle()
+        XCTAssertTrue(client.texts.first?.contains("My fictional schedule") == true); XCTAssertTrue(client.results.isEmpty); s.stop()
+    }
+    func testIdleAndAccountLossEndSession() async {
+        let s = make(); await s.toggle(); s.tick(now: Date().addingTimeInterval(61)); XCTAssertEqual(s.state, .ended)
+        await s.toggle(); s.eligible = { false }; s.tick(now: Date()); XCTAssertEqual(s.state, .ended)
+    }
+    func testTenMinuteCapWithActiveTurns() async {
+        let s = make(); await s.toggle(); s.handle(.sessionUpdated)
+        s.handle(.speechStarted); s.tick(now: Date().addingTimeInterval(601)); XCTAssertEqual(s.state, .ended)
+    }
+    func testMonthlyCapBlocksNewSession() async {
+        let s = make(); defaults.set(0.0, forKey: "voice.cap"); await s.toggle(); XCTAssertEqual(s.state, .failed); XCTAssertNil(client.configuration)
+    }
+    func testHotkeyRoutingKeepsCaptureVoiceAndEscapeIndependent() {
+        let hotkey = HotKeyController.shared
+        let oldCapture = hotkey.onPress, oldVoice = hotkey.onVoicePress, oldCancel = hotkey.onVoiceCancel
+        defer { hotkey.onPress = oldCapture; hotkey.onVoicePress = oldVoice; hotkey.onVoiceCancel = oldCancel }
+        var capture = 0, voice = 0, cancel = 0
+        hotkey.onPress = { capture += 1 }; hotkey.onVoicePress = { voice += 1 }; hotkey.onVoiceCancel = { cancel += 1 }
+        hotkey.dispatch(id: 1); hotkey.dispatch(id: 2); hotkey.dispatch(id: 3); hotkey.dispatch(id: 99)
+        XCTAssertEqual(capture, 1); XCTAssertEqual(voice, 1); XCTAssertEqual(cancel, 1)
+    }
+    func testNewSessionInvalidatesControlToken() async { let s = make(); let old = s.token; await s.toggle(); XCTAssertNotEqual(old, s.token); s.stop() }
+}
