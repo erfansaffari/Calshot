@@ -104,7 +104,47 @@ it("shows speaking captions and a voice billing acknowledgement inline", async (
   expect(mock.command).toHaveBeenCalledWith({ action: "acknowledgeVoiceBilling", token: "voice-current" });
 });
 it("Escape ends voice without approving the review", async () => {
-  voiceFixture(); render(<NotchApp />); fireEvent.keyDown(window, { key: "Escape" });
+  voiceReview(); render(<NotchApp />); fireEvent.keyDown(window, { key: "Escape" });
   await waitFor(() => expect(mock.command).toHaveBeenCalledWith({ action: "stopVoice", token: "voice-current" }));
   expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
+});
+function voiceReview() {
+  const proposals = mock.state.proposals;
+  voiceFixture(); mock.state.proposals = proposals; mock.state.waitingApproval = true; mock.state.canApprove = true;
+  proposals.forEach(p => { p.operation = "create"; p.isSelected = true; p.isApprovable = true; p.state = "pending"; p.inScope = true; p.isFinished = false; });
+}
+it("Return requires a visible clean review and ignores repeats, controls, and replacement tokens", async () => {
+  voiceReview(); const view = render(<NotchApp />);
+  fireEvent.keyDown(window, { key: "Enter" });
+  expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "Review", exact: true }));
+  fireEvent.keyDown(window, { key: "Enter", repeat: true });
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Follow-up message" }), { key: "Enter" });
+  expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
+  fireEvent.keyDown(window, { key: "Enter" });
+  expect(mock.command.mock.calls.filter(([c]) => c.action === "approve")).toHaveLength(1);
+  mock.state = { ...mock.state, approvalToken: "replacement" }; view.rerender(<NotchApp />);
+  fireEvent.keyDown(window, { key: "Enter" });
+  expect(mock.command.mock.calls.filter(([c]) => c.action === "approve")).toHaveLength(1);
+});
+it.each(["update", "delete", "move"] as const)("Return never approves %s", async operation => {
+  voiceReview(); mock.state.proposals.forEach(p => { p.operation = operation; }); render(<NotchApp />);
+  await userEvent.click(screen.getByRole("button", { name: "Review", exact: true }));
+  fireEvent.keyDown(window, { key: "Enter" });
+  expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
+});
+it("shows screen access while voice frames may be captured", () => {
+  voiceFixture(); render(<NotchApp />); expect(screen.getByText("Calshot can see your screen")).toBeTruthy();
+});
+it("offers only token-bound approval and dismissal for pending memory in voice", async () => {
+  voiceFixture(); mock.state.personalMemory = { loaded: true, items: [], token: "memory-current", pending: [{ id: "suggestion", version: "version", kind: "preference", text: "Fictional memory", origin: "suggested", status: "pendingApproval", createdAt: "2026-10-29", updatedAt: "2026-10-29" }] };
+  render(<NotchApp />); await userEvent.click(screen.getByText("Remember this"));
+  expect(mock.command).toHaveBeenCalledWith({ action: "approveMemory", token: "memory-current", memoryID: "suggestion", expectedVersion: "version" });
+  await userEvent.click(screen.getByText("Dismiss suggestion"));
+  expect(mock.command).toHaveBeenCalledWith({ action: "rejectMemory", token: "memory-current", memoryID: "suggestion", expectedVersion: "version", dontSuggestAgain: false });
+});
+it("Return never approves a visible task change review", () => {
+  voiceFixture(); mock.state.taskReview = { id: "task-review", token: "task-token", digest: "digest", kind: "edit", heading: "Review task change", phase: "waiting", reason: "Voice requires review", calendarWrites: 0, rows: [{ id: "task", title: "Fictional task", changes: [{ label: "Title", before: "Before", after: "After" }] }] };
+  render(<NotchApp />); expect(screen.getByText("Fictional task")).toBeTruthy(); fireEvent.keyDown(window, { key: "Enter" });
+  expect(mock.command.mock.calls.some(([c]) => c.action === "approveTaskChange")).toBe(false);
 });

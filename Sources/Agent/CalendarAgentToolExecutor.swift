@@ -92,7 +92,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 guard let raw = try CalendarToolDraftMapper.string(fields, "kind", required: true, limit: 20), let kind = MemoryItem.Kind(rawValue: raw),
                       let text = try CalendarToolDraftMapper.string(fields, "text", required: true, limit: 500), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CalendarToolArgumentError("Choose a valid memory kind and text.") }
                 try remember(kind, text)
-                return JSONValue.object(["status": .string("pendingApproval"), "message": .string("Suggested memory awaits your approval in Settings → Privacy & permissions → Memory.")]).jsonString()
+                return JSONValue.object(["status": .string("pendingApproval"), "message": .string("Suggested memory awaits your approval in the notch or Settings → Privacy & permissions → Memory.")]).jsonString()
             case "recall":
                 try CalendarToolDraftMapper.keys(fields, allowed: ["query"])
                 guard let recall, let query = try CalendarToolDraftMapper.string(fields, "query", required: true, limit: 500), !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CalendarToolArgumentError("Provide a query of 1–500 characters.") }

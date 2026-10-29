@@ -413,8 +413,118 @@ final class WebWorkspaceTests: XCTestCase {
         let snapshot = WebWorkspaceState.make(model, imageURL: nil, notice: nil, accounts: [], googleReady: false)
         XCTAssertEqual(snapshot.objectValue?["voice"]?.objectValue?["state"]?.stringValue, "idle")
     }
-    private func fixture(service: any CalendarDestinationService = CalendarDemoService()) -> CalshotModel {
-        CalshotModel(calendarService: service, memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)), loadsAIConnection: false)
+    private func wiredVoice(_ model: CalshotModel) -> (VoiceSessionController, PreviewVoiceClient) {
+        let defaults = UserDefaults(suiteName: "VoiceWiring." + UUID().uuidString)!
+        defaults.set(2, forKey: "voice.acknowledgementVersion")
+        let client = PreviewVoiceClient()
+        let raw = VoiceSessionController(client: client, audio: PreviewVoiceAudio(), overlay: PreviewVoiceOverlay(), frames: PreviewVoiceFrames(), defaults: defaults, permission: { true }, screenPermission: { false })
+        let session = model.makeVoiceSession(using: raw); model.voiceSession = session
+        session.eligible = { true }; session.hasKey = { true }; model.openAIAnalysisEnabled = true
+        return (session, client)
+    }
+    func testVoiceSpokenApprovalStopAndTimedReviewUseRealExecutor() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, client) = wiredVoice(model)
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        let args = #"{"events":[{"title":"Fictional workshop","date":"2026-11-10","startTime":"10:00","endTime":"11:00","allDay":false,"timeZone":"America/Toronto","location":null,"url":null,"notes":null,"evidence":"Fictional workshop November 10 2026 10-11am"}]}"#
+        voice.handle(.functionCall(callID: "pending", name: "create_events", argumentsJSON: args))
+        for _ in 0..<1000 { if model.agentIsWaitingForApproval { break }; await Task.yield() }
+        XCTAssertTrue(model.agentIsWaitingForApproval); XCTAssertFalse(model.calendarActions.proposals.isEmpty)
+        voice.handle(.userTranscript(itemID: "yes", text: "yes approve it", final: true))
+        voice.handle(.assistantTranscript(itemID: "reply", text: "Click Approve in the notch.", final: true)); voice.handle(.speechStopped)
+        XCTAssertTrue(model.calendarActions.proposals.allSatisfy { !$0.isFinished && $0.receipt == nil }); XCTAssertTrue(client.results.isEmpty)
+        voice.tick(now: Date().addingTimeInterval(61)); XCTAssertFalse(voice.active); XCTAssertNil(model.voiceRunID)
+        XCTAssertTrue(model.agentIsWaitingForApproval); XCTAssertThrowsError(try voice.prepare?())
+        model.skipAgentApproval()
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertFalse(model.agentIsWaitingForApproval)
+        // A second request is cancelled by explicit Stop, even with the text agent idle.
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        voice.handle(.functionCall(callID: "second", name: "create_events", argumentsJSON: args))
+        for _ in 0..<1000 { if model.agentIsWaitingForApproval { break }; await Task.yield() }
+        XCTAssertTrue(model.agentIsWaitingForApproval); model.stopAgent()
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertFalse(model.agentIsWaitingForApproval); XCTAssertNil(model.voiceRunID)
+        XCTAssertTrue(model.calendarActions.proposals.allSatisfy { !$0.isFinished })
+    }
+    func testVoiceWiringClearsOCRGuardsPrepareAndRejectsStaleRuns() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, _) = wiredVoice(model)
+        model.agentTypedRunID = UUID(); model.recognizedText = "Stale private OCR"
+        model.ocrTask = Task { ScreenTextRecognition(lines: []) }; model.analysisTask = Task {}
+        let billing = model.agentUseAPIKey
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        XCTAssertNil(model.ocrTask); XCTAssertNil(model.analysisTask); XCTAssertNil(model.agentTypedRunID); XCTAssertTrue(model.recognizedText.isEmpty)
+        XCTAssertEqual(model.agentUseAPIKey, billing)
+        let text = await voice.execute?("read_screen_text", .object([:]))
+        XCTAssertFalse(text?.contains("Stale private OCR") == true)
+        try voice.transcript?("user", "Fictional voice turn"); XCTAssertEqual(model.agentMessages.last?.content, "Fictional voice turn")
+        let executor = model.agentToolExecutor; model.agentToolExecutor = nil
+        let unavailable = await voice.execute?("read_screen_text", .object([:]))
+        XCTAssertEqual(unavailable, "{\"error\":\"Tools unavailable\"}"); model.agentToolExecutor = executor
+        model.activeAgentRunID = UUID()
+        let stale = await voice.execute?("read_screen_text", .object([:]))
+        XCTAssertEqual(stale, "{\"cancelled\":true}"); XCTAssertThrowsError(try voice.transcript?("user", "stale")); voice.stop()
+        model.calendarActions.replace(with: [row()])
+        XCTAssertThrowsError(try voice.prepare?()); XCTAssertEqual(model.calendarActions.proposals.count, 1)
+        model.calendarActions.replace(with: []); model.isRecognizing = true; XCTAssertThrowsError(try voice.prepare?())
+        model.isRecognizing = false; model.isCapturing = true; XCTAssertThrowsError(try voice.prepare?())
+        model.isCapturing = false; model.agentQuestion = AgentQuestion(question: "Fictional question", choices: [])
+        XCTAssertThrowsError(try voice.prepare?())
+    }
+    func testVoiceSharedContextIsStampedAndExcludedFromMemory() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, _) = wiredVoice(model); await voice.toggle()
+        try voice.transcript?("user", "Fictional shared friend request")
+        model.agentToolExecutor?.listFriends = { .object(["friends": .array([])]) }
+        _ = await voice.execute?("list_friends", .object([:]))
+        try voice.transcript?("assistant", "Fictional shared friend result")
+        XCTAssertTrue(model.agentMessages.allSatisfy { $0.sharedCalendarContext == true })
+        XCTAssertFalse(model.memoryStore.agentMemory().contains { $0.content?.contains("Fictional shared friend") == true }); voice.stop()
+    }
+    func testVoiceShortcutCollisionRegistrationFailureAndNotchMemoryValidation() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
+        let bridge = WebWorkspaceController(model: model), notch = WebWorkspaceController(model: model, isNotch: true)
+        do { try await bridge.handle("voiceShortcut", ["token": voice.token, "keyCode": model.shortcut.keyCode, "modifiers": model.shortcut.modifiers, "label": model.shortcut.label]); XCTFail("Collision accepted") } catch {}
+        let old = model.shortcut; model.updateShortcut(model.voiceShortcut); XCTAssertEqual(model.shortcut, old)
+        model.reportVoiceShortcutRegistration(-9876); XCTAssertTrue(voice.error?.contains("-9876") == true)
+        let suggestion = try model.suggestPersonalMemory(kind: .preference, text: "Fictional preference")
+        let body: [String: Any] = ["token": model.personalMemory.token, "memoryID": suggestion.id.uuidString, "expectedVersion": suggestion.version.uuidString]
+        try await notch.handle("approveMemory", body)
+        XCTAssertEqual(model.personalMemory.items.first?.status, .active)
+        do { try await notch.handle("approveMemory", body); XCTFail("Stale suggestion accepted") } catch {}
+        do { try await notch.handle("addMemory", ["token": model.personalMemory.token, "kind": "fact", "text": "Not allowed"]); XCTFail("Notch memory edit accepted") } catch {}
+    }
+    func testStartVoiceBridgeRequiresConsentKeyAndNewAcknowledgement() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, client) = wiredVoice(model); let bridge = WebWorkspaceController(model: model)
+        model.openAIAnalysisEnabled = false
+        try await bridge.handle("startVoice", ["token": voice.token]); XCTAssertNil(client.configuration); XCTAssertTrue(voice.error?.contains("OpenAI analysis") == true)
+        model.openAIAnalysisEnabled = true; voice.hasKey = { false }
+        try await bridge.handle("startVoice", ["token": voice.token]); XCTAssertNil(client.configuration); XCTAssertTrue(voice.needsKey)
+        voice.hasKey = { true }; voice.defaults.set(0, forKey: "voice.acknowledgementVersion")
+        try await bridge.handle("startVoice", ["token": voice.token]); XCTAssertNil(client.configuration); XCTAssertTrue(voice.needsAcknowledgement)
+    }
+    func testVoiceBridgeValidationAndExclusiveActions() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
+        let bridge = WebWorkspaceController(model: model)
+        for (action, extra) in [("setVoiceDrawing", ["drawing": "true"]), ("voiceShortcutRecording", ["enabled": "true"]), ("stopVoice", ["unknown": "value"])] {
+            var body: [String: Any] = extra; body["token"] = voice.token
+            do { try await bridge.handle(action, body); XCTFail("Accepted invalid control") } catch {}
+        }
+        for modifiers in [512, 2048] {
+            do { try await bridge.handle("voiceShortcut", ["token": voice.token, "keyCode": 9, "modifiers": modifiers, "label": "invalid"]); XCTFail("Accepted weak shortcut") } catch {}
+        }
+        await voice.toggle()
+        for action in ["newTask", "retryAgent", "capture", "voiceSettings", "voiceShortcut"] {
+            do { try await bridge.handle(action, ["token": voice.token]); XCTFail("Accepted busy action") } catch { XCTAssertTrue(error.localizedDescription.contains("Voice mode")) }
+        }
+        let record = try model.memoryStore.recordCommand("Fictional history")
+        model.restoreCalendarReview(record); XCTAssertTrue(voice.active)
+        await model.runAgentSession(prompt: "Fictional text", image: nil, sessionID: model.activeAgentRunID!)
+        XCTAssertTrue(voice.active); XCTAssertTrue(model.agentError?.contains("Voice mode") == true)
+        await model.capture(); XCTAssertTrue(voice.error?.contains("stop it first") == true)
+        await model.startAgentCommand(prompt: "Fictional text"); XCTAssertTrue(model.agentError?.contains("Voice mode") == true)
+        voice.stop(); XCTAssertNil(model.voiceRunID)
+    }
+    private func fixture(service: any CalendarDestinationService = CalendarDemoService(), agentClient: (any CalendarAgentModelClient)? = nil) -> CalshotModel {
+        CalshotModel(calendarService: service, memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)), loadsAIConnection: false, agentClient: agentClient)
     }
     private func row() -> CalendarActionProposal {
         CalendarActionProposal(draft: EventDraft(title: "Reviewed exam", startDate: Date(timeIntervalSince1970: 1_800_000_000), endDate: Date(timeIntervalSince1970: 1_800_003_600), isAllDay: false, timeZoneIdentifier: "America/Toronto", location: nil, url: nil, notes: nil, sourceText: "Exam source", confidence: 1, ambiguities: []))
@@ -1712,5 +1822,13 @@ final class AgentTaskReviewIntegrationTests: XCTestCase {
         let fingerprint = try CalshotModel.taskSourceFingerprint(service.snapshot)
         do { _ = try await model.linkSelectedEventDirectly(snapshot: service.snapshot, destinationID: "fictional-readonly", expectedFingerprint: fingerprint); XCTFail("Linked without a readable permission store") } catch {}
         XCTAssertTrue(model.taskDocument.items.isEmpty); XCTAssertNotNil(model.agentPermissionError)
+    }
+}
+
+@MainActor
+private struct VoiceFixtureTextClient: CalendarAgentModelClient {
+    func turn(conversation: [AgentMessage], imageDataURL: String?, instructions: String,
+              tools: [JSONValue], onText: @escaping @MainActor (String) -> Void) async throws -> AgentModelResponse {
+        throw CancellationError()
     }
 }

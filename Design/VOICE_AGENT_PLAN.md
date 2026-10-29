@@ -70,3 +70,15 @@ Work runs in separate worktrees with disjoint files. Stub files and Xcode member
 | Security and permission review | Claude Sonnet 5.5 (review) | read-only |
 
 Gates: each step builds, its tests pass with mocks (no real network, microphone or calendar writes), and the full native and WebUI suites still pass. A real voice session is verified last, with fictional data and the owner's explicit go-ahead because it uses the paid API.
+
+## Review hardening (2026-10-29)
+
+Voice requires OpenAI analysis consent and acknowledgement version 2, disclosing that microphone audio and screen frames are sent to OpenAI. Revoking consent stops the session. The notch shows screen visibility whenever frames are enabled.
+
+Return only adds a visible, clean, fully selected create review; it ignores repeats, interactive controls and replacement tokens within 500 ms. Task changes, updates, deletes and moves require a click. Spoken guidance always says “Click Approve in the notch” so it remains correct when the panel is not key. Escape is local to Calshot surfaces; no bare global Escape hotkey is registered.
+
+The capture shortcut during voice displays “Voice mode is on — stop it first to capture a screenshot.” It does not capture or silently copy a region. Pending memory suggestions can be approved or dismissed in the notch using the existing memory token/version validation; other memory management remains in Settings.
+
+Explicit Stop, sign-out, account teardown and quit cancel voice executor continuations. Idle/time-limit endings preserve pending reviews and receipts. Skipping a voice calendar review removes its unfinished rows while retaining completed receipts, allowing another session. New voice sessions reject outstanding questions, capture/recognition and unfinished proposals, and clear stale OCR tasks and screen recognition. Shared-friend turns are excluded from memory and sync by the existing shared-context marker.
+
+Realtime response requests coalesce while a response is in flight. Reconnect discards prior connection tool outputs without cancelling completed writes; it restores the review state and sends bounded transcript context only when present. Usage persistence is limited to changed usage every five seconds and at session end; unchanged timer snapshots do not publish.
