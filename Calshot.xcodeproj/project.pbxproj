@@ -7,6 +7,16 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1AE5BBE24CCF1A64C89E52CA /* PersonalMemoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8486D31BE6FF0E5E873F7154; };
+		6423AF195207CB7F70A67B1F /* MemoryContextBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F2934381A93AC3C531CB4BF; };
+		E3DCECAC7AD4CDD0C06F91F9 /* RealtimeVoiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8494EAD4600247B362F45E9; };
+		90DF6323D49B1AE000342C7F /* VoiceAudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C49AFEE5793CF85304544B3F; };
+		D1728034BEF312B46E0B9A4D /* FocusOverlayController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40146CC37DACA6CB1B55E038; };
+		65B0B6BCFAE7C5638C128A88 /* FocusFrameComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE66089867DD77D53E9DEA0F; };
+		882EB43220D0481ECF71D26C /* VoiceSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D039F976DA3AE372D5383F; };
+		A5753E8E7009E1E01D2A1D84 /* PersonalMemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7D0E036087F9FFA7F2DA048; };
+		706282BAEFDC99C9D1C76199 /* RealtimeVoiceClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE7997CD9661BBFFC5009705; };
+		857A314566AA789088D2C4B2 /* FocusOverlayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D062906FE342D3A59AF6CF1; };
 		C73000000000000000000001 /* CalshotAgentPermissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = C72000000000000000000001; };
 		C73000000000000000000002 /* AgentPermissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C72000000000000000000002; };
 		C63000000000000000000001 /* CalshotTasks.swift in Sources */ = {isa = PBXBuildFile; fileRef = C62000000000000000000001; };
@@ -79,6 +89,16 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		8486D31BE6FF0E5E873F7154 /* PersonalMemoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "PersonalMemoryStore.swift"; path = "Sources/Memory/PersonalMemoryStore.swift"; sourceTree = SOURCE_ROOT; };
+		5F2934381A93AC3C531CB4BF /* MemoryContextBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "MemoryContextBuilder.swift"; path = "Sources/Memory/MemoryContextBuilder.swift"; sourceTree = SOURCE_ROOT; };
+		A8494EAD4600247B362F45E9 /* RealtimeVoiceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "RealtimeVoiceClient.swift"; path = "Sources/Voice/RealtimeVoiceClient.swift"; sourceTree = SOURCE_ROOT; };
+		C49AFEE5793CF85304544B3F /* VoiceAudioEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceAudioEngine.swift"; path = "Sources/Voice/VoiceAudioEngine.swift"; sourceTree = SOURCE_ROOT; };
+		40146CC37DACA6CB1B55E038 /* FocusOverlayController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "FocusOverlayController.swift"; path = "Sources/Voice/FocusOverlayController.swift"; sourceTree = SOURCE_ROOT; };
+		BE66089867DD77D53E9DEA0F /* FocusFrameComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "FocusFrameComposer.swift"; path = "Sources/Voice/FocusFrameComposer.swift"; sourceTree = SOURCE_ROOT; };
+		B0D039F976DA3AE372D5383F /* VoiceSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceSessionController.swift"; path = "Sources/Voice/VoiceSessionController.swift"; sourceTree = SOURCE_ROOT; };
+		D7D0E036087F9FFA7F2DA048 /* PersonalMemoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "PersonalMemoryTests.swift"; path = "Tests/PersonalMemoryTests.swift"; sourceTree = SOURCE_ROOT; };
+		CE7997CD9661BBFFC5009705 /* RealtimeVoiceClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "RealtimeVoiceClientTests.swift"; path = "Tests/RealtimeVoiceClientTests.swift"; sourceTree = SOURCE_ROOT; };
+		8D062906FE342D3A59AF6CF1 /* FocusOverlayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "FocusOverlayTests.swift"; path = "Tests/FocusOverlayTests.swift"; sourceTree = SOURCE_ROOT; };
 		C72000000000000000000001 /* CalshotAgentPermissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalshotAgentPermissions.swift"; path = "Sources/Agent/CalshotAgentPermissions.swift"; sourceTree = SOURCE_ROOT; };
 		C72000000000000000000002 /* AgentPermissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "AgentPermissionTests.swift"; path = "Tests/AgentPermissionTests.swift"; sourceTree = SOURCE_ROOT; };
 		C62000000000000000000001 /* CalshotTasks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalshotTasks.swift"; path = "Sources/Tasks/CalshotTasks.swift"; sourceTree = SOURCE_ROOT; };
@@ -160,6 +180,29 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		9E7DB4BEF03B97A50BC03C97 /* Voice */ = {
+			isa = PBXGroup;
+			children = (
+				A8494EAD4600247B362F45E9 /* RealtimeVoiceClient.swift */,
+				C49AFEE5793CF85304544B3F /* VoiceAudioEngine.swift */,
+				40146CC37DACA6CB1B55E038 /* FocusOverlayController.swift */,
+				BE66089867DD77D53E9DEA0F /* FocusFrameComposer.swift */,
+				B0D039F976DA3AE372D5383F /* VoiceSessionController.swift */,
+			);
+			name = "Voice";
+			path = "Voice";
+			sourceTree = "<group>";
+		};
+		F24278BECDB0F1FFCE679F1B /* Memory */ = {
+			isa = PBXGroup;
+			children = (
+				8486D31BE6FF0E5E873F7154 /* PersonalMemoryStore.swift */,
+				5F2934381A93AC3C531CB4BF /* MemoryContextBuilder.swift */,
+			);
+			name = "Memory";
+			path = "Memory";
+			sourceTree = "<group>";
+		};
 		A10000000000000000000003 /* Project */ = {
 			isa = PBXGroup;
 			children = (
@@ -180,9 +223,11 @@
 				05BCB71698E510B449ABA384 /* Calendar */,
 				A06AD5925567DBA93E8E2332 /* Capture */,
 				93739E243CBC5207954841FE /* Persistence */,
+				F24278BECDB0F1FFCE679F1B /* Memory */,
 				88E4AD8C98B278AADE584604 /* Previews */,
 				F080C8B217D31D25DC1F670B /* Tasks */,
 				DBE450BD0E475073895F3E5B /* Updates */,
+				9E7DB4BEF03B97A50BC03C97 /* Voice */,
 				626614A7C10438693B74EFBE /* Workspace */,
 			);
 			name = "Sources";
@@ -317,6 +362,9 @@
 		15F10D0B2C3E7BDEAF1D37E5 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				D7D0E036087F9FFA7F2DA048 /* PersonalMemoryTests.swift */,
+				CE7997CD9661BBFFC5009705 /* RealtimeVoiceClientTests.swift */,
+				8D062906FE342D3A59AF6CF1 /* FocusOverlayTests.swift */,
 				A20000000000000000000028 /* AgentMemoryTests.swift */,
 				C72000000000000000000002 /* AgentPermissionTests.swift */,
 				A2000000000000000000001C /* CalendarActionTests.swift */,
@@ -475,6 +523,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1AE5BBE24CCF1A64C89E52CA /* PersonalMemoryStore.swift in Sources */,
+				6423AF195207CB7F70A67B1F /* MemoryContextBuilder.swift in Sources */,
+				E3DCECAC7AD4CDD0C06F91F9 /* RealtimeVoiceClient.swift in Sources */,
+				90DF6323D49B1AE000342C7F /* VoiceAudioEngine.swift in Sources */,
+				D1728034BEF312B46E0B9A4D /* FocusOverlayController.swift in Sources */,
+				65B0B6BCFAE7C5638C128A88 /* FocusFrameComposer.swift in Sources */,
+				882EB43220D0481ECF71D26C /* VoiceSessionController.swift in Sources */,
 				C73000000000000000000001 /* CalshotAgentPermissions.swift in Sources */,
 				C30000000000000000000001 /* CalshotAccountService.swift in Sources */,
 				D30000000000000000000001 /* AccountSync.swift in Sources */,
@@ -527,6 +582,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A5753E8E7009E1E01D2A1D84 /* PersonalMemoryTests.swift in Sources */,
+				706282BAEFDC99C9D1C76199 /* RealtimeVoiceClientTests.swift in Sources */,
+				857A314566AA789088D2C4B2 /* FocusOverlayTests.swift in Sources */,
 				C73000000000000000000002 /* AgentPermissionTests.swift in Sources */,
 				A3000000000000000000002C /* CalendarConnectionTests.swift in Sources */,
 				A30000000000000000000028 /* AgentMemoryTests.swift in Sources */,

@@ -6,10 +6,10 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
-	<key>CFBundleIdentifier</key>
-	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -18,6 +18,17 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.calshot.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>calshot</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
@@ -26,21 +37,31 @@
 	<false/>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Calshot uses calendar access to show your calendars and add an event after you review it.</string>
-	<key>NSScreenCaptureUsageDescription</key>
-	<string>Calshot captures the screen only when you ask it to find event details for your calendar.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Calshot listens only while voice mode is on, so you can ask it to help with your calendar and tasks.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<key>CFBundleURLTypes</key>
-	<array><dict><key>CFBundleURLName</key><string>com.calshot.auth</string><key>CFBundleURLSchemes</key><array><string>calshot</string></array></dict></array>
-    <key>SUFeedURL</key><string>https://github.com/erfansaffari/Calshot/releases/download/updates/appcast.xml</string>
-    <key>SUPublicEDKey</key><string>3DsP/PzCKSrKlcd6zyIEkyFwit3LBA1EQwuOep3DznQ=</string>
-    <key>SUEnableAutomaticChecks</key><true/>
-    <key>SUAutomaticallyUpdate</key><true/>
-    <key>SUScheduledCheckInterval</key><integer>21600</integer>
-    <key>SUEnableSystemProfiling</key><false/>
-    <key>SUEnableJavaScript</key><false/>
-    <key>SUVerifyUpdateBeforeExtraction</key><true/>
-    <key>SURequireSignedFeed</key><true/>
-    <key>SUSignedFeedFailureExpirationInterval</key><integer>0</integer>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Calshot captures the screen only when you ask it to find event details for your calendar.</string>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUEnableJavaScript</key>
+	<false/>
+	<key>SUEnableSystemProfiling</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/erfansaffari/Calshot/releases/download/updates/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>3DsP/PzCKSrKlcd6zyIEkyFwit3LBA1EQwuOep3DznQ=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>21600</integer>
+	<key>SUSignedFeedFailureExpirationInterval</key>
+	<integer>0</integer>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>
