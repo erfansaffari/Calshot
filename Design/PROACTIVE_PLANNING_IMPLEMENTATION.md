@@ -10,13 +10,13 @@ First acceptance story: give Calshot three assignments and a week of commitments
 
 ## Verified starting point
 
-- Core/CalendarAgent.swift owns a single current session; start cancels the prior run, and the tool loop is bounded to eight rounds.
-- Core/CalendarAgentToolExecutor.swift keeps question/approval continuations in memory. Those are not restartable workflow records.
-- Core/ResponsesCalendarAgentClient.swift already abstracts model transport, streams responses and disables parallel tool calls. Preserve the selected billing route.
-- MemoryStore.swift provides capture/history persistence and bounded historical context (12 recent records, 20,000 characters), not an editable preference database.
-- CalshotTasks.swift already owns intent/provenance, source links, CAS versions and durable mutation receipts. Its task model does not yet contain a planning effort/dependency model.
-- CalshotAgentPermissions.swift and Calendar/CalendarActionCoordinator.swift provide execution authority, validation, write evidence and recovery. Preserve these boundaries.
-- WebWorkspaceState.swift, WebWorkspaceController.swift and WebUI own the shared snapshot/command presentation contract.
+- Sources/Agent/CalendarAgent.swift owns a single current session; start cancels the prior run, and the tool loop is bounded to eight rounds.
+- Sources/Agent/CalendarAgentToolExecutor.swift keeps question/approval continuations in memory. Those are not restartable workflow records.
+- Sources/Agent/ResponsesCalendarAgentClient.swift already abstracts model transport, streams responses and disables parallel tool calls. Preserve the selected billing route.
+- Sources/Persistence/MemoryStore.swift provides capture/history persistence and bounded historical context (12 recent records, 20,000 characters), not an editable preference database.
+- Sources/Tasks/CalshotTasks.swift already owns intent/provenance, source links, CAS versions and durable mutation receipts. Its task model does not yet contain a planning effort/dependency model.
+- Sources/Agent/CalshotAgentPermissions.swift and Sources/Calendar/CalendarActionCoordinator.swift provide execution authority, validation, write evidence and recovery. Preserve these boundaries.
+- Sources/Workspace/WebWorkspaceState.swift, Sources/Workspace/WebWorkspaceController.swift and WebUI own the shared snapshot/command presentation contract.
 - The private repository already has Supabase and a TypeScript calendar-sync worker using claim/renew/complete/fail. Agent jobs must use their own records and queue.
 
 ## Stack decisions
@@ -93,7 +93,7 @@ Preserve and separately verify the existing uncommitted changes. Add bounded red
 
 ### 1. Durable local sessions
 
-Add Core/AgentSessionStore.swift, Core/AgentRunCoordinator.swift and Core/AgentContextBuilder.swift. Refactor CalendarAgent.swift into a per-run execution object; replace singleton mutable executor state with run-scoped state. Wire CalshotModel+CalendarAgent.swift and shared snapshots to an active session ID. Start with multiple saved conversations and one foreground executor; concurrent workers come only after isolation tests pass.
+Add Sources/Agent/AgentSessionStore.swift, Sources/Agent/AgentRunCoordinator.swift and Core/AgentContextBuilder.swift. Refactor CalendarAgent.swift into a per-run execution object; replace singleton mutable executor state with run-scoped state. Wire Sources/Agent/CalshotModel+CalendarAgent.swift and shared snapshots to an active session ID. Start with multiple saved conversations and one foreground executor; concurrent workers come only after isolation tests pass.
 
 Persist questions/reviews as records; on resume revalidate current policy, task/source versions and user identity. Never serialize continuations or restore old approval as permission for new work. Import old history read-only by stable IDs, retaining the old store for compatibility.
 
@@ -101,13 +101,13 @@ Gate: restart while awaiting a question/review, switch chats, stop after partial
 
 ### 2. Explicit memory
 
-Add Core/PersonalMemoryStore.swift and the context retrieval layer. Extend WebWorkspaceState.swift, WebWorkspaceController.swift, WebUI/src/types.ts and Settings with allowlisted scoped memory commands. Keep MemoryStore.swift as capture/history storage rather than overloading its meaning.
+Add Sources/Agent/PersonalMemoryStore.swift and the context retrieval layer. Extend Sources/Workspace/WebWorkspaceState.swift, Sources/Workspace/WebWorkspaceController.swift, WebUI/src/types.ts and Settings with allowlisted scoped memory commands. Keep Sources/Persistence/MemoryStore.swift as capture/history storage rather than overloading its meaning.
 
 Gate: a saved preference affects a new chat; edit takes effect immediately; forget survives restart and retained history. No memory-derived authorization.
 
 ### 3. Daily/weekly planning MVP
 
-Add Core/PlanningTypes.swift, Core/PlanningEngine.swift, Core/PlanStore.swift and Core/PlanningCoordinator.swift. Add planning metadata sidecars referencing CalshotTask versions. Extend agent tools with build_plan/read_plan/revise_plan backed by native validation. Preparation and publication are separate operations.
+Add Sources/Planning/PlanningTypes.swift, Sources/Planning/PlanningEngine.swift, Sources/Planning/PlanStore.swift and Core/PlanningCoordinator.swift. Add planning metadata sidecars referencing CalshotTask versions. Extend agent tools with build_plan/read_plan/revise_plan backed by native validation. Preparation and publication are separate operations.
 
 Add compact Today/Week plan presentation using existing shared tokens and conversation cards. Preserve the current calendar grid; show only accepted/published sessions as real events, or clearly marked optional draft overlays. Keep questions and plan changes usable in the notch. A task page remains the canonical task editor.
 

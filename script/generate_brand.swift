@@ -60,8 +60,8 @@ guard let png = bitmap.representation(using: .png, properties: [:]) else {
     fatalError("Could not encode icon")
 }
 for path in [
-    "Assets.xcassets/AppIcon.appiconset/AppIcon.png",
-    "Assets.xcassets/CalshotMark.imageset/CalshotMark.png"
+    "Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+    "Resources/Assets.xcassets/CalshotMark.imageset/CalshotMark.png"
 ] {
     try png.write(to: URL(fileURLWithPath: path), options: .atomic)
 }

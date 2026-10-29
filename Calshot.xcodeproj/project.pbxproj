@@ -79,65 +79,65 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		C72000000000000000000001 /* CalshotAgentPermissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalshotAgentPermissions.swift; sourceTree = "<group>"; };
-		C72000000000000000000002 /* AgentPermissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTests/AgentPermissionTests.swift; sourceTree = "<group>"; };
-		C62000000000000000000001 /* CalshotTasks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalshotTasks.swift; sourceTree = "<group>"; };
-		C52000000000000000000001 /* ScreenPermissionFlowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenPermissionFlowController.swift; sourceTree = "<group>"; };
-		E20000000000000000000001 /* CalendarSharing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarSharing.swift; sourceTree = "<group>"; };
-		D20000000000000000000001 /* AccountSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSync.swift; sourceTree = "<group>"; };
-		A20000000000000000000001 /* CalshotApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalshotApp.swift; sourceTree = "<group>"; };
-		A20000000000000000000002 /* EventDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDraft.swift; sourceTree = "<group>"; };
-		A20000000000000000000003 /* EventDraftParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDraftParser.swift; sourceTree = "<group>"; };
-		A20000000000000000000004 /* EventDraftExtractionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDraftExtractionService.swift; sourceTree = "<group>"; };
-		A20000000000000000000005 /* ScreenTextRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenTextRecognizer.swift; sourceTree = "<group>"; };
-		A20000000000000000000006 /* CalendarDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarDestination.swift; sourceTree = "<group>"; };
-		A20000000000000000000007 /* EventKitCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitCalendarService.swift; sourceTree = "<group>"; };
-		A20000000000000000000008 /* GoogleCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleCalendarService.swift; sourceTree = "<group>"; };
-		A20000000000000000000009 /* EventDraftParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDraftParserTests.swift; sourceTree = "<group>"; };
+		C72000000000000000000001 /* CalshotAgentPermissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalshotAgentPermissions.swift"; path = "Sources/Agent/CalshotAgentPermissions.swift"; sourceTree = SOURCE_ROOT; };
+		C72000000000000000000002 /* AgentPermissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "AgentPermissionTests.swift"; path = "Tests/AgentPermissionTests.swift"; sourceTree = SOURCE_ROOT; };
+		C62000000000000000000001 /* CalshotTasks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalshotTasks.swift"; path = "Sources/Tasks/CalshotTasks.swift"; sourceTree = SOURCE_ROOT; };
+		C52000000000000000000001 /* ScreenPermissionFlowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ScreenPermissionFlowController.swift"; path = "Sources/Capture/ScreenPermissionFlowController.swift"; sourceTree = SOURCE_ROOT; };
+		E20000000000000000000001 /* CalendarSharing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarSharing.swift"; path = "Sources/Accounts/CalendarSharing.swift"; sourceTree = SOURCE_ROOT; };
+		D20000000000000000000001 /* AccountSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "AccountSync.swift"; path = "Sources/Accounts/AccountSync.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000001 /* CalshotApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalshotApp.swift"; path = "Sources/App/CalshotApp.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000002 /* EventDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "EventDraft.swift"; path = "Sources/Calendar/EventDraft.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000003 /* EventDraftParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "EventDraftParser.swift"; path = "Sources/Capture/EventDraftParser.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000004 /* EventDraftExtractionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "EventDraftExtractionService.swift"; path = "Sources/Capture/EventDraftExtractionService.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000005 /* ScreenTextRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ScreenTextRecognizer.swift"; path = "Sources/Capture/ScreenTextRecognizer.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000006 /* CalendarDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarDestination.swift"; path = "Sources/Calendar/CalendarDestination.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000007 /* EventKitCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "EventKitCalendarService.swift"; path = "Sources/Calendar/EventKitCalendarService.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000008 /* GoogleCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "GoogleCalendarService.swift"; path = "Sources/Calendar/GoogleCalendarService.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000009 /* EventDraftParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "EventDraftParserTests.swift"; path = "Tests/EventDraftParserTests.swift"; sourceTree = SOURCE_ROOT; };
 		A2000000000000000000000A /* Calshot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Calshot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000B /* CalshotTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CalshotTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		A2000000000000000000000C /* OpenAIEventAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIEventAnalyzer.swift; sourceTree = "<group>"; };
-		A2000000000000000000000D /* GlobalShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalShortcut.swift; sourceTree = "<group>"; };
-		A2000000000000000000000E /* RegionSelectionOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegionSelectionOverlay.swift; sourceTree = "<group>"; };
-		A2000000000000000000000F /* MemoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryStore.swift; sourceTree = "<group>"; };
-		A20000000000000000000010 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		A20000000000000000000011 /* MemoryStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryStoreTests.swift; sourceTree = "<group>"; };
-		A20000000000000000000012 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		A20000000000000000000013 /* NotchExperience.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchExperience.swift; sourceTree = "<group>"; };
-		A20000000000000000000014 /* UnifiedWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedWorkspace.swift; sourceTree = "<group>"; };
-		A20000000000000000000015 /* ScreenshotExperience.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotExperience.swift; sourceTree = "<group>"; };
-		A20000000000000000000016 /* WorkspaceWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWindowController.swift; sourceTree = "<group>"; };
-		A20000000000000000000017 /* ChatGPTConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTConnection.swift; sourceTree = "<group>"; };
-		A20000000000000000000018 /* OpenAIStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIStreamTests.swift; sourceTree = "<group>"; };
-		A20000000000000000000019 /* CalendarActionProposal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Core/CalendarActionProposal.swift; sourceTree = "<group>"; };
-		A2000000000000000000001A /* CalendarActionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Calendar/CalendarActionCoordinator.swift; sourceTree = "<group>"; };
-		A2000000000000000000001B /* CalendarBatchReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarBatchReviewView.swift; sourceTree = "<group>"; };
-		A2000000000000000000001C /* CalendarActionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTests/CalendarActionTests.swift; sourceTree = "<group>"; };
-		A2000000000000000000001D /* CalendarReviewDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarReviewDemo.swift; sourceTree = "<group>"; };
-		A2000000000000000000001E /* CalendarAgentTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/CalendarAgentTypes.swift"; sourceTree = "<group>"; };
-		A2000000000000000000001F /* CalendarAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/CalendarAgent.swift"; sourceTree = "<group>"; };
-		A20000000000000000000020 /* ResponsesCalendarAgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/ResponsesCalendarAgentClient.swift"; sourceTree = "<group>"; };
-		A20000000000000000000021 /* CalendarAgentToolExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/CalendarAgentToolExecutor.swift"; sourceTree = "<group>"; };
-		A20000000000000000000022 /* CalendarToolDraftMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Core/CalendarToolDraftMapper.swift"; sourceTree = "<group>"; };
-		A20000000000000000000023 /* CalshotModel+CalendarAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CalshotModel+CalendarAgent.swift"; sourceTree = "<group>"; };
-		A20000000000000000000024 /* CalendarAgentDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CalendarAgentDemo.swift"; sourceTree = "<group>"; };
-		A20000000000000000000025 /* CalendarAgentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoreTests/CalendarAgentTests.swift"; sourceTree = "<group>"; };
-		A20000000000000000000026 /* CalendarOperationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoreTests/CalendarOperationTests.swift"; sourceTree = "<group>"; };
-		A20000000000000000000027 /* CalendarAgentToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoreTests/CalendarAgentToolTests.swift"; sourceTree = "<group>"; };
-		A20000000000000000000028 /* AgentMemoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoreTests/AgentMemoryTests.swift"; sourceTree = "<group>"; };
-		A20000000000000000000029 /* CalendarAccountConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Calendar/CalendarAccountConnection.swift"; sourceTree = "<group>"; };
-		A2000000000000000000002A /* RemoteCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Calendar/RemoteCalendarService.swift"; sourceTree = "<group>"; };
-		A2000000000000000000002B /* ConnectedCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Calendar/ConnectedCalendarService.swift"; sourceTree = "<group>"; };
-		A2000000000000000000002C /* CalendarConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CoreTests/CalendarConnectionTests.swift"; sourceTree = "<group>"; };
-		A2000000000000000000002D /* ICloudCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Calendar/ICloudCalendarService.swift"; sourceTree = "<group>"; };
-		A2000000000000000000002E /* CalendarConnectionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarConnectionsView.swift; sourceTree = "<group>"; };
-		B20000000000000000000001 /* WebWorkspaceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebWorkspaceController.swift; sourceTree = "<group>"; };
-		B20000000000000000000002 /* WebWorkspaceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebWorkspaceState.swift; sourceTree = "<group>"; };
-		B20000000000000000000003 /* WebWorkspaceAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebWorkspaceAssets.swift; sourceTree = "<group>"; };
-		B20000000000000000000004 /* WebWorkspaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebWorkspaceTests.swift; sourceTree = "<group>"; };
-		B20000000000000000000005 /* AppAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Core/AppAppearance.swift; sourceTree = "<group>"; };
-		C20000000000000000000001 /* CalshotAccountService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalshotAccountService.swift; sourceTree = "<group>"; };
-        F20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoftwareUpdateController.swift; sourceTree = "<group>"; };
+		A2000000000000000000000C /* OpenAIEventAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "OpenAIEventAnalyzer.swift"; path = "Sources/Agent/OpenAIEventAnalyzer.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000000D /* GlobalShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "GlobalShortcut.swift"; path = "Sources/Capture/GlobalShortcut.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000000E /* RegionSelectionOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "RegionSelectionOverlay.swift"; path = "Sources/Capture/RegionSelectionOverlay.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000000F /* MemoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "MemoryStore.swift"; path = "Sources/Persistence/MemoryStore.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000010 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "SettingsView.swift"; path = "Sources/Workspace/SettingsView.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000011 /* MemoryStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "MemoryStoreTests.swift"; path = "Tests/MemoryStoreTests.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000012 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = "Assets.xcassets"; path = "Resources/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000013 /* NotchExperience.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "NotchExperience.swift"; path = "Sources/Workspace/NotchExperience.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000014 /* UnifiedWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "UnifiedWorkspace.swift"; path = "Sources/Workspace/UnifiedWorkspace.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000015 /* ScreenshotExperience.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ScreenshotExperience.swift"; path = "Sources/Capture/ScreenshotExperience.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000016 /* WorkspaceWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "WorkspaceWindowController.swift"; path = "Sources/Workspace/WorkspaceWindowController.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000017 /* ChatGPTConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ChatGPTConnection.swift"; path = "Sources/Agent/ChatGPTConnection.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000018 /* OpenAIStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "OpenAIStreamTests.swift"; path = "Tests/OpenAIStreamTests.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000019 /* CalendarActionProposal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarActionProposal.swift"; path = "Sources/Calendar/CalendarActionProposal.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000001A /* CalendarActionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarActionCoordinator.swift"; path = "Sources/Calendar/CalendarActionCoordinator.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000001B /* CalendarBatchReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarBatchReviewView.swift"; path = "Sources/Workspace/CalendarBatchReviewView.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000001C /* CalendarActionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarActionTests.swift"; path = "Tests/CalendarActionTests.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000001D /* CalendarReviewDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarReviewDemo.swift"; path = "Sources/Previews/CalendarReviewDemo.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000001E /* CalendarAgentTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarAgentTypes.swift"; path = "Sources/Agent/CalendarAgentTypes.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000001F /* CalendarAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarAgent.swift"; path = "Sources/Agent/CalendarAgent.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000020 /* ResponsesCalendarAgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ResponsesCalendarAgentClient.swift"; path = "Sources/Agent/ResponsesCalendarAgentClient.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000021 /* CalendarAgentToolExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarAgentToolExecutor.swift"; path = "Sources/Agent/CalendarAgentToolExecutor.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000022 /* CalendarToolDraftMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarToolDraftMapper.swift"; path = "Sources/Agent/CalendarToolDraftMapper.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000023 /* CalshotModel+CalendarAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalshotModel+CalendarAgent.swift"; path = "Sources/Agent/CalshotModel+CalendarAgent.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000024 /* CalendarAgentDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarAgentDemo.swift"; path = "Sources/Previews/CalendarAgentDemo.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000025 /* CalendarAgentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarAgentTests.swift"; path = "Tests/CalendarAgentTests.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000026 /* CalendarOperationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarOperationTests.swift"; path = "Tests/CalendarOperationTests.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000027 /* CalendarAgentToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarAgentToolTests.swift"; path = "Tests/CalendarAgentToolTests.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000028 /* AgentMemoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "AgentMemoryTests.swift"; path = "Tests/AgentMemoryTests.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000029 /* CalendarAccountConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarAccountConnection.swift"; path = "Sources/Calendar/CalendarAccountConnection.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000002A /* RemoteCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "RemoteCalendarService.swift"; path = "Sources/Calendar/RemoteCalendarService.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000002B /* ConnectedCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ConnectedCalendarService.swift"; path = "Sources/Calendar/ConnectedCalendarService.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000002C /* CalendarConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarConnectionTests.swift"; path = "Tests/CalendarConnectionTests.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000002D /* ICloudCalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ICloudCalendarService.swift"; path = "Sources/Calendar/ICloudCalendarService.swift"; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000002E /* CalendarConnectionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarConnectionsView.swift"; path = "Sources/Workspace/CalendarConnectionsView.swift"; sourceTree = SOURCE_ROOT; };
+		B20000000000000000000001 /* WebWorkspaceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "WebWorkspaceController.swift"; path = "Sources/Workspace/WebWorkspaceController.swift"; sourceTree = SOURCE_ROOT; };
+		B20000000000000000000002 /* WebWorkspaceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "WebWorkspaceState.swift"; path = "Sources/Workspace/WebWorkspaceState.swift"; sourceTree = SOURCE_ROOT; };
+		B20000000000000000000003 /* WebWorkspaceAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "WebWorkspaceAssets.swift"; path = "Sources/Workspace/WebWorkspaceAssets.swift"; sourceTree = SOURCE_ROOT; };
+		B20000000000000000000004 /* WebWorkspaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "WebWorkspaceTests.swift"; path = "Tests/WebWorkspaceTests.swift"; sourceTree = SOURCE_ROOT; };
+		B20000000000000000000005 /* AppAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "AppAppearance.swift"; path = "Sources/App/AppAppearance.swift"; sourceTree = SOURCE_ROOT; };
+		C20000000000000000000001 /* CalshotAccountService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalshotAccountService.swift"; path = "Sources/Accounts/CalshotAccountService.swift"; sourceTree = SOURCE_ROOT; };
+        F20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "SoftwareUpdateController.swift"; path = "Sources/Updates/SoftwareUpdateController.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -160,100 +160,186 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		A10000000000000000000003 = {
+		A10000000000000000000003 /* Project */ = {
 			isa = PBXGroup;
 			children = (
-				A10000000000000000000004 /* . */,
-				A10000000000000000000005 /* Core */,
-				A10000000000000000000006 /* Calendar */,
-				A10000000000000000000007 /* CoreTests */,
+				CE810FF946C81F17A1413C02 /* Sources */,
+				15F10D0B2C3E7BDEAF1D37E5 /* Tests */,
+				3DFE794D715A6CC38E5CA1B9 /* Resources */,
 				A10000000000000000000008 /* Products */,
 			);
+			name = "Project";
 			sourceTree = "<group>";
 		};
-		A10000000000000000000004 /* . */ = {
+		CE810FF946C81F17A1413C02 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				C72000000000000000000001 /* CalshotAgentPermissions.swift */,
-				C72000000000000000000002 /* AgentPermissionTests.swift */,
-				C20000000000000000000001 /* CalshotAccountService.swift */,
+				D686F95E167C3FB515D82B41 /* Accounts */,
+				D4F8A2E5FDED0E9400F0FC9E /* Agent */,
+				88F7264A05D0F9DCB1842275 /* App */,
+				05BCB71698E510B449ABA384 /* Calendar */,
+				A06AD5925567DBA93E8E2332 /* Capture */,
+				93739E243CBC5207954841FE /* Persistence */,
+				88E4AD8C98B278AADE584604 /* Previews */,
+				F080C8B217D31D25DC1F670B /* Tasks */,
+				DBE450BD0E475073895F3E5B /* Updates */,
+				626614A7C10438693B74EFBE /* Workspace */,
+			);
+			name = "Sources";
+			path = "Sources";
+			sourceTree = "<group>";
+		};
+		D686F95E167C3FB515D82B41 /* Accounts */ = {
+			isa = PBXGroup;
+			children = (
 				D20000000000000000000001 /* AccountSync.swift */,
 				E20000000000000000000001 /* CalendarSharing.swift */,
-                F20000000000000000000001,
-				A20000000000000000000029 /* CalendarAccountConnection.swift */,
-				A2000000000000000000002A /* RemoteCalendarService.swift */,
-				A2000000000000000000002B /* ConnectedCalendarService.swift */,
-				A2000000000000000000002C /* CalendarConnectionTests.swift */,
-				A2000000000000000000002D /* ICloudCalendarService.swift */,
-				A20000000000000000000028 /* AgentMemoryTests.swift */,
-				A20000000000000000000027 /* CalendarAgentToolTests.swift */,
-				A20000000000000000000026 /* CalendarOperationTests.swift */,
-				A20000000000000000000025 /* CalendarAgentTests.swift */,
-				A20000000000000000000024 /* CalendarAgentDemo.swift */,
-				A20000000000000000000023 /* CalshotModel+CalendarAgent.swift */,
-				A20000000000000000000022 /* CalendarToolDraftMapper.swift */,
-				A20000000000000000000021 /* CalendarAgentToolExecutor.swift */,
-				A20000000000000000000020 /* ResponsesCalendarAgentClient.swift */,
+				C20000000000000000000001 /* CalshotAccountService.swift */,
+			);
+			name = "Accounts";
+			path = "Accounts";
+			sourceTree = "<group>";
+		};
+		D4F8A2E5FDED0E9400F0FC9E /* Agent */ = {
+			isa = PBXGroup;
+			children = (
 				A2000000000000000000001F /* CalendarAgent.swift */,
+				A20000000000000000000021 /* CalendarAgentToolExecutor.swift */,
 				A2000000000000000000001E /* CalendarAgentTypes.swift */,
-				A2000000000000000000001D /* CalendarReviewDemo.swift */,
-				A2000000000000000000001C /* CalendarActionTests.swift */,
-				A2000000000000000000001B /* CalendarBatchReviewView.swift */,
+				A20000000000000000000022 /* CalendarToolDraftMapper.swift */,
+				C72000000000000000000001 /* CalshotAgentPermissions.swift */,
+				A20000000000000000000023 /* CalshotModel+CalendarAgent.swift */,
+				A20000000000000000000017 /* ChatGPTConnection.swift */,
+				A2000000000000000000000C /* OpenAIEventAnalyzer.swift */,
+				A20000000000000000000020 /* ResponsesCalendarAgentClient.swift */,
+			);
+			name = "Agent";
+			path = "Agent";
+			sourceTree = "<group>";
+		};
+		88F7264A05D0F9DCB1842275 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				B20000000000000000000005 /* AppAppearance.swift */,
+				A20000000000000000000001 /* CalshotApp.swift */,
+			);
+			name = "App";
+			path = "App";
+			sourceTree = "<group>";
+		};
+		05BCB71698E510B449ABA384 /* Calendar */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000029 /* CalendarAccountConnection.swift */,
 				A2000000000000000000001A /* CalendarActionCoordinator.swift */,
 				A20000000000000000000019 /* CalendarActionProposal.swift */,
-				A20000000000000000000001 /* CalshotApp.swift */,
-				B20000000000000000000005 /* AppAppearance.swift */,
-				B20000000000000000000003 /* WebWorkspaceAssets.swift */,
-				B20000000000000000000002 /* WebWorkspaceState.swift */,
-				B20000000000000000000001 /* WebWorkspaceController.swift */,
-				A2000000000000000000000E /* RegionSelectionOverlay.swift */,
-				A2000000000000000000000F /* MemoryStore.swift */,
-				A20000000000000000000010 /* SettingsView.swift */,
-				A20000000000000000000013 /* NotchExperience.swift */,
-				A20000000000000000000014 /* UnifiedWorkspace.swift */,
-				A2000000000000000000002E /* CalendarConnectionsView.swift */,
-				A20000000000000000000015 /* ScreenshotExperience.swift */,
-				A20000000000000000000016 /* WorkspaceWindowController.swift */,
-				C52000000000000000000001 /* ScreenPermissionFlowController.swift */,
-				C62000000000000000000001 /* CalshotTasks.swift */,
-				A20000000000000000000012 /* Assets.xcassets */,
-			);
-			path = .;
-			sourceTree = "<group>";
-		};
-		A10000000000000000000005 /* Core */ = {
-			isa = PBXGroup;
-			children = (
-				A20000000000000000000002 /* EventDraft.swift */,
-				A20000000000000000000003 /* EventDraftParser.swift */,
-				A20000000000000000000004 /* EventDraftExtractionService.swift */,
-				A20000000000000000000005 /* ScreenTextRecognizer.swift */,
-				A2000000000000000000000C /* OpenAIEventAnalyzer.swift */,
-				A2000000000000000000000D /* GlobalShortcut.swift */,
-				A20000000000000000000017 /* ChatGPTConnection.swift */,
-			);
-			path = Core;
-			sourceTree = "<group>";
-		};
-		A10000000000000000000006 /* Calendar */ = {
-			isa = PBXGroup;
-			children = (
 				A20000000000000000000006 /* CalendarDestination.swift */,
+				A2000000000000000000002B /* ConnectedCalendarService.swift */,
+				A20000000000000000000002 /* EventDraft.swift */,
 				A20000000000000000000007 /* EventKitCalendarService.swift */,
 				A20000000000000000000008 /* GoogleCalendarService.swift */,
+				A2000000000000000000002D /* ICloudCalendarService.swift */,
+				A2000000000000000000002A /* RemoteCalendarService.swift */,
 			);
-			path = Calendar;
+			name = "Calendar";
+			path = "Calendar";
 			sourceTree = "<group>";
 		};
-		A10000000000000000000007 /* CoreTests */ = {
+		A06AD5925567DBA93E8E2332 /* Capture */ = {
 			isa = PBXGroup;
 			children = (
+				A20000000000000000000004 /* EventDraftExtractionService.swift */,
+				A20000000000000000000003 /* EventDraftParser.swift */,
+				A2000000000000000000000D /* GlobalShortcut.swift */,
+				A2000000000000000000000E /* RegionSelectionOverlay.swift */,
+				C52000000000000000000001 /* ScreenPermissionFlowController.swift */,
+				A20000000000000000000005 /* ScreenTextRecognizer.swift */,
+				A20000000000000000000015 /* ScreenshotExperience.swift */,
+			);
+			name = "Capture";
+			path = "Capture";
+			sourceTree = "<group>";
+		};
+		93739E243CBC5207954841FE /* Persistence */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000F /* MemoryStore.swift */,
+			);
+			name = "Persistence";
+			path = "Persistence";
+			sourceTree = "<group>";
+		};
+		88E4AD8C98B278AADE584604 /* Previews */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000024 /* CalendarAgentDemo.swift */,
+				A2000000000000000000001D /* CalendarReviewDemo.swift */,
+			);
+			name = "Previews";
+			path = "Previews";
+			sourceTree = "<group>";
+		};
+		F080C8B217D31D25DC1F670B /* Tasks */ = {
+			isa = PBXGroup;
+			children = (
+				C62000000000000000000001 /* CalshotTasks.swift */,
+			);
+			name = "Tasks";
+			path = "Tasks";
+			sourceTree = "<group>";
+		};
+		DBE450BD0E475073895F3E5B /* Updates */ = {
+			isa = PBXGroup;
+			children = (
+				F20000000000000000000001 /* SoftwareUpdateController.swift */,
+			);
+			name = "Updates";
+			path = "Updates";
+			sourceTree = "<group>";
+		};
+		626614A7C10438693B74EFBE /* Workspace */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000001B /* CalendarBatchReviewView.swift */,
+				A2000000000000000000002E /* CalendarConnectionsView.swift */,
+				A20000000000000000000013 /* NotchExperience.swift */,
+				A20000000000000000000010 /* SettingsView.swift */,
+				A20000000000000000000014 /* UnifiedWorkspace.swift */,
+				B20000000000000000000003 /* WebWorkspaceAssets.swift */,
+				B20000000000000000000001 /* WebWorkspaceController.swift */,
+				B20000000000000000000002 /* WebWorkspaceState.swift */,
+				A20000000000000000000016 /* WorkspaceWindowController.swift */,
+			);
+			name = "Workspace";
+			path = "Workspace";
+			sourceTree = "<group>";
+		};
+		15F10D0B2C3E7BDEAF1D37E5 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000028 /* AgentMemoryTests.swift */,
+				C72000000000000000000002 /* AgentPermissionTests.swift */,
+				A2000000000000000000001C /* CalendarActionTests.swift */,
+				A20000000000000000000025 /* CalendarAgentTests.swift */,
+				A20000000000000000000027 /* CalendarAgentToolTests.swift */,
+				A2000000000000000000002C /* CalendarConnectionTests.swift */,
+				A20000000000000000000026 /* CalendarOperationTests.swift */,
 				A20000000000000000000009 /* EventDraftParserTests.swift */,
-				B20000000000000000000004 /* WebWorkspaceTests.swift */,
 				A20000000000000000000011 /* MemoryStoreTests.swift */,
 				A20000000000000000000018 /* OpenAIStreamTests.swift */,
+				B20000000000000000000004 /* WebWorkspaceTests.swift */,
 			);
-			path = CoreTests;
+			name = "Tests";
+			path = "Tests";
+			sourceTree = "<group>";
+		};
+		3DFE794D715A6CC38E5CA1B9 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000012 /* Assets.xcassets */,
+			);
+			name = "Resources";
+			path = "Resources";
 			sourceTree = "<group>";
 		};
 		A10000000000000000000008 /* Products */ = {
@@ -262,7 +348,7 @@
 				A2000000000000000000000A /* Calshot.app */,
 				A2000000000000000000000B /* CalshotTests.xctest */,
 			);
-			name = Products;
+			name = "Products";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -478,7 +564,7 @@
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_FILE = Resources/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.calshot.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -498,7 +584,7 @@
 				DEVELOPMENT_TEAM = 8A699Y7VPU;
 				GENERATE_INFOPLIST_FILE = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_FILE = Resources/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.calshot.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";

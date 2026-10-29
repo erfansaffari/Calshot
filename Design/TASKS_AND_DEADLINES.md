@@ -32,7 +32,7 @@ Mac reminders are explicit local notifications, independent of calendar time. Ch
 
 ## Persistence and sync
 
-`CalshotTasks.swift` stores `tasks-v1.json` atomically with restrictive file permissions inside the existing account-specific history directory. A corrupt file stays untouched and blocks mutation. Matching receipts in this Mac’s history repair a missed task receipt after interruption; recovery never replays writes. A failed account load clears the visible task document rather than exposing the previous account’s tasks.
+`Sources/Tasks/CalshotTasks.swift` stores `tasks-v1.json` atomically with restrictive file permissions inside the existing account-specific history directory. A corrupt file stays untouched and blocks mutation. Matching receipts in this Mac’s history repair a missed task receipt after interruption; recovery never replays writes. A failed account load clears the visible task document rather than exposing the previous account’s tasks.
 
 The private web repository owns migration `20261022163253_personal_tasks_and_deadlines.sql`, `public.task_state`, owner RLS and scoped invoker RPCs backed by private authenticated functions. Read/write calls derive identity from Supabase, require verified accounts and validate bounded task documents. Revisions reject stale cloud writes. Per-task version baselines merge independent edits; conflicts require explicit Keep both. A retained local copy has a new ID and no calendar receipt or enabled reminder. Sync never executes calendar proposals or replays history.
 

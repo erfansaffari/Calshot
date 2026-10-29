@@ -1,6 +1,6 @@
 # Calendar agent prompt: fewer unnecessary questions
 
-Runtime source: `Core/CalendarAgent.swift`, `instructions` and the tool descriptions. The same policy reaches screenshot tasks, typed requests and clarification continuations on both configured AI billing routes. Prompt changes preserve native approval and calendar validation. The Tasks feature adds explicit task-import tools; see TASKS_AND_DEADLINES.md.
+Runtime source: `Sources/Agent/CalendarAgent.swift`, `instructions` and the tool descriptions. The same policy reaches screenshot tasks, typed requests and clarification continuations on both configured AI billing routes. Prompt changes preserve native approval and calendar validation. The Tasks feature adds explicit task-import tools; see TASKS_AND_DEADLINES.md.
 
 Decision order: understand the requested outcome → reuse clear context → read missing calendar facts → prepare useful review rows → ask only for an unresolved blocking choice. The saved writable destination is the default; absent optional fields do not require questions.
 

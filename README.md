@@ -8,6 +8,21 @@ Calshot accounts use Supabase Auth with native Keychain sessions and a calendar-
 
 Calshot is a native macOS menu bar app that turns screenshots and typed commands into a calendar agent workflow with explicit approval for changes. Press **Control–Shift–C** (customizable in Settings), drag over the event details, press Return, review the detected items, choose what to add, then approve additions to a writable calendar.
 
+## Repository layout
+
+| Folder | Contents |
+| --- | --- |
+| `Sources/` | Native Swift code grouped by feature: App, Agent, Accounts, Calendar, Capture, Tasks, Workspace, Persistence, Updates and Previews |
+| `Tests/` | Native unit and integration tests |
+| `Resources/` | App assets, Info.plist and third-party notices |
+| `WebUI/` | Shared React/TypeScript presentation and frontend tests |
+| `Design/` | Design system, designer handoff, reference images and current feature specifications |
+| `Docs/` | Development guides and earlier implementation plans; see the [documentation index](Docs/README.md) |
+| `script/` | Build, packaging, release and brand-generation tools |
+| `build/` | Ignored local build products, test results and logs |
+
+`Calshot.xcodeproj`, `README.md` and `AGENTS.md` stay at the root. Local links to the private web repository and the ignored `Calshot.html` design reference are optional development conveniences.
+
 ## Run
 
 Open `Calshot.xcodeproj` in Xcode and run the **Calshot** scheme on a Mac, or use `./script/build_and_run.sh`. Calshot opens its review panel when launched and appears in both the Dock and menu bar.
@@ -52,7 +67,7 @@ OpenAI API data is not used to train models by default. OpenAI's standard abuse-
 - OpenAI analysis requires either an authorized ChatGPT plan connection or an API key, plus internet access. If it fails, Calshot falls back to local analysis.
 - ChatGPT plan sharing currently supports eligible accounts in local personal and open-source projects. A future paid or hosted Calshot needs separate eligibility and distribution review before using this connection.
 
-See [CALENDAR_ACTIONS_PLAN.md](CALENDAR_ACTIONS_PLAN.md) for the batch workflow design and [PLAN.md](PLAN.md) for the original product plan.
+See [Docs/Plans/CALENDAR_ACTIONS_PLAN.md](Docs/Plans/CALENDAR_ACTIONS_PLAN.md) for the batch workflow design and [Docs/Plans/PLAN.md](Docs/Plans/PLAN.md) for the original product plan.
 
 ## Verify the calendar workflow
 
@@ -102,6 +117,6 @@ Developers working on both products may have ignored local links named `Website`
 
 ## Automatic software updates
 
-The Mac app uses Sparkle with a signed GitHub Releases feed and Settings → General update controls. See [UPDATES.md](UPDATES.md) for release signing, notarization, GitHub Actions setup and current distribution limitations.
+The Mac app uses Sparkle with a signed GitHub Releases feed and Settings → General update controls. See [Docs/Guides/UPDATES.md](Docs/Guides/UPDATES.md) for release signing, notarization, GitHub Actions setup and current distribution limitations.
 
 Screen Recording setup opens a native helper beside System Settings. Drag the installed Calshot icon into the Screen Recording app list, or use Show in Finder / the + button, enable access, and quit/reopen if macOS asks. Check access reports the actual OS permission state.

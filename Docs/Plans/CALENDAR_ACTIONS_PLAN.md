@@ -19,7 +19,7 @@ A screenshot covers only captured pixels. The first version processes a large se
 - `OpenAIEventAnalyzer` and the Foundation Models path return arrays of drafts.
 - `CalshotModel.analyze` keeps only `candidates.first`; the remaining candidates never reach review.
 - The deterministic parser returns one draft for the entire OCR text and flags multiple dates. It needs row/block segmentation before it can support a schedule reliably.
-- `UnifiedWorkspace.swift` edits one draft with one global saving status.
+- `Sources/Workspace/UnifiedWorkspace.swift` edits one draft with one global saving status.
 - `MemoryStore` stores one event and one calendar receipt per capture.
 - `EventKitCalendarService` saves one event and suppresses repeated saves by draft ID only within the running process.
 - OCR currently returns a flat string, losing the layout useful for associating table columns and highlighting evidence.
