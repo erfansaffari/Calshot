@@ -108,6 +108,7 @@ export const preview: AppState = {
   googleReady: true,
   googleClientID: "",
   outlookClientID: "",
+  personalMemory: { loaded: true, items: [], pending: [], token: "preview-memory" },
   memory: [
     {
       id: "example",

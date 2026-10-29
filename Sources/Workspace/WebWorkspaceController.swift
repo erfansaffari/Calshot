@@ -740,6 +740,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             if model.agentIsWaitingForApproval { model.skipAgentApproval() } else { model.calendarActions.skipAll() }
         case "editProposal": try edit(body)
         case "retryAgent": try requireIdle(); model.taskUsesNotch = isNotch; Task { await model.retryAgentCommand() }
+        case "addMemory", "editMemory", "forgetMemory", "approveMemory", "rejectMemory", "clearMemory":
+            try model.handlePersonalMemoryAction(action, body: body, isNotch: isNotch)
         case "restoreMemory":
             try requireIdle()
             guard let raw = body["recordID"] as? String, let record = model.memoryRecords.first(where: { $0.id.uuidString == raw }) else { throw CalendarToolArgumentError("This task is no longer in History.") }

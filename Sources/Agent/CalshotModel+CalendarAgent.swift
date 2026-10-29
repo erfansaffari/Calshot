@@ -30,6 +30,15 @@ extension CalshotModel {
             onApproval: { [weak self] value in self?.agentIsWaitingForApproval = value },
             onQuestion: { [weak self] question in self?.agentQuestion = question },
             onStep: { [weak self] text in self?.agentStatus = text })
+        executor.remember = { [weak self] kind, text in
+            guard let self else { throw CancellationError() }
+            try self.suggestPersonalMemory(kind: kind, text: text, sourceReference: self.currentMemoryRecordID?.uuidString)
+        }
+        executor.recall = { [weak self] query in
+            guard let self else { throw CancellationError() }
+            if let error = self.personalMemory.error { throw CalendarToolArgumentError(error) }
+            return self.personalMemoryContext(for: query)
+        }
         executor.listFriends = { [weak self] in
             guard let self else { throw CancellationError() }
             return try await self.listAgentFriends()
@@ -216,6 +225,7 @@ extension CalshotModel {
             } catch { self.status = "Couldn’t save agent memory: \(error.localizedDescription)" }
         }
         executor.activate(sessionID: sessionID)
+        executor.memorySuggestionsBlocked = prefix.contains { $0.sharedCalendarContext == true }
         agentStatus = image == nil ? "Reading your command" : "Reading the screenshot"
         if destinations.isEmpty { await loadCalendars() }
         guard currentCaptureSessionID == sessionID, !Task.isCancelled else { return }
@@ -223,7 +233,7 @@ extension CalshotModel {
             let imageURL = try image.map(ResponsesCalendarAgentClient.imageDataURL)
             analyzedWithOpenAI = agentClient == nil
             lastAnalysisProvider = agentClient == nil ? "Calendar agent + Vision OCR" : "Offline calendar agent demo"
-            try await agent.start(userMessage: prompt, imageDataURL: imageURL, memory: memory, sessionID: sessionID)
+            try await agent.start(userMessage: prompt, imageDataURL: imageURL, memory: memory, personalMemoryContext: personalMemoryContext(for: prompt), sessionID: sessionID)
             guard currentCaptureSessionID == sessionID else { return }
             lastCaptureSummary = "\(calendarActions.addedCount) added · \(calendarActions.updatedCount) changed · \(calendarActions.deletedCount) removed · \(calendarActions.movedCount) moved"
         } catch is CancellationError { }

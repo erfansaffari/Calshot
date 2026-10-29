@@ -13,7 +13,7 @@ import {
   ExternalLink,
   Trash2,
 } from "lucide-react";
-import type { AppState } from "../types";
+import type { AppState, PersonalMemoryItem } from "../types";
 import { command } from "../bridge";
 import { SoftwareUpdates } from "./SoftwareUpdates";
 import { FriendsSettings } from "./FriendsSettings";
@@ -98,7 +98,13 @@ function AccountSyncCard({ state }: { state: AppState }) {
           </div>
           <button
             className="button secondary"
-            disabled={a.busy || state.running || state.saving || state.isCapturing || state.isRecognizing}
+            disabled={
+              a.busy ||
+              state.running ||
+              state.saving ||
+              state.isCapturing ||
+              state.isRecognizing
+            }
             onClick={() => void a.run("authSignOut")}
           >
             Sign out
@@ -463,19 +469,18 @@ export function CalendarConnections({ state }: { state: AppState }) {
               <button
                 className="button secondary"
                 disabled={a.busy || state.connecting}
-                onClick={() =>
-                  void a.run("connectGoogle")
-                }
+                onClick={() => void a.run("connectGoogle")}
               >
                 {state.connecting && state.connectingProvider === "google" ? (
                   <Spinner />
                 ) : null}
-                {state.connecting
-                  ? "Connecting…"
-                  : "Connect"}
+                {state.connecting ? "Connecting…" : "Connect"}
               </button>
             </div>
-            <MacCalendarConnectionHint disabled={a.busy || state.connecting} onOpen={() => void a.run("internetAccountsSettings")} />
+            <MacCalendarConnectionHint
+              disabled={a.busy || state.connecting}
+              onOpen={() => void a.run("internetAccountsSettings")}
+            />
             <div className="settings-row">
               <div>
                 <h3>Outlook / Microsoft 365</h3>
@@ -745,7 +750,12 @@ export function SettingsPage({ state }: { state: AppState }) {
           ))}
         </nav>
         {tab === "calendars" && <CalendarConnections state={state} />}
-        {tab === "friends" && <FriendsSettings state={state} onAction={(action, extra) => command({ action, ...extra })} />}
+        {tab === "friends" && (
+          <FriendsSettings
+            state={state}
+            onAction={(action, extra) => command({ action, ...extra })}
+          />
+        )}
         <InlineError message={a.error} />
         {state.notice && (
           <div className="notice" style={{ margin: 0 }}>
@@ -753,7 +763,12 @@ export function SettingsPage({ state }: { state: AppState }) {
           </div>
         )}
         {tab === "general" && <AccountSyncCard state={state} />}
-        {tab === "general" && <SoftwareUpdates state={state} onAction={(action, extra) => command({ action, ...extra })} />}
+        {tab === "general" && (
+          <SoftwareUpdates
+            state={state}
+            onAction={(action, extra) => command({ action, ...extra })}
+          />
+        )}
         {tab === "general" && (
           <section>
             <h2 className="section-label">Appearance & capture</h2>
@@ -789,7 +804,10 @@ export function SettingsPage({ state }: { state: AppState }) {
               <div className="settings-row">
                 <div>
                   <h3>Show Calshot in the notch</h3>
-                  <p>Point at the top of the screen to capture or ask. When off, tasks open here.</p>
+                  <p>
+                    Point at the top of the screen to capture or ask. When off,
+                    tasks open here.
+                  </p>
                 </div>
                 <input
                   type="checkbox"
@@ -1026,6 +1044,7 @@ export function SettingsPage({ state }: { state: AppState }) {
             </div>
           </section>
         )}
+        {tab === "privacy" && <PersonalMemorySettings state={state} />}
         {tab === "privacy" && <AgentTaskPermissions state={state} />}
         {tab === "privacy" && (
           <section>
@@ -1125,5 +1144,263 @@ export function SettingsPage({ state }: { state: AppState }) {
         )}
       </div>
     </div>
+  );
+}
+
+const memoryKinds = ["preference", "fact", "person", "routine"] as const;
+function MemoryRow({
+  item,
+  token,
+  disabled,
+}: {
+  item: PersonalMemoryItem;
+  token: string;
+  disabled: boolean;
+}) {
+  const a = useAction();
+  const [editing, setEditing] = useState(false);
+  const [editAuthority, setEditAuthority] = useState({
+    token,
+    version: item.version,
+  });
+  const [text, setText] = useState(item.text);
+  const [kind, setKind] = useState(item.kind);
+  const pending = item.status === "pendingApproval";
+  const run = (action: string, extra = {}) =>
+    a.run(action, {
+      token,
+      memoryID: item.id,
+      expectedVersion: item.version,
+      ...extra,
+    });
+  return (
+    <div className="personal-memory-row">
+      {editing ? (
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (
+              await a.run("editMemory", {
+                token: editAuthority.token,
+                memoryID: item.id,
+                expectedVersion: editAuthority.version,
+                text,
+                kind,
+              })
+            )
+              setEditing(false);
+          }}
+        >
+          <label>
+            Memory text
+            <textarea
+              aria-label="Memory text"
+              maxLength={500}
+              required
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          </label>
+          <Select
+            label="Memory kind"
+            value={kind}
+            onChange={(value) => setKind(value as typeof kind)}
+          >
+            {memoryKinds.map((k) => (
+              <option key={k}>{k}</option>
+            ))}
+          </Select>
+          <button className="button primary" disabled={a.busy || disabled}>
+            Save memory
+          </button>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => setEditing(false)}
+          >
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <>
+          <p>{item.text}</p>
+          {item.expiresAt && new Date(item.expiresAt) <= new Date() && (
+            <Badge>Expired</Badge>
+          )}
+          <div className="personal-memory-actions">
+            <button
+              className="button secondary"
+              disabled={a.busy || disabled}
+              onClick={() => {
+                setText(item.text);
+                setKind(item.kind);
+                setEditAuthority({ token, version: item.version });
+                setEditing(true);
+              }}
+            >
+              Edit
+            </button>
+            {pending ? (
+              <>
+                <button
+                  className="button primary"
+                  disabled={a.busy || disabled}
+                  onClick={() => void run("approveMemory")}
+                >
+                  Approve
+                </button>
+                <button
+                  className="button secondary"
+                  disabled={a.busy || disabled}
+                  onClick={() =>
+                    void run("rejectMemory", { dontSuggestAgain: false })
+                  }
+                >
+                  Reject
+                </button>
+                <button
+                  className="button secondary"
+                  disabled={a.busy || disabled}
+                  onClick={() =>
+                    void run("rejectMemory", { dontSuggestAgain: true })
+                  }
+                >
+                  Don't suggest again
+                </button>
+              </>
+            ) : (
+              <button
+                className="button secondary"
+                disabled={a.busy || disabled}
+                onClick={() => void run("forgetMemory")}
+              >
+                Forget
+              </button>
+            )}
+          </div>
+        </>
+      )}
+      <InlineError message={a.error} />
+    </div>
+  );
+}
+export function PersonalMemorySettings({ state }: { state: AppState }) {
+  const memory = state.personalMemory;
+  const a = useAction();
+  const [text, setText] = useState("");
+  const [kind, setKind] = useState<PersonalMemoryItem["kind"]>("preference");
+  const [confirmClear, setConfirmClear] = useState(false);
+  const disabled = !memory?.loaded || !!memory.error;
+  return (
+    <section aria-label="Personal memory">
+      <h2 className="section-label">Memory</h2>
+      <div className="card settings-card">
+        <p className="fine-print">
+          Personal memories stay on this Mac, separately for each account.
+          Relevant memories are sent to your chosen AI service as context. They
+          never authorize changes. Forgetting prevents the same text from being
+          suggested again; source history is kept separately.
+        </p>
+        <InlineError message={memory?.error || ""} />
+        {!memory?.loaded && !memory?.error && <p>Loading memories…</p>}
+        {memory?.loaded && !memory.items.length && !memory.pending.length && (
+          <p>No personal memories yet.</p>
+        )}
+        {memoryKinds.map(
+          (k) =>
+            memory?.items.some((i) => i.kind === k) && (
+              <div key={k}>
+                <h3>{k[0].toUpperCase() + k.slice(1)}</h3>
+                {memory.items
+                  .filter((i) => i.kind === k)
+                  .map((i) => (
+                    <MemoryRow
+                      key={i.id}
+                      item={i}
+                      token={memory.token}
+                      disabled={disabled}
+                    />
+                  ))}
+              </div>
+            ),
+        )}
+        {!!memory?.pending.length && (
+          <div>
+            <h3>Suggested memories</h3>
+            {memory.pending.map((i) => (
+              <MemoryRow
+                key={i.id}
+                item={i}
+                token={memory.token}
+                disabled={disabled}
+              />
+            ))}
+          </div>
+        )}
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (await a.run("addMemory", { token: memory?.token, text, kind }))
+              setText("");
+          }}
+        >
+          <label>
+            New memory
+            <textarea
+              aria-label="New memory"
+              required
+              maxLength={500}
+              value={text}
+              disabled={disabled}
+              onChange={(e) => setText(e.target.value)}
+            />
+          </label>
+          <Select
+            label="New memory kind"
+            value={kind}
+            disabled={disabled}
+            onChange={(value) => setKind(value as typeof kind)}
+          >
+            {memoryKinds.map((k) => (
+              <option key={k}>{k}</option>
+            ))}
+          </Select>
+          <button
+            className="button primary"
+            disabled={disabled || a.busy || !text.trim()}
+          >
+            Add memory
+          </button>
+          <InlineError message={a.error} />
+        </form>
+        {!!memory && !!(memory.items.length + memory.pending.length) && (
+          <>
+            <label className="inline-check">
+              <input
+                type="checkbox"
+                checked={confirmClear}
+                onChange={(e) => setConfirmClear(e.target.checked)}
+              />
+              Confirm forgetting all personal memories
+            </label>
+            <button
+              className="button secondary"
+              disabled={disabled || !confirmClear || a.busy}
+              onClick={async () => {
+                if (
+                  await a.run("clearMemory", {
+                    token: memory.token,
+                    confirmed: true,
+                  })
+                )
+                  setConfirmClear(false);
+              }}
+            >
+              Forget all memories
+            </button>
+          </>
+        )}
+      </div>
+    </section>
   );
 }
