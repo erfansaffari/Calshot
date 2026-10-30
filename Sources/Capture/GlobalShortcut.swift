@@ -64,12 +64,15 @@ final class HotKeyController {
     }
 
     func dispatch(id: UInt32) {
+        NSLog("Calshot: hotkey pressed id=%u", id)
         switch id { case 1: onPress?(); case 2: onVoicePress?(); default: break }
     }
     func unregisterVoice() { if let voiceRef { UnregisterEventHotKey(voiceRef); self.voiceRef = nil } }
     @discardableResult func registerVoice(_ shortcut: GlobalShortcut) -> OSStatus {
         if let voiceRef { UnregisterEventHotKey(voiceRef); self.voiceRef = nil }
-        return RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: OSType(0x43414C53), id: 2), GetApplicationEventTarget(), 0, &voiceRef)
+        let status = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: OSType(0x43414C53), id: 2), GetApplicationEventTarget(), 0, &voiceRef)
+        NSLog("Calshot: register voice shortcut %@ (keyCode=%u modifiers=%u), status=%d", shortcut.label, shortcut.keyCode, shortcut.modifiers, status)
+        return status
     }
     func unregister() {
         if let hotKeyRef { UnregisterEventHotKey(hotKeyRef); self.hotKeyRef = nil }

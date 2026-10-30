@@ -1,4 +1,7 @@
 import AVFoundation
+import os
+
+private let audioLog = Logger(subsystem: "com.calshot.voice", category: "audio")
 import Combine
 
 /// Pure PCM helpers. Wire format is signed little-endian PCM16, mono, 24 kHz.
@@ -61,6 +64,8 @@ final class VoiceAudioEngine: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var isPlaying = false
     @Published private(set) var inputLevel: Float = 0
+    /// False when the device pair cannot run voice processing; capture then pauses during playback so Calshot does not hear itself.
+    private(set) var echoCancellation = false
     @Published private(set) var failure: AudioError?
     var onInput: ((Data) -> Void)?
     var onError: ((AudioError) -> Void)?
@@ -94,22 +99,36 @@ final class VoiceAudioEngine: ObservableObject {
         guard !isRunning else { return }
         guard Self.microphonePermission == .authorized else { throw AudioError.permission(Self.microphonePermission) }
         wantedRunning = true
-        do { try buildGraph(); failure = nil } catch {
-            stop(); let typed = error as? AudioError ?? .graph; failure = typed; throw typed
+        do { try buildGraph(voiceProcessing: true); failure = nil } catch {
+            // Voice processing fails on some device pairs (e.g. 48 kHz mic with 44.1 kHz speakers); capture still works without it.
+            audioLog.error("Audio start with voice processing failed: \(Self.describe(error), privacy: .public); retrying without")
+            teardownGraph(); wantedRunning = true
+            do { try buildGraph(voiceProcessing: false); failure = nil } catch {
+                audioLog.error("Audio start failed: \(Self.describe(error), privacy: .public)")
+                stop(); let typed = error as? AudioError ?? .graph; failure = typed; throw typed
+            }
         }
     }
     func stop() {
         wantedRunning = false; generation = UUID()
+        teardownGraph()
+    }
+    private func teardownGraph() {
         if let observer { NotificationCenter.default.removeObserver(observer) }; observer = nil
         _ = flush(); engine?.inputNode.removeTap(onBus: 0); engine?.stop()
         engine = nil; player = nil; isRunning = false; inputLevel = 0
     }
-    private func buildGraph() throws {
+    private static func describe(_ error: Error) -> String {
+        if let audio = error as? AudioError { return "\(audio)" }
+        let ns = error as NSError; return "\(ns.domain) \(ns.code)"
+    }
+    private func buildGraph(voiceProcessing: Bool) throws {
         let graph = AVAudioEngine(), node = AVAudioPlayerNode()
         let input = graph.inputNode
         guard input.inputFormat(forBus: 0).sampleRate > 0, input.inputFormat(forBus: 0).channelCount > 0 else { throw AudioError.noInputDevice }
         // Some devices do not support voice processing; capture remains available there.
-        try? input.setVoiceProcessingEnabled(true)
+        echoCancellation = false
+        if voiceProcessing { try? input.setVoiceProcessingEnabled(true); echoCancellation = input.isVoiceProcessingEnabled }
         let source = input.outputFormat(forBus: 0)
         guard source.sampleRate > 0, source.channelCount > 0,
               let mono = AVAudioFormat(standardFormatWithSampleRate: VoicePCM.sampleRate, channels: 1),
@@ -124,6 +143,7 @@ final class VoiceAudioEngine: ObservableObject {
                 guard let self, self.generation == id, self.wantedRunning else { return }
                 if result.failed { self.failure = .conversion; self.onError?(.conversion); return }
                 self.inputLevel = result.level
+                if !self.echoCancellation && self.isPlaying { return }
                 for chunk in result.chunks { self.onInput?(chunk) }
             }
         }

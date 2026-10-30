@@ -57,7 +57,7 @@ final class FocusFrameComposer {
                   let display = content.displays.first(where: { $0.displayID == id }),
                   let screen = screens.first(where: { $0.focusDisplayID == id }) else { throw FocusFrameError.noDisplays }
             let ownIDs = Self.excludedWindowIDs(in: content, processID: ProcessInfo.processInfo.processIdentifier,
-                                               localWindowIDs: Set(NSApp.windows.map { CGWindowID($0.windowNumber) }))
+                                               localWindowIDs: Set(NSApp.windows.compactMap { $0.windowNumber > 0 ? CGWindowID(exactly: $0.windowNumber) : nil }))
             let ownApps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
             // Application exclusion also covers windows created while the async screenshot is pending.
             let filter = ownApps.isEmpty

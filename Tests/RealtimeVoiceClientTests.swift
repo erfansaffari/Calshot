@@ -44,7 +44,7 @@ final class RealtimeVoiceClientTests: XCTestCase {
     }
     func testSessionConfigurationAndAuthentication() async throws {
         let fake = FakeRealtimeTransport()
-        let tool: JSONValue = .object(["type": .string("function"), "name": .string("fictional_lookup"), "parameters": .object(["type": .string("object")])])
+        let tool: JSONValue = .object(["type": .string("function"), "name": .string("fictional_lookup"), "strict": .bool(true), "parameters": .object(["type": .string("object")])])
         let client = RealtimeVoiceClient(apiKey: { "fictional-test-key" }, transportFactory: { fake })
         client.connect(configuration: .init(model: "fictional-model", instructions: "Fictional instructions", voice: "cedar", tools: [tool]))
         await settle { !fake.sent.isEmpty }
@@ -55,6 +55,8 @@ final class RealtimeVoiceClientTests: XCTestCase {
         XCTAssertEqual(s["instructions"] as? String, "Fictional instructions")
         XCTAssertEqual(s["tool_choice"] as? String, "auto")
         XCTAssertEqual((s["tools"] as? [[String: Any]])?.first?["name"] as? String, "fictional_lookup")
+        XCTAssertEqual(Set((s["tools"] as? [[String: Any]])?.first?.keys.map { $0 } ?? []), ["type", "name", "parameters"], "Realtime rejects text-agent tool fields such as strict")
+        for agentTool in CalendarAgent.tools { XCTAssertNil(RealtimeVoiceClient.realtimeTool(agentTool)?["strict"]) }
         let audio = try XCTUnwrap(s["audio"] as? [String: [String: Any]])
         XCTAssertEqual(audio["output"]?["voice"] as? String, "cedar")
         for side in ["input", "output"] {
@@ -130,7 +132,7 @@ final class RealtimeVoiceClientTests: XCTestCase {
             (.responseDone, .responseDone(id: "", status: "", usage: .init())),
             (.rateLimits, .rateLimits(.array([]))),
             (.error, .error(code: "service_error", message: "Voice could not complete the request. Try again.")),
-            (.transcriptionFailed, .error(code: "service_error", message: "Voice could not complete the request. Try again."))]
+            (.transcriptionFailed, .unknown(RealtimeWire.transcriptionFailed.rawValue))]
         for (wire, expected) in fixtures {
             let json: [String: Any] = ["type": wire.rawValue, "item_id": "i", "delta": "d", "transcript": "t", "call_id": "c", "name": "f", "arguments": "{}"]
             XCTAssertEqual(try RealtimeVoiceEvent.decode(String(decoding: JSONSerialization.data(withJSONObject: json), as: UTF8.self)), expected)

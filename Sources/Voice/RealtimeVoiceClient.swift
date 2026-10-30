@@ -1,5 +1,14 @@
 import Foundation
 import Combine
+import os
+
+private let realtimeLog = Logger(subsystem: "com.calshot.voice", category: "realtime")
+/// Public log fields must look like protocol identifiers (e.g. `unknown_parameter`, `session.tools[0].strict`); anything else is redacted.
+private func loggable(_ value: Any?) -> String {
+    guard let text = value as? String, !text.isEmpty else { return "" }
+    let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789_.[]-")
+    return text.count <= 80 && text.unicodeScalars.allSatisfy(allowed.contains) && !text.hasPrefix("sk-") ? text : "<redacted>"
+}
 
 /// All transport operations and callbacks are isolated to the main actor. No credentials are logged.
 @MainActor
@@ -163,9 +172,16 @@ enum RealtimeVoiceEvent: Equatable {
             return .responseDone(id: r["id"] as? String ?? "", status: r["status"] as? String ?? "", usage: .init(r["usage"] as? [String: Any] ?? [:]))
         case .rateLimits:
             return .rateLimits(try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: j["rate_limits"] ?? [])))
-        case .error, .transcriptionFailed:
+        case .transcriptionFailed:
+            // A failed caption must not end the session; the audio turn itself still reaches the model.
             let e = j["error"] as? [String: Any] ?? [:]
-            // Never expose arbitrary server text: it may echo credentials or request bodies.
+            realtimeLog.error("Transcription failed: code=\(loggable(e["code"]), privacy: .public) message=\(e["message"] as? String ?? "", privacy: .private)")
+            return .unknown(type)
+        case .error:
+            let e = j["error"] as? [String: Any] ?? [:]
+            // Never expose arbitrary server text in the UI: it may echo credentials or request bodies.
+            // Code, type and param are diagnostic only; the message stays private in the local log.
+            realtimeLog.error("Realtime error: type=\(loggable(e["type"]), privacy: .public) code=\(loggable(e["code"]), privacy: .public) param=\(loggable(e["param"]), privacy: .public) message=\(e["message"] as? String ?? "", privacy: .private)")
             let raw = e["code"] as? String ?? ""
             let code = ["invalid_api_key", "insufficient_quota", "rate_limit_exceeded", "invalid_request_error", "conversation_already_has_active_response"].contains(raw) ? raw : "service_error"
             return .error(code: code, message: code == "invalid_api_key" ? RealtimeConnectionError.authentication.description : code == "insufficient_quota" ? RealtimeConnectionError.quota.description : "Voice could not complete the request. Try again.")
@@ -268,7 +284,12 @@ final class RealtimeVoiceClient: ObservableObject {
          "audio": ["input": ["format": ["type": "audio/pcm", "rate": 24000], "transcription": ["model": c.transcriptionModel],
                                "turn_detection": ["type": "server_vad", "create_response": c.automaticResponse, "interrupt_response": false]],
                    "output": ["format": ["type": "audio/pcm", "rate": 24000], "voice": c.voice]],
-         "tools": c.tools.compactMap { try? JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }, "tool_choice": "auto"]
+         "tools": c.tools.compactMap(Self.realtimeTool), "tool_choice": "auto"]
+    }
+    /// Realtime function tools accept only type, name, description and parameters; text-agent fields such as `strict` are rejected.
+    nonisolated static func realtimeTool(_ tool: JSONValue) -> [String: Any]? {
+        guard let object = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(tool))) as? [String: Any] else { return nil }
+        return object.filter { ["type", "name", "description", "parameters"].contains($0.key) }
     }
     private func send(_ type: RealtimeWire, _ fields: [String: Any] = [:]) async throws {
         guard let transport else { throw RealtimeConnectionError.notReady }
