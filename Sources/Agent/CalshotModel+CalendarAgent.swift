@@ -2,6 +2,19 @@ import AppKit
 import Combine
 import Foundation
 
+/// One calendar row the executor already validated. Guests and recurrence are native facts, never tool-authored authority.
+struct AgentCalendarGrantRow: Sendable {
+    var proposal: CalendarActionProposal
+    var recurring: Bool?
+    var guests: Bool
+}
+
+enum AgentCalendarGrantOutcome: Sendable {
+    case blocked(String)
+    /// Saved rows already have provider receipts. Review rows were not written. Failed rows were not written.
+    case split(saved: [CalendarActionProposal], review: [(proposal: CalendarActionProposal, reason: String)], failed: [(proposal: CalendarActionProposal, message: String)])
+}
+
 extension CalshotModel {
     var canUseCalendarAgent: Bool {
         agentClient != nil || (openAIAnalysisEnabled && (chatGPTAccount?.canUsePlan == true || hasOpenAIAPIKey))
@@ -68,6 +81,11 @@ extension CalshotModel {
         executor.commitTaskOnlyImport = { [weak self] runID in
             guard let self else { throw CancellationError() }
             return try await self.commitAgentTaskOnlyImport(runID: runID)
+        }
+        // Calendar grants are a separate Settings choice. The executor still sends unclear rows to the existing review.
+        executor.applyCalendarGrant = { [weak self] runID, destinationID, destinationName, rows in
+            guard let self else { return .blocked("Calendar changes are unavailable.") }
+            return await self.applyAgentCalendarGrant(runID: runID, destinationID: destinationID, destinationName: destinationName, rows: rows)
         }
         executor.taskImportReceipts = { [weak self] prepared in self?.taskImportReceipts(prepared) ?? .array([]) }
         executor.finishTaskImport = { [weak self] in self?.taskImport = nil }
@@ -504,6 +522,15 @@ extension CalshotModel {
         ("complete", .taskComplete, "Complete or reopen tasks", "Mark tasks done, or open them again."),
         ("archive", .taskArchive, "Archive or restore tasks", "Move tasks out of your list, or bring them back.")]
     static let agentSupportedTaskActions: Set<AgentPermissionAction> = [.taskCreate, .taskLink, .taskEdit, .taskComplete, .taskArchive]
+    /// Fields a calendar grant may cover. Subset of the kernel allowlist; background is never granted.
+    static let agentCalendarGrantFields: Set<String> = ["title", "startDate", "endDate", "isAllDay", "timeZoneIdentifier", "location", "url", "notes"]
+    static let agentCalendarFamilies: [(id: String, action: AgentPermissionAction, label: String, detail: String)] = [
+        ("create", .calendarCreate, "Add new events", "Save new events you ask for when the date, year and time are already clear."),
+        ("edit", .calendarEdit, "Edit event details", "Change the title, date, time or details of one event you ask about.")]
+    static let agentCalendarLocked: [(id: String, label: String, detail: String)] = [
+        ("delete", "Delete events", "Always asks before an event is removed."),
+        ("move", "Move events", "Always asks before an event changes calendars.")]
+    static let agentSupportedCalendarActions: Set<AgentPermissionAction> = [.calendarCreate, .calendarEdit, .calendarDelete, .calendarMove]
 
     var agentPermissionOwnerID: String { account.userID?.uuidString ?? "local" }
 
@@ -516,7 +543,7 @@ extension CalshotModel {
     static func agentPermissionMessage(_ error: Error) -> String {
         switch error as? AgentPermissionError {
         case .storeAlreadyOpen: return "Task permissions are in use by another Calshot process. Quit it, then reopen Calshot."
-        case .corruptStore: return "Saved task permissions couldn’t be read safely. The file was kept and task changes by Calshot are paused."
+        case .corruptStore: return "Saved task permissions couldn’t be read safely. The file was kept and task changes by Calshot are paused. Automatic calendar saves are paused too."
         case .wrongOwnerOrDevice: return "Saved task permissions belong to another account or Mac. Task changes by Calshot are paused."
         case .stalePolicy: return "Permissions changed. Check the latest settings and save again."
         case .closed: return "Task permissions closed because the account changed. Try again."
@@ -588,7 +615,7 @@ extension CalshotModel {
             agentPermissionClosing = Task { await previous?.value; await old.close() }
         }
         agentPermissionStore = nil; agentPermissionStoreKey = nil; agentPermissionPolicy = nil
-        agentPermissionError = nil; agentPermissionNotice = nil; agentPermissionBusy = false
+        agentPermissionError = nil; agentPermissionNotice = nil; agentCalendarNotice = nil; agentPermissionBusy = false
         agentPermissionGeneration = UUID(); agentPermissionLiveOperations = []; agentPermissionNeedsReconcile = false
         agentTaskOutcome = nil
     }
@@ -1131,6 +1158,193 @@ extension CalshotModel {
         }
     }
 
+    // MARK: Calendar grants
+
+    /// Typed requests and voice sessions may use a saved calendar grant. A screenshot-started run never does.
+    func calendarGrantOrigin(_ runID: UUID) -> Bool {
+        agentTypedRunID == runID || voiceRunID == runID || voicePreparedRunID == runID
+    }
+
+    /// A row may save without review only when every required fact is already settled and it is a single non-repeating event.
+    static func calendarGrantRowIsResolved(_ row: AgentCalendarGrantRow, duplicate: Bool) -> Bool {
+        if row.guests || duplicate { return false }
+        let proposal = row.proposal
+        guard proposal.operation == .create || proposal.operation == .update else { return false }
+        if row.recurring == true || (proposal.operation == .update && row.recurring != false) { return false }
+        guard calendarKernelFields(proposal) != nil else { return false }
+        let draft = proposal.draft
+        let blocking: Set<EventAmbiguity> = [.missingTitle, .missingDate, .missingYear, .missingTime, .ambiguousDate, .ambiguousTime, .ambiguousTimeZone, .missingEndTime, .multipleEvents, .invalidURL]
+        guard !draft.ambiguities.contains(where: { blocking.contains($0) }),
+              !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let start = draft.startDate, let end = draft.endDate, end > start,
+              CalendarDraftValidation.issues(draft).isEmpty else { return false }
+        return true
+    }
+
+    static func calendarKernelFields(_ proposal: CalendarActionProposal) -> Set<String>? {
+        let draft = proposal.draft
+        if proposal.operation == .create {
+            var fields: Set<String> = ["title", "startDate", "endDate", "isAllDay"]
+            if draft.timeZoneIdentifier != nil { fields.insert("timeZoneIdentifier") }
+            if draft.location != nil { fields.insert("location") }
+            if draft.url != nil { fields.insert("url") }
+            if !(draft.notes ?? "").isEmpty { fields.insert("notes") }
+            return fields
+        }
+        guard proposal.operation == .update else { return nil }
+        var fields = Set<String>()
+        for name in draft.changedFieldNames ?? [] {
+            switch name {
+            case "title": fields.insert("title")
+            case "date", "startTime": fields.insert("startDate")
+            case "endTime": fields.insert("endDate")
+            case "allDay": fields.insert("isAllDay")
+            case "timeZone": fields.insert("timeZoneIdentifier")
+            case "location": fields.insert("location")
+            case "url": fields.insert("url")
+            case "notes": fields.insert("notes")
+            default: return nil
+            }
+        }
+        return fields.isEmpty ? nil : fields
+    }
+
+    static func calendarEventFingerprint(_ event: CalendarEventSnapshot) -> String {
+        let formatter = ISO8601DateFormatter()
+        let parts = [event.eventIdentifier, event.title, formatter.string(from: event.start), formatter.string(from: event.end),
+                     String(event.isAllDay), event.timeZone ?? "", event.location ?? "", event.notes ?? "", event.url?.absoluteString ?? ""]
+        return AgentPermissionOperation.hash(Data(parts.joined(separator: "\u{1e}").utf8))
+    }
+
+    private func calendarGrantReason(_ row: AgentCalendarGrantRow, duplicate: Bool) -> String? {
+        let proposal = row.proposal
+        if proposal.operation != .create && proposal.operation != .update { return "Deletes and moves always need review." }
+        if row.guests { return "Guests need review." }
+        if row.recurring == true || (proposal.operation == .update && row.recurring != false) { return "A repeating event needs review." }
+        if duplicate { return "A matching event already exists, so this one needs review." }
+        if !Self.calendarGrantRowIsResolved(row, duplicate: false) { return "The date, year, time or title still needs review." }
+        return nil
+    }
+
+    private func calendarGrantResources(runID: UUID, versions: [String: String]) -> AgentPermissionResources {
+        let current = activeAgentRunID == runID && !Task.isCancelled
+        return AgentPermissionResources(ownerID: agentPermissionOwnerID, deviceID: Self.syncDeviceID, versions: versions,
+            writableCalendarIDs: Set(destinations.map(\.id)), supportedActions: Self.agentSupportedCalendarActions, cancelled: !current)
+    }
+
+    /// Reserves each eligible row and writes it through the direct calendar writer. Ineligible rows are returned for the existing review.
+    /// A store that cannot be read blocks the whole request and writes nothing.
+    func applyAgentCalendarGrant(runID: UUID, destinationID: String, destinationName: String, rows: [AgentCalendarGrantRow]) async -> AgentCalendarGrantOutcome {
+        guard calendarGrantOrigin(runID) else {
+            return .split(saved: [], review: rows.map { ($0.proposal, "A screenshot started this request, so Calshot asks before changing your calendar.") }, failed: [])
+        }
+        let store: AgentPermissionStore
+        do { store = try await openAgentPermissionStore() }
+        catch is CancellationError { return .blocked("Stopped before anything was saved.") }
+        catch { return .blocked(error.localizedDescription) }
+        var saved: [CalendarActionProposal] = []
+        var review: [(proposal: CalendarActionProposal, reason: String)] = []
+        var failed: [(proposal: CalendarActionProposal, message: String)] = []
+        var written: [EventDraft] = []
+        for row in rows {
+            if Task.isCancelled || activeAgentRunID != runID {
+                failed.append((row.proposal, "Stopped before this event was saved.")); continue
+            }
+            let duplicate = await calendarGrantDuplicate(row, destinationID: destinationID, batch: written)
+            if let reason = calendarGrantReason(row, duplicate: duplicate) {
+                review.append((row.proposal, reason)); continue
+            }
+            let action: AgentPermissionAction = row.proposal.operation == .create ? .calendarCreate : .calendarEdit
+            guard let fields = Self.calendarKernelFields(row.proposal) else {
+                review.append((row.proposal, "The date, year, time or title still needs review.")); continue
+            }
+            let resourceID: String
+            var versions: [String: String] = [:]
+            if action == .calendarCreate {
+                resourceID = row.proposal.id.uuidString
+            } else {
+                guard let identifier = row.proposal.targetEventIdentifier, !identifier.isEmpty else {
+                    failed.append((row.proposal, "Search before changing the event.")); continue
+                }
+                do {
+                    guard let event = try await calendarService.event(identifier: identifier, in: .resolve(identifier: destinationID)) else {
+                        failed.append((row.proposal, "That event is no longer in the calendar.")); continue
+                    }
+                    resourceID = identifier
+                    versions[identifier] = Self.calendarEventFingerprint(event)
+                } catch {
+                    review.append((row.proposal, "The event could not be confirmed, so it needs review.")); continue
+                }
+            }
+            let effect = JSONValue.object(["action": .string(action.rawValue), "calendarID": .string(destinationID),
+                "title": .string(row.proposal.draft.title), "resource": .string(resourceID),
+                "start": row.proposal.draft.startDate.map { .string(ISO8601DateFormatter().string(from: $0)) } ?? .null,
+                "end": row.proposal.draft.endDate.map { .string(ISO8601DateFormatter().string(from: $0)) } ?? .null,
+                "allDay": .bool(row.proposal.draft.isAllDay)])
+            let operation = AgentPermissionOperation(operationID: UUID(), runID: runID, ownerID: agentPermissionOwnerID, deviceID: Self.syncDeviceID,
+                action: action, resourceIDs: [resourceID], expectedVersions: versions, calendarIDs: [destinationID], fields: fields,
+                effectDigest: Self.agentEffectDigest(effect), hasGuestEffects: row.guests, affectsSeries: row.recurring == true, hasSharingEffects: false)
+            let resources = calendarGrantResources(runID: runID, versions: versions)
+            let envelope: AgentPermissionEnvelope
+            do {
+                switch try await store.reserve(operation, context: .userRequested(), resources: resources) {
+                case .allow(let allowed): envelope = allowed
+                case .requireReview(let reason): review.append((row.proposal, reason)); continue
+                case .deny(let reason):
+                    failed.append((row.proposal, reason)); continue
+                }
+            } catch {
+                let message = Self.agentPermissionMessage(error)
+                var include = false
+                for pending in rows where include || pending.proposal.id == row.proposal.id {
+                    include = true
+                    failed.append((pending.proposal, message))
+                }
+                return .split(saved: saved, review: review, failed: failed)
+            }
+            agentPermissionLiveOperations.insert(operation.operationID)
+            do {
+                try await store.beginDispatch(envelope, resources: calendarGrantResources(runID: runID, versions: versions))
+            } catch {
+                try? await store.settle(envelope, outcome: .failedWithoutEffect)
+                agentPermissionLiveOperations.remove(operation.operationID)
+                failed.append((row.proposal, "The event or your permission changed before this was saved.")); continue
+            }
+            var proposal = row.proposal
+            proposal.targetDestinationID = destinationID
+            proposal.targetCalendarName = destinationName
+            do {
+                let result = try await directCalendarWriter.apply(proposal, destinationID: destinationID, calendarName: destinationName)
+                try? await store.settle(envelope, outcome: .succeeded)
+                agentPermissionLiveOperations.remove(operation.operationID)
+                var stored = result
+                stored.targetDestinationID = destinationID
+                stored.targetCalendarName = destinationName
+                saved.append(stored)
+                written.append(stored.draft)
+            } catch let error as DirectCalendarWriter.WriteError {
+                try? await store.settle(envelope, outcome: .failedWithoutEffect)
+                agentPermissionLiveOperations.remove(operation.operationID)
+                if case .duplicate = error { review.append((row.proposal, "A matching event already exists, so this one needs review.")) }
+                else { failed.append((row.proposal, error.localizedDescription)) }
+            } catch {
+                try? await store.settle(envelope, outcome: .failedWithoutEffect)
+                agentPermissionLiveOperations.remove(operation.operationID)
+                failed.append((row.proposal, error.localizedDescription))
+            }
+        }
+        return .split(saved: saved, review: review, failed: failed)
+    }
+
+    private func calendarGrantDuplicate(_ row: AgentCalendarGrantRow, destinationID: String, batch: [EventDraft]) async -> Bool {
+        guard row.proposal.operation == .create else { return false }
+        if batch.contains(where: { CalendarDraftValidation.sameEvent($0, row.proposal.draft) }) { return true }
+        do {
+            let matches = try await calendarService.matchingEvents(row.proposal.draft, in: .resolve(identifier: destinationID))
+            return !matches.isEmpty
+        } catch { return true }
+    }
+
     // MARK: Settings (workspace only; never reachable from tools or the notch)
 
     func saveAgentTaskPermissions(revision: UInt64, families: [String: Bool], days: Int, renew: Bool = false) async throws {
@@ -1173,6 +1387,52 @@ extension CalshotModel {
         catch let error as AgentPermissionError { throw CalendarToolArgumentError(Self.agentPermissionMessage(error)) }
     }
 
+    func saveAgentCalendarPermissions(revision: UInt64, families: [String: Bool], calendarIDs: [String], days: Int, renew: Bool = false) async throws {
+        guard [7, 30, 90].contains(days), Set(families.keys).isSubset(of: Set(Self.agentCalendarFamilies.map(\.id))) else {
+            throw CalendarToolArgumentError("Choose valid calendar permissions.")
+        }
+        guard !agentPermissionBusy else { throw CalendarToolArgumentError("Permissions are already being saved.") }
+        var scope = Set(calendarIDs)
+        if families.values.contains(true), scope.isEmpty, let selected = selectedCalendarID, destinations.contains(where: { $0.id == selected && !$0.isReadOnly }) {
+            scope = [selected]
+        }
+        guard scope.allSatisfy({ id in !id.isEmpty && destinations.contains { $0.id == id && !$0.isReadOnly } }),
+              !families.values.contains(true) || !scope.isEmpty else {
+            throw CalendarToolArgumentError("Choose a writable calendar.")
+        }
+        let generation = agentPermissionGeneration
+        agentPermissionBusy = true; agentCalendarNotice = nil
+        defer { if agentPermissionGeneration == generation { agentPermissionBusy = false } }
+        let owner = agentPermissionOwnerID
+        do {
+            let store = try await openAgentPermissionStore()
+            guard agentPermissionGeneration == generation, owner == agentPermissionOwnerID else { throw CancellationError() }
+            let current = try await store.snapshot()
+            guard agentPermissionGeneration == generation else { throw CancellationError() }
+            guard current.revision == revision else {
+                agentPermissionPolicy = current
+                throw CalendarToolArgumentError("Permissions changed on this Mac. Check the latest settings and save again.")
+            }
+            let now = Date.now, expires = now.addingTimeInterval(Double(days) * 86_400)
+            let existing = Dictionary(current.grants.map { ($0.action, $0) }, uniquingKeysWith: { first, _ in first })
+            var grants = current.grants.filter { grant in !Self.agentCalendarFamilies.contains { $0.action == grant.action } }
+            for family in Self.agentCalendarFamilies where families[family.id] == true {
+                let kept = existing[family.action].flatMap { $0.requestedEnabled && $0.expiresAt > now && !renew ? $0.expiresAt : nil }
+                grants.append(AgentPermissionGrant(action: family.action, requestedEnabled: true, backgroundEnabled: false,
+                    calendarIDs: scope, fields: Self.agentCalendarGrantFields, expiresAt: kept ?? expires))
+            }
+            let control = AgentPermissionSettingsControl(nativeOwnerID: owner, nativeDeviceID: Self.syncDeviceID)
+            let policy = try await store.replaceGrants(grants, expectedRevision: revision, control: control,
+                maxPerRun: current.maxPerRun, maxPerWindow: current.maxPerWindow, windowSeconds: current.windowSeconds)
+            guard agentPermissionGeneration == generation, owner == agentPermissionOwnerID else { throw CancellationError() }
+            agentPermissionPolicy = policy
+            agentCalendarNotice = families.values.contains(true)
+                ? "Saved. These calendar actions apply to new requests on this Mac."
+                : "Saved. Calshot will ask before changing your calendar."
+        } catch is CancellationError { throw CalendarToolArgumentError("The account changed. Open Settings and try again.") }
+        catch let error as AgentPermissionError { throw CalendarToolArgumentError(Self.agentPermissionMessage(error)) }
+    }
+
     /// Credential-free view state. Device-local: this is never part of the account sync document.
     func agentPermissionSnapshot() -> JSONValue {
         let now = Date.now
@@ -1185,12 +1445,28 @@ extension CalshotModel {
             return .object(["id": .string(family.id), "label": .string(family.label), "detail": .string(family.detail),
                             "enabled": .bool(active), "expired": .bool(grant != nil && !active)])
         }
+        let calendarGrants = grants.filter { grant in Self.agentCalendarFamilies.contains { $0.action == grant.action } }
+        var calendarExpiry: Date?
+        let calendarFamilies: [JSONValue] = Self.agentCalendarFamilies.map { family in
+            let grant = calendarGrants.first { $0.action == family.action }
+            let active = grant.map { $0.requestedEnabled && $0.expiresAt > now } ?? false
+            if active, let expires = grant?.expiresAt, calendarExpiry == nil || expires > calendarExpiry! { calendarExpiry = expires }
+            return .object(["id": .string(family.id), "label": .string(family.label), "detail": .string(family.detail),
+                            "enabled": .bool(active), "expired": .bool(grant != nil && !active), "alwaysAsks": .bool(false)])
+        } + Self.agentCalendarLocked.map { locked in
+            .object(["id": .string(locked.id), "label": .string(locked.label), "detail": .string(locked.detail),
+                     "enabled": .bool(false), "expired": .bool(false), "alwaysAsks": .bool(true)])
+        }
+        let calendarIDs = Set(calendarGrants.filter { $0.requestedEnabled && $0.expiresAt > now }.flatMap(\.calendarIDs)).sorted()
         return .object(["loaded": .bool(agentPermissionPolicy != nil), "busy": .bool(agentPermissionBusy),
             "error": agentPermissionError.map(JSONValue.string) ?? .null, "notice": agentPermissionNotice.map(JSONValue.string) ?? .null,
             "revision": .number(Double(agentPermissionPolicy?.revision ?? 0)), "families": .array(families),
             "expiresAt": latest.map { .string(ISO8601DateFormatter().string(from: $0)) } ?? .null,
             "limits": .object(["perRun": .number(Double(agentPermissionPolicy?.maxPerRun ?? 20)), "perWindow": .number(Double(agentPermissionPolicy?.maxPerWindow ?? 100)),
-                               "windowMinutes": .number((agentPermissionPolicy?.windowSeconds ?? 3600) / 60)])])
+                               "windowMinutes": .number((agentPermissionPolicy?.windowSeconds ?? 3600) / 60)]),
+            "calendar": .object(["families": .array(calendarFamilies), "calendarIDs": .array(calendarIDs.map(JSONValue.string)),
+                                 "expiresAt": calendarExpiry.map { .string(ISO8601DateFormatter().string(from: $0)) } ?? .null,
+                                 "notice": agentCalendarNotice.map(JSONValue.string) ?? .null])])
     }
 
     func agentTaskReviewSnapshot() -> JSONValue {
