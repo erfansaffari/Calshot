@@ -94,6 +94,7 @@ extension CalshotModel {
             guard let self else { return .blocked("Calendar changes are unavailable.") }
             return await self.applyAgentCalendarGrant(runID: runID, destinationID: destinationID, destinationName: destinationName, rows: rows)
         }
+        executor.changeLedger = { [weak self] in self?.calendarChangeLedger() ?? [] }
         executor.taskImportReceipts = { [weak self] prepared in self?.taskImportReceipts(prepared) ?? .array([]) }
         executor.finishTaskImport = { [weak self] in self?.taskImport = nil }
         executor.createTasks = { [weak self] fields in
@@ -138,18 +139,16 @@ extension CalshotModel {
         // History exists before any tool can write. OCR is intentionally not included in the first model request.
         do {
             guard let png = NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:]) else { throw ResponsesCalendarAgentClient.ClientError.imageEncoding }
-            if isAppendingCapture, let id = currentMemoryRecordID {
-                guard let record = try memoryStore.appendScreenshot(for: id, imageData: png, recognizedText: "", proposals: []) else {
-                    throw CalendarToolArgumentError("The original capture no longer exists.")
-                }
-                currentAgentSourceID = record.additionalScreenshots?.last?.id
-                calendarActions.replace(with: record.calendarProposals)
-            } else {
-                let record = try memoryStore.recordCapture(imageData: png, proposals: [], analysisProvider: canUseCalendarAgent ? "Calendar agent" : "On-device analysis + Vision OCR")
-                currentMemoryRecordID = record.id
-                currentAgentSourceID = nil
-                calendarActions.replace(with: [])
+            // Every screenshot joins the one ongoing chat as another source page.
+            guard let main = mainChatID() else { throw CalendarToolArgumentError("Your conversation history couldn’t be opened.") }
+            let keepReview = isAppendingCapture && currentMemoryRecordID == main
+            if currentMemoryRecordID != main { loadMainChat(main) }
+            guard let record = try memoryStore.appendScreenshot(for: main, imageData: png, recognizedText: "", proposals: []) else {
+                throw CalendarToolArgumentError("Your conversation history couldn’t be opened.")
             }
+            currentMemoryRecordID = main
+            currentAgentSourceID = record.additionalScreenshots?.last?.id
+            calendarActions.replace(with: keepReview ? calendarActions.proposals.filter { !$0.isFinished } : [])
             refreshMemory()
         } catch {
             status = "Couldn’t save capture history: \(error.localizedDescription)"
@@ -210,10 +209,12 @@ extension CalshotModel {
         agentTypedRunID = isTypedRequest ? sessionID : nil
         bindSelectedEventContext(runID: sessionID)
         currentCaptureSessionID = sessionID
-        if currentMemoryRecordID == nil {
-            do { currentMemoryRecordID = try memoryStore.recordCommand(prompt).id; refreshMemory() }
-            catch { status = "Couldn’t save conversation history: \(error.localizedDescription)"; return }
-        }
+        // One ongoing chat: every typed request continues it. Finished rows leave the review; their receipts stay in history.
+        guard let main = mainChatID() else { status = "Couldn’t open your conversation history."; return }
+        if currentMemoryRecordID != main { loadMainChat(main) }
+        currentMemoryRecordID = main
+        calendarActions.replace(with: calendarActions.proposals.filter { !$0.isFinished })
+        refreshMemory()
         workspaceSelection = .chat
         presentTask(compact: true)
         var cgImage: CGImage?
@@ -255,10 +256,13 @@ extension CalshotModel {
             } catch { self.status = "Couldn’t save agent memory: \(error.localizedDescription)" }
         }
         executor.activate(sessionID: sessionID)
-        executor.memorySuggestionsBlocked = prefix.contains { $0.sharedCalendarContext == true }
+        // Earlier shared-friend turns are already withheld from the model's context, so only this run's own
+        // friend lookups block memory suggestions (set by the executor). The one chat is never blocked for good.
         agentStatus = image == nil ? "Reading your command" : "Reading the screenshot"
         if destinations.isEmpty { await loadCalendars() }
         guard currentCaptureSessionID == sessionID, !Task.isCancelled else { return }
+        // Network calendars load while the model reads the request; a search that arrives first reads live.
+        Task { [weak executor] in await executor?.prefetchNetworkCalendars() }
         do {
             let imageURL = try image.map(ResponsesCalendarAgentClient.imageDataURL)
             analyzedWithOpenAI = agentClient == nil
@@ -533,10 +537,24 @@ extension CalshotModel {
     static let agentCalendarGrantFields: Set<String> = ["title", "startDate", "endDate", "isAllDay", "timeZoneIdentifier", "location", "url", "notes"]
     static let agentCalendarFamilies: [(id: String, action: AgentPermissionAction, label: String, detail: String)] = [
         ("create", .calendarCreate, "Add new events", "Save new events you ask for when the date, year and time are already clear."),
-        ("edit", .calendarEdit, "Edit event details", "Change the title, date, time or details of one event you ask about.")]
+        ("edit", .calendarEdit, "Edit event details", "Change the title, date, time or details of one event you ask about."),
+        ("delete", .calendarDelete, "Delete events", "Remove one event you ask about. Say “undo” to bring it back."),
+        ("move", .calendarMove, "Move events", "Move an event you ask about to another calendar, checking the copy first.")]
+    /// Shown as always asking: saving sends updates to other people, or changes many occurrences at once.
     static let agentCalendarLocked: [(id: String, label: String, detail: String)] = [
-        ("delete", "Delete events", "Always asks before an event is removed."),
-        ("move", "Move events", "Always asks before an event changes calendars.")]
+        ("guests", "Events with guests", "Always asks, because saving notifies the other people."),
+        ("series", "Repeating series", "Always asks before changing or removing a repeating event."),
+        ("screenshot", "Screenshot imports", "Always shows the review for events read from a screenshot.")]
+    /// Kernel fields each calendar family may cover.
+    static func agentCalendarGrantFields(for action: AgentPermissionAction) -> Set<String> {
+        switch action {
+        case .calendarDelete: return ["delete"]
+        case .calendarMove: return ["destination"]
+        default: return agentCalendarGrantFields
+        }
+    }
+    /// Autonomy grants last a year and renew while on, so instant saving never lapses into reviews unannounced.
+    static let agentAutonomyDays = 365
     static let agentSupportedCalendarActions: Set<AgentPermissionAction> = [.calendarCreate, .calendarEdit, .calendarDelete, .calendarMove]
 
     var agentPermissionOwnerID: String { account.userID?.uuidString ?? "local" }
@@ -1176,6 +1194,11 @@ extension CalshotModel {
     static func calendarGrantRowIsResolved(_ row: AgentCalendarGrantRow, duplicate: Bool) -> Bool {
         if row.guests || duplicate { return false }
         let proposal = row.proposal
+        // A delete or move targets one searched, confirmed occurrence; only a known non-repeating event qualifies.
+        if proposal.operation == .delete || proposal.operation == .move {
+            guard row.recurring == false, let target = proposal.targetEventIdentifier, !target.isEmpty else { return false }
+            return proposal.operation == .delete || (proposal.sourceDestinationID != nil && proposal.sourceDestinationID != proposal.targetDestinationID)
+        }
         guard proposal.operation == .create || proposal.operation == .update else { return false }
         if row.recurring == true || (proposal.operation == .update && row.recurring != false) { return false }
         guard calendarKernelFields(proposal) != nil else { return false }
@@ -1190,6 +1213,8 @@ extension CalshotModel {
 
     static func calendarKernelFields(_ proposal: CalendarActionProposal) -> Set<String>? {
         let draft = proposal.draft
+        if proposal.operation == .delete { return ["delete"] }
+        if proposal.operation == .move { return ["destination"] }
         if proposal.operation == .create {
             var fields: Set<String> = ["title", "startDate", "endDate", "isAllDay"]
             if draft.timeZoneIdentifier != nil { fields.insert("timeZoneIdentifier") }
@@ -1225,9 +1250,8 @@ extension CalshotModel {
 
     private func calendarGrantReason(_ row: AgentCalendarGrantRow, duplicate: Bool) -> String? {
         let proposal = row.proposal
-        if proposal.operation != .create && proposal.operation != .update { return "Deletes and moves always need review." }
-        if row.guests { return "Guests need review." }
-        if row.recurring == true || (proposal.operation == .update && row.recurring != false) { return "A repeating event needs review." }
+        if row.guests { return "Guests need review, because saving notifies them." }
+        if row.recurring == true || (proposal.operation != .create && row.recurring != false) { return "A repeating event needs review." }
         if duplicate { return "A matching event already exists, so this one needs review." }
         if !Self.calendarGrantRowIsResolved(row, duplicate: false) { return "The date, year, time or title still needs review." }
         return nil
@@ -1242,6 +1266,7 @@ extension CalshotModel {
     /// Reserves each eligible row and writes it through the direct calendar writer. Ineligible rows are returned for the existing review.
     /// A store that cannot be read blocks the whole request and writes nothing.
     func applyAgentCalendarGrant(runID: UUID, destinationID: String, destinationName: String, rows: [AgentCalendarGrantRow]) async -> AgentCalendarGrantOutcome {
+        await ensureAgentAutonomyDefault()
         guard calendarGrantOrigin(runID) else {
             return .split(saved: [], review: rows.map { ($0.proposal, "A screenshot started this request, so Calshot asks before changing your calendar.") }, failed: [])
         }
@@ -1264,10 +1289,19 @@ extension CalshotModel {
             if let reason = calendarGrantReason(row, duplicate: duplicate) {
                 review.append((row.proposal, reason)); continue
             }
-            let action: AgentPermissionAction = row.proposal.operation == .create ? .calendarCreate : .calendarEdit
+            let action: AgentPermissionAction
+            switch row.proposal.operation {
+            case .create: action = .calendarCreate
+            case .delete: action = .calendarDelete
+            case .move: action = .calendarMove
+            default: action = .calendarEdit
+            }
             guard let fields = Self.calendarKernelFields(row.proposal) else {
                 review.append((row.proposal, "The date, year, time or title still needs review.")); continue
             }
+            // A move reads the original in its source calendar and needs write access to both calendars.
+            let sourceID = action == .calendarMove ? (row.proposal.sourceDestinationID ?? destinationID) : destinationID
+            let calendarIDs: Set<String> = action == .calendarMove ? [sourceID, destinationID] : [destinationID]
             let resourceID: String
             var versions: [String: String] = [:]
             if action == .calendarCreate {
@@ -1277,7 +1311,7 @@ extension CalshotModel {
                     failed.append((row.proposal, "Search before changing the event.")); continue
                 }
                 do {
-                    guard let event = try await calendarService.event(identifier: identifier, in: .resolve(identifier: destinationID)) else {
+                    guard let event = try await calendarService.event(identifier: identifier, in: .resolve(identifier: sourceID)) else {
                         failed.append((row.proposal, "That event is no longer in the calendar.")); continue
                     }
                     resourceID = identifier
@@ -1286,13 +1320,13 @@ extension CalshotModel {
                     review.append((row.proposal, "The event could not be confirmed, so it needs review.")); continue
                 }
             }
-            let effect = JSONValue.object(["action": .string(action.rawValue), "calendarID": .string(destinationID),
+            let effect = JSONValue.object(["action": .string(action.rawValue), "calendarID": .string(destinationID), "sourceCalendarID": .string(sourceID),
                 "title": .string(row.proposal.draft.title), "resource": .string(resourceID),
                 "start": row.proposal.draft.startDate.map { .string(ISO8601DateFormatter().string(from: $0)) } ?? .null,
                 "end": row.proposal.draft.endDate.map { .string(ISO8601DateFormatter().string(from: $0)) } ?? .null,
                 "allDay": .bool(row.proposal.draft.isAllDay)])
             let operation = AgentPermissionOperation(operationID: UUID(), runID: runID, ownerID: agentPermissionOwnerID, deviceID: Self.syncDeviceID,
-                action: action, resourceIDs: [resourceID], expectedVersions: versions, calendarIDs: [destinationID], fields: fields,
+                action: action, resourceIDs: [resourceID], expectedVersions: versions, calendarIDs: calendarIDs, fields: fields,
                 effectDigest: Self.agentEffectDigest(effect), hasGuestEffects: row.guests, affectsSeries: row.recurring == true, hasSharingEffects: false)
             let resources = calendarGrantResources(runID: runID, versions: versions)
             let envelope: AgentPermissionEnvelope
@@ -1358,7 +1392,7 @@ extension CalshotModel {
     // MARK: Settings (workspace only; never reachable from tools or the notch)
 
     func saveAgentTaskPermissions(revision: UInt64, families: [String: Bool], days: Int, renew: Bool = false) async throws {
-        guard [7, 30, 90].contains(days), Set(families.keys).isSubset(of: Set(Self.agentTaskFamilies.map(\.id))) else {
+        guard [7, 30, 90, Self.agentAutonomyDays].contains(days), Set(families.keys).isSubset(of: Set(Self.agentTaskFamilies.map(\.id))) else {
             throw CalendarToolArgumentError("Choose valid task permissions.")
         }
         guard !agentPermissionBusy else { throw CalendarToolArgumentError("Permissions are already being saved.") }
@@ -1397,18 +1431,51 @@ extension CalshotModel {
         catch let error as AgentPermissionError { throw CalendarToolArgumentError(Self.agentPermissionMessage(error)) }
     }
 
-    /// The single Settings switch: every task action plus adding and editing clear events, for 30 days, or all off.
-    /// Deletes, moves, guests, series and screenshot-started runs keep their reviews regardless.
+    /// The single Settings switch: every task action plus adding, editing, deleting and moving clear events on every
+    /// writable calendar, or all off. Guests, repeating series and screenshot-started runs keep their reviews regardless.
     func saveAgentAutonomy(enabled: Bool, revision: UInt64) async throws {
         let tasks = Dictionary(uniqueKeysWithValues: Self.agentTaskFamilies.map { ($0.id, enabled) })
-        try await saveAgentTaskPermissions(revision: revision, families: tasks, days: 30, renew: enabled)
+        try await saveAgentTaskPermissions(revision: revision, families: tasks, days: Self.agentAutonomyDays, renew: enabled)
         guard let next = agentPermissionPolicy?.revision else { throw CalendarToolArgumentError("Permissions changed. Try again.") }
-        let current = Set(agentPermissionPolicy?.grants.filter { $0.action == .calendarCreate || $0.action == .calendarEdit }.flatMap(\.calendarIDs) ?? [])
-        try await saveAgentCalendarPermissions(revision: next, families: ["create": enabled, "edit": enabled], calendarIDs: enabled ? Array(current) : [], days: 30, renew: enabled)
+        let writable = destinations.filter { !$0.isReadOnly }.map(\.id)
+        let calendar = Dictionary(uniqueKeysWithValues: Self.agentCalendarFamilies.map { ($0.id, enabled) })
+        try await saveAgentCalendarPermissions(revision: next, families: calendar, calendarIDs: enabled ? writable : [], days: Self.agentAutonomyDays, renew: enabled)
+        // An explicit choice, on or off, ends the one-time default.
+        autonomyDefaults.set(true, forKey: agentAutonomyDefaultKey)
+    }
+
+    var agentAutonomyDefaultKey: String { "agent.autonomy.default.v2." + agentPermissionOwnerID }
+
+    /// Instant saving is on by default. Applied once per account and device from native code, never from a tool or
+    /// model output; later the user's own Autonomy choice wins. While on, it renews and widens to newly connected
+    /// writable calendars. Errors leave the saved file untouched and reviews keep working.
+    func ensureAgentAutonomyDefault() async {
+        guard appliesAutonomyDefault, account.canUseWorkspace, !agentPermissionBusy, (try? await openAgentPermissionStore()) != nil,
+              let policy = agentPermissionPolicy else { return }
+        let writable = Set(destinations.filter { !$0.isReadOnly }.map(\.id))
+        guard !writable.isEmpty else { return }
+        let now = Date.now
+        let calendarActions = Set(Self.agentCalendarFamilies.map(\.action))
+        let calendarGrants = policy.grants.filter { calendarActions.contains($0.action) }
+        let active = calendarGrants.filter { $0.requestedEnabled && $0.expiresAt > now }
+        if autonomyDefaults.bool(forKey: agentAutonomyDefaultKey) {
+            guard Set(active.map(\.action)) == calendarActions else { return }
+            let soonest = active.map(\.expiresAt).min() ?? now
+            let scope = active.reduce(writable) { $0.intersection($1.calendarIDs) }
+            guard soonest < now.addingTimeInterval(30 * 86_400) || scope != writable else { return }
+            try? await saveAgentAutonomy(enabled: true, revision: policy.revision)
+            return
+        }
+        // Never configured, or the earlier routine switch (add and edit) was on: turn on full instant saving.
+        let routine: Set<AgentPermissionAction> = [.calendarCreate, .calendarEdit]
+        guard calendarGrants.isEmpty || routine.isSubset(of: Set(active.map(\.action))) else {
+            autonomyDefaults.set(true, forKey: agentAutonomyDefaultKey); return
+        }
+        try? await saveAgentAutonomy(enabled: true, revision: policy.revision)
     }
 
     func saveAgentCalendarPermissions(revision: UInt64, families: [String: Bool], calendarIDs: [String], days: Int, renew: Bool = false) async throws {
-        guard [7, 30, 90].contains(days), Set(families.keys).isSubset(of: Set(Self.agentCalendarFamilies.map(\.id))) else {
+        guard [7, 30, 90, Self.agentAutonomyDays].contains(days), Set(families.keys).isSubset(of: Set(Self.agentCalendarFamilies.map(\.id))) else {
             throw CalendarToolArgumentError("Choose valid calendar permissions.")
         }
         guard !agentPermissionBusy else { throw CalendarToolArgumentError("Permissions are already being saved.") }
@@ -1439,7 +1506,7 @@ extension CalshotModel {
             for family in Self.agentCalendarFamilies where families[family.id] == true {
                 let kept = existing[family.action].flatMap { $0.requestedEnabled && $0.expiresAt > now && !renew ? $0.expiresAt : nil }
                 grants.append(AgentPermissionGrant(action: family.action, requestedEnabled: true, backgroundEnabled: false,
-                    calendarIDs: scope, fields: Self.agentCalendarGrantFields, expiresAt: kept ?? expires))
+                    calendarIDs: scope, fields: Self.agentCalendarGrantFields(for: family.action), expiresAt: kept ?? expires))
             }
             let control = AgentPermissionSettingsControl(nativeOwnerID: owner, nativeDeviceID: Self.syncDeviceID)
             let policy = try await store.replaceGrants(grants, expectedRevision: revision, control: control,

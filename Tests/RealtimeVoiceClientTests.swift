@@ -54,6 +54,15 @@ final class RealtimeVoiceClientTests: XCTestCase {
         for _ in 0..<50 { await Task.yield() }
         XCTAssertNotNil(fake.continuation, "Push-to-talk races never end the session"); client.disconnect()
     }
+    func testNativeTurnContextDoesNotGenerateAResponse() async throws {
+        let fake = FakeRealtimeTransport(); let client = await ready(fake)
+        let before = fake.sent.filter { $0["type"] as? String == RealtimeWire.responseCreate.rawValue }.count
+        try await client.sendContext("Fictional native clock context")
+        let item = try XCTUnwrap(fake.sent.last?["item"] as? [String: Any])
+        XCTAssertEqual(item["role"] as? String, "system")
+        XCTAssertEqual(fake.sent.filter { $0["type"] as? String == RealtimeWire.responseCreate.rawValue }.count, before)
+        client.disconnect()
+    }
     func testConcurrentResponsesCoalesceAndActiveResponseErrorIsNonfatal() async throws {
         let fake = FakeRealtimeTransport(), client = await ready(fake)
         try await client.requestResponse(); try await client.requestResponse(); try await client.sendText("Fictional review")
@@ -292,6 +301,37 @@ final class RealtimeVoiceClientTests: XCTestCase {
 
 @MainActor
 final class VoiceSessionIntegrationTests: XCTestCase {
+    func testEverySpokenTurnRefreshesClockWithoutAnExtraResponse() async {
+        let s = make(screen: false); let iso = ISO8601DateFormatter()
+        var now = iso.date(from: "2026-10-30T03:59:00Z")!; s.clock = { now }
+        await s.toggle(); s.handle(.sessionUpdated)
+        s.handle(.speechStopped); await settle()
+        XCTAssertEqual(client.responses, 0, "Late VAD cannot start a screen-only response")
+        await say(s)
+        XCTAssertEqual(client.responses, 1); XCTAssertEqual(client.contexts.count, 1)
+        XCTAssertTrue(client.contexts[0].contains(CalendarAgent.clockContext(now: now)))
+        now = iso.date(from: "2026-10-30T04:01:00Z")!
+        await say(s)
+        XCTAssertEqual(client.responses, 2); XCTAssertEqual(client.contexts.count, 2)
+        XCTAssertTrue(client.contexts[1].contains(CalendarAgent.clockContext(now: now)))
+        XCTAssertNotEqual(client.contexts[0], client.contexts[1]); s.stop()
+    }
+    func testThinkingStaysVisibleUntilToolAndPlaybackFinish() async {
+        let s = make(); await s.toggle(); s.handle(.sessionUpdated)
+        var finish: CheckedContinuation<String, Never>?
+        s.execute = { _, _ in await withCheckedContinuation { finish = $0 } }
+        s.handle(.functionCall(callID: "agenda", name: "get_agenda", argumentsJSON: "{}")); await settle()
+        s.handle(.responseDone(id: "tool-call", status: "completed", usage: .init()))
+        XCTAssertEqual(s.state, .thinking)
+        finish?.resume(returning: "{\"events\":[]}"); await settle()
+        s.handle(.responseCreated)
+        audio.isPlaying = true
+        s.handle(.audio(itemID: "spoken-answer", contentIndex: 0, data: Data(count: 2)))
+        s.handle(.responseDone(id: "answer", status: "completed", usage: .init()))
+        XCTAssertEqual(s.state, .speaking, "Server completion is not speaker completion")
+        audio.isPlaying = false; s.tick(now: Date())
+        XCTAssertEqual(s.state, .listening); s.stop()
+    }
     private var defaults: UserDefaults!
     private var client: PreviewVoiceClient!
     private var audio: PreviewVoiceAudio!
@@ -360,6 +400,46 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         overlay.marks = [FocusMark(kind: .point, points: [.zero], displayID: 1, timestamp: Date())]
         await say(s); XCTAssertEqual(client.images, 1); XCTAssertEqual(frames.captures, 1); XCTAssertTrue(overlay.marks.isEmpty)
         s.tick(now: Date().addingTimeInterval(10)); XCTAssertEqual(frames.captures, 1); s.stop()
+    }
+    func testScreenIsCapturedWhileTalkingSoReleaseOnlyCommits() async {
+        let s = make(); await s.toggle(); s.handle(.sessionUpdated)
+        await s.talk(true); await settle()
+        XCTAssertEqual(frames.captures, 1, "The frame is read during the hold, not after release")
+        XCTAssertEqual(client.images, 0); XCTAssertEqual(client.responses, 0)
+        audio.onInput?(Data(count: 9600)); await s.talk(false); await settle()
+        XCTAssertEqual(frames.captures, 1, "Release reuses the prefetched frame")
+        XCTAssertEqual(client.commits, 1); XCTAssertEqual(client.images, 1); XCTAssertEqual(client.responses, 1); s.stop()
+    }
+    func testDrawingDuringTheHoldRecapturesSoStrokesRideWithTheTurn() async {
+        let s = make(); await s.toggle(); s.handle(.sessionUpdated)
+        await s.talk(true); await settle(); XCTAssertEqual(frames.captures, 1)
+        overlay.marks = [FocusMark(kind: .point, points: [.zero], displayID: 1, timestamp: Date())]
+        audio.onInput?(Data(count: 9600)); await s.talk(false); await settle()
+        XCTAssertEqual(frames.captures, 2); XCTAssertEqual(client.images, 1); XCTAssertTrue(overlay.marks.isEmpty); s.stop()
+    }
+    func testWithoutScreenPermissionNoFrameIsPrefetched() async {
+        let s = make(screen: false); await s.toggle(); s.handle(.sessionUpdated)
+        await say(s)
+        XCTAssertEqual(frames.captures, 0); XCTAssertEqual(client.images, 0); XCTAssertEqual(client.responses, 1); s.stop()
+    }
+    func testScheduleIsSentAsContextWhenTheSessionIsReady() async {
+        let s = make(); s.schedule = { "Near-term schedule snapshot: fictional quiz" }
+        await s.toggle(); s.handle(.sessionUpdated); await settle()
+        XCTAssertTrue(client.contexts.contains("Near-term schedule snapshot: fictional quiz"))
+        XCTAssertEqual(client.responses, 0, "Context never starts a reply"); s.stop()
+    }
+    func testEachSpokenTurnAddsOnlyNewRelevantMemories() async {
+        let s = make()
+        s.context = { "header\n[preference] \"Quiet mornings\"\nfooter" }
+        s.memoryFor = { text in text.contains("hackathon") ? "header\n[fact] \"The hackathon is the Blockchain Challenge\"\n[preference] \"Quiet mornings\"\nfooter" : "" }
+        await s.toggle(); s.handle(.sessionUpdated); await settle()
+        s.handle(.userTranscript(itemID: "a", text: "when is the hackathon", final: true)); await settle()
+        let sent = client.contexts.filter { $0.contains("relevant to the latest request") }
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertTrue(sent[0].contains("Blockchain Challenge")); XCTAssertFalse(sent[0].contains("Quiet mornings"), "Already in the session instructions")
+        s.handle(.userTranscript(itemID: "b", text: "and the hackathon room?", final: true)); await settle()
+        XCTAssertEqual(client.contexts.filter { $0.contains("relevant to the latest request") }.count, 1, "A memory is sent once per session")
+        s.stop()
     }
     func testDrawingAloneNeverSendsAndMarksRideWithNextTurn() async throws {
         let s = make(); await s.toggle(); s.handle(.sessionUpdated)

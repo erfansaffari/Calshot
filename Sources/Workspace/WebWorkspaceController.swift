@@ -18,6 +18,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
     let isNotch: Bool
     var onNotchLayout: ((Bool, Int?) -> Void)?
     var onNotchCollapse: (() -> Void)?
+    var onNotchExpand: (() -> Void)?
+    private(set) var notchExpanded = false
     let model: CalshotModel
     let assets: WebWorkspaceAssets
     private(set) var webView: WKWebView!
@@ -84,6 +86,11 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
     func resetNotchPresentation() {
         guard isNotch, let webView else { return }
         webView.evaluateJavaScript("window.dispatchEvent(new Event('calshot:notch-collapsed'))", completionHandler: nil)
+    }
+    func setNotchExpanded(_ expanded: Bool) {
+        guard isNotch, notchExpanded != expanded else { return }
+        notchExpanded = expanded
+        publish()
     }
     /// Read-only browsing is independent of the agent and cannot approve or mutate events.
     func loadCalendarView(_ body: [String: Any]) async throws {
@@ -431,6 +438,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         assets.refreshImage()
         var viewState = WebWorkspaceState.make(model, imageURL: assets.currentURL, notice: notice, accounts: accounts, googleReady: googleReady, comparisons: comparisons).objectValue ?? [:]
         viewState["settingsSection"] = .string(settingsSection)
+        if isNotch { viewState["notchExpanded"] = .bool(notchExpanded) }
         viewState["calendarView"] = calendarView
         viewState["calendarTaskNotices"] = model.account.canUseWorkspace ? .object(calendarTaskNotices) : .object([:])
         viewState["calendarChange"] = model.account.canUseWorkspace ? calendarChange : .null
@@ -475,6 +483,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         model.agentSummary = nil; model.agentStreamingText = ""; model.agentError = nil; model.agentStatus = nil; model.status = nil
         model.agentRetryPrompt = nil; model.calendarActions.replace(with: []); model.workspaceSelection = .chat
         model.cancelAgentTaskReview(reason: "New task."); model.agentTaskOutcome = nil
+        // Clears the screen and any capture, then returns to the one ongoing chat and its history.
+        if let main = model.mainChatID() { model.loadMainChat(main) }
     }
     private func requireReview(_ body: [String: Any]) throws {
         guard !model.agentIsRunning || model.agentIsWaitingForApproval else { throw CalendarToolArgumentError("Wait for Calshot to finish preparing this review.") }
@@ -482,7 +492,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             throw CalendarToolArgumentError("The review changed. Check the latest events before continuing.")
         }
     }
-    static let actionsAllowedBeforeSignIn: Set<String> = ["ready", "notchLayout", "collapseNotch", "openWorkspace", "appearance", "authSignIn", "authSignUp", "authGoogle", "authVerify", "authResend", "authReset", "authChangePassword", "authRestore"]
+    static let actionsAllowedBeforeSignIn: Set<String> = ["ready", "notchLayout", "collapseNotch", "expandNotch", "openWorkspace", "appearance", "authSignIn", "authSignUp", "authGoogle", "authVerify", "authResend", "authReset", "authChangePassword", "authRestore"]
     func handle(_ action: String, _ body: [String: Any]) async throws {
         guard !model.softwareUpdates.installing else { throw CalendarToolArgumentError("Calshot is restarting to install an update.") }
 
@@ -494,7 +504,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             throw CalendarToolArgumentError("Set up your AI service before confirming calendars.")
         }
         if model.voiceSession.active {
-            let safe: Set<String> = ["ready", "notchLayout", "collapseNotch", "openWorkspace", "navigate", "authSignOut", "appearance", "stop", "stopVoice", "voiceTalk", "setVoiceDrawing", "voiceAISettings", "voiceMicrophoneSettings", "screenSettings", "approve", "skipApproval", "editProposal", "selectProposal", "compareDuplicate", "allowDuplicate", "approveTaskChange", "cancelTaskChange", "answer", "cancelQuestion", "approveMemory", "rejectMemory", "agentEnabled"]
+            let safe: Set<String> = ["ready", "notchLayout", "collapseNotch", "expandNotch", "openWorkspace", "navigate", "authSignOut", "appearance", "stop", "stopVoice", "voiceTalk", "setVoiceDrawing", "voiceAISettings", "voiceMicrophoneSettings", "screenSettings", "approve", "skipApproval", "editProposal", "selectProposal", "confirmProposalYears", "compareDuplicate", "allowDuplicate", "approveTaskChange", "cancelTaskChange", "answer", "cancelQuestion", "approveMemory", "rejectMemory", "agentEnabled"]
             guard safe.contains(action) else { throw CalendarToolArgumentError("Voice mode is on — stop it first") }
         }
         switch action {
@@ -600,6 +610,9 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         case "collapseNotch":
             guard isNotch else { throw CalendarToolArgumentError("Notch action unavailable.") }
             onNotchCollapse?()
+        case "expandNotch":
+            guard isNotch, Set(body.keys).isSubset(of: ["id", "action"]) else { throw CalendarToolArgumentError("Notch action unavailable.") }
+            onNotchExpand?()
         case "openWorkspace": model.taskUsesNotch = false; model.openPanel()
         case "ready":
             ready = true; lastSnapshot = ""; model.refreshMemory()
@@ -725,13 +738,15 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             if body["eventHandle"] != nil || body["viewToken"] != nil {
                 selection = try resolveCalendarTaskSelection(handle: body["eventHandle"] as? String, generation: body["viewToken"] as? String)
             } else { selection = nil }
-            let record = try selection.map { _ in try model.memoryStore.recordCommand(text) }
+            // A question about a selected event continues the one chat too.
+            let recordID = selection == nil ? nil : model.mainChatID()
+            if selection != nil, recordID == nil { throw CalendarToolArgumentError("Your conversation history couldn’t be opened.") }
             resetConversation()
-            if let selection, let record, let captureID = model.currentCaptureSessionID {
-                model.currentMemoryRecordID = record.id
+            if let selection, let recordID, let captureID = model.currentCaptureSessionID {
+                model.currentMemoryRecordID = recordID
                 model.selectedEventContext = CalshotSelectedEventContext(ownerID: selection.ownerID, storeURL: selection.storeURL,
                     snapshot: selection.snapshot, destinationID: selection.calendarID, fingerprint: selection.fingerprint,
-                    recordID: record.id, captureID: captureID)
+                    recordID: recordID, captureID: captureID)
                 model.refreshMemory()
             }
             model.taskUsesNotch = false
@@ -772,8 +787,6 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             else { guard let answer = body["answer"] as? String, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, answer.count <= 8000 else { throw CalendarToolArgumentError("Enter an answer.") }; model.answerAgentQuestion(answer) }
             if isNotch { onNotchCollapse?() }
         case "stop": model.stopAgent(); model.calendarActions.requestStop()
-        case "newTask":
-            try requireIdle(); resetConversation()
         case "selectCalendar":
             guard !model.isSaving, let value = body["calendarID"] as? String, model.destinations.contains(where: { $0.id == value && !$0.isReadOnly }) else { throw CalendarToolArgumentError("Choose an available writable calendar.") }
             model.selectedCalendarID = value
@@ -814,6 +827,24 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         case "skipApproval":
             try requireReview(body)
             if model.agentIsWaitingForApproval { model.skipAgentApproval() } else { model.calendarActions.skipAll() }
+        case "confirmProposalYears":
+            try requireReview(body)
+            guard Set(body.keys).isSubset(of: ["id", "action", "token", "year"]),
+                  let number = body["year"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue == Double(number.intValue), (1900...2200).contains(number.intValue) else {
+                throw CalendarToolArgumentError("Enter a full year from 1900 to 2200.")
+            }
+            let candidates = model.calendarActions.proposals.filter {
+                model.calendarActions.isInApprovalScope($0.id) && !$0.isFinished && $0.operation != .delete && $0.draft.ambiguities.contains(.missingYear)
+            }
+            guard !candidates.isEmpty else { throw CalendarToolArgumentError("There are no unconfirmed years in this review.") }
+            model.calendarActions.applyYear(number.intValue)
+            let unresolved = model.calendarActions.proposals.filter { row in
+                candidates.contains { $0.id == row.id } && row.draft.ambiguities.contains(.missingYear)
+            }
+            if !unresolved.isEmpty {
+                throw CalendarToolArgumentError("Some event dates don’t exist in \(number.intValue), or have no date yet. Edit those event dates before confirming their year.")
+            }
         case "editProposal": try edit(body)
         case "retryAgent": try requireIdle(); model.taskUsesNotch = isNotch; Task { await model.retryAgentCommand() }
         case "addMemory", "editMemory", "forgetMemory", "approveMemory", "rejectMemory", "clearMemory":

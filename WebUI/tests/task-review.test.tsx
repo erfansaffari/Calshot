@@ -126,13 +126,13 @@ describe("Task-only review in the compact notch", () => {
     await waitFor(() => expect(mock.command).toHaveBeenCalledWith(expect.objectContaining({ action: "notchLayout", detail: true })));
   });
 
-  it("shows a concise dismissible result once the run is finished", async () => {
+  it("returns to compact controls once the run succeeds", () => {
     mock.state.running = false;
     mock.state.taskOutcome = { id: "o", status: "saved", headline: "Added to Tasks", viaSavedPermission: false, rows: [{ id: "a", title: "Studio critique", status: "saved" }] };
     render(<NotchApp />);
-    expect(screen.getByText("Added to Tasks")).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: "Hide details" }));
     expect(screen.queryByText("Added to Tasks")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Hide details" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Capture" })).toBeTruthy();
   });
 
   it("never mixes with the calendar review controls", () => {
@@ -237,7 +237,7 @@ describe("Settings task permissions", () => {
     const scope = mock.state.selectedCalendarID ? [mock.state.selectedCalendarID] : [];
     if (!scope.length) { expect(save.disabled).toBe(true); return; } // no writable calendar chosen yet
     await userEvent.click(save);
-    expect(mock.command).toHaveBeenCalledWith(expect.objectContaining({ action: "saveCalendarPermissions", families: { create: true, edit: false }, calendarIDs: scope, days: 30, renew: false }));
+    expect(mock.command).toHaveBeenCalledWith(expect.objectContaining({ action: "saveCalendarPermissions", families: { create: true, edit: false, delete: false, move: false }, calendarIDs: scope, days: 30, renew: false }));
   });
 
   it("adopts a newer native revision and flags an expired grant instead of silently enabling it", () => {

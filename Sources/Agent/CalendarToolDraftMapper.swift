@@ -56,6 +56,40 @@ enum CalendarToolDraftMapper {
 
     /// Relative phrases in the user's own words resolve from the clock, so they settle the year (screen text never does).
     static let relativeDatePattern = #"(?i)\b(today|tonight|tomorrow|day after tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next (week|month)|this (week|weekend|month)|in \d+ (days?|weeks?))\b"#
+    /// Only native user/answer text can settle a model's inferred-year flag. Competing or
+    /// negated years remain unresolved and can be confirmed in the explicit review control.
+    static func explicitlyConfirmsYear(_ year: String, in text: String) -> Bool {
+        guard let regex = try? NSRegularExpression(pattern: #"\b(?:19\d{2}|20\d{2}|21\d{2}|2200)\b"#) else { return false }
+        let ns = text as NSString
+        let years = Set(regex.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range) })
+        guard years == Set([year]) else { return false }
+        let negated = #"(?i)\b(?:not|isn't|is not|don't use|do not use)\s+(?:the year\s+)?"# + year + #"\b"#
+        return text.range(of: negated, options: .regularExpression) == nil
+    }
+    private static let monthPatterns = ["jan(?:uary)?", "feb(?:ruary)?", "mar(?:ch)?", "apr(?:il)?", "may", "june?", "july?", "aug(?:ust)?",
+                                        "sep(?:t(?:ember)?)?", "oct(?:ober)?", "nov(?:ember)?", "dec(?:ember)?"]
+    /// True when the user's own words name this month and day ("Nov 12", "November 12th", "12 November", "the 12th of Nov").
+    /// Numeric forms such as 11/12 are skipped: day/month order is ambiguous.
+    static func userNamesMonthDay(month: Int, day: Int, in text: String) -> Bool {
+        guard (1...12).contains(month), (1...31).contains(day) else { return false }
+        let name = monthPatterns[month - 1], number = "0?\(day)(?:st|nd|rd|th)?"
+        let patterns = [#"(?i)\b"# + name + #"\.?,?\s+(?:the\s+)?"# + number + #"\b"#,
+                        #"(?i)\b(?:the\s+)?"# + number + #"\s+(?:of\s+)?"# + name + #"\b"#]
+        return patterns.contains { text.range(of: $0, options: .regularExpression) != nil }
+    }
+    static func mentionsAnyYear(_ text: String) -> Bool {
+        text.range(of: #"\b(?:19|20|21)\d{2}\b"#, options: .regularExpression) != nil
+    }
+    /// The next time this month/day occurs, today included, in the event's calendar. Skips years where it does not exist (Feb 29).
+    static func nextOccurrence(month: Int, day: Int, from now: Date, calendar: Calendar) -> Date? {
+        let today = calendar.startOfDay(for: now), year = calendar.component(.year, from: now)
+        for offset in 0..<9 {
+            guard let date = calendar.date(from: DateComponents(year: year + offset, month: month, day: day)),
+                  calendar.component(.month, from: date) == month, calendar.component(.day, from: date) == day else { continue }
+            if date >= today { return date }
+        }
+        return nil
+    }
     static func create(_ value: JSONValue, context: String, confirmedContext: String = "", now: Date = .now) throws -> EventDraft {
         guard let fields = value.objectValue else { throw CalendarToolArgumentError("Each event must be an object.") }
         try keys(fields, allowed: ["title", "date", "startTime", "endTime", "allDay", "timeZone", "location", "url", "notes", "evidence", "yearInferred", "dateAmbiguous"])
@@ -73,12 +107,27 @@ enum CalendarToolDraftMapper {
         let dateAmbiguous = try boolean(fields, "dateAmbiguous")
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = zoneName.flatMap(TimeZone.init(identifier:)) ?? .current
-        let day = try date(dateValue, calendar: calendar)
+        var day = try date(dateValue, calendar: calendar)
         var issues: [EventAmbiguity] = []
         if day == nil { issues.append(.missingDate) }
         let spokenRelative = confirmedContext.range(of: relativeDatePattern, options: .regularExpression) != nil
         let clockYear = calendar.component(.year, from: now)
-        if let year = dateValue?.prefix(4), yearInferred == true || !((context + "\n" + evidence).contains(String(year)) || (spokenRelative && yearInferred == false && [clockYear, clockYear + 1].contains(Int(year) ?? 0))) { issues.append(.missingYear) }
+        // A month and day the user typed or said without any year means the next time it comes around.
+        // Native code settles that year deterministically (correcting a past year the model chose); dates that
+        // appear only in a screenshot or other source keep their year unresolved for review.
+        var yearFromUserWords = false
+        if let parsed = day, !mentionsAnyYear(confirmedContext) {
+            let month = calendar.component(.month, from: parsed), dayOfMonth = calendar.component(.day, from: parsed)
+            if userNamesMonthDay(month: month, day: dayOfMonth, in: confirmedContext),
+               let upcoming = nextOccurrence(month: month, day: dayOfMonth, from: now, calendar: calendar) {
+                day = upcoming; yearFromUserWords = true
+            }
+        }
+        let resolvedYear = day.map { String(calendar.component(.year, from: $0)) }
+        if !yearFromUserWords, let year = resolvedYear ?? dateValue.map({ String($0.prefix(4)) }), !explicitlyConfirmsYear(String(year), in: confirmedContext),
+           yearInferred == true || !((context + "\n" + evidence).contains(String(year)) || (spokenRelative && yearInferred == false && [clockYear, clockYear + 1].contains(Int(year) ?? 0))) {
+            issues.append(.missingYear)
+        }
         let explicitAllDay = (confirmedContext + "\n" + evidence).range(of: #"(?i)\ball[- ]day\b"#, options: .regularExpression) != nil
         if startTime == nil && !(requestedAllDay == true && explicitAllDay) { issues.append(.missingTime) }
         if dateAmbiguous == true { issues.append(.ambiguousDate) }

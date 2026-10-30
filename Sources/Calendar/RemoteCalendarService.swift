@@ -64,8 +64,7 @@ actor RemoteCalendarService: CalendarDestinationService {
         url.queryItems = parameters.map { URLQueryItem(name: $0.key, value: $0.value) }
         let objects = try await list(url.url!.absoluteString, account: account, googleKey: "items")
         let events = try objects.filter { ($0["status"] as? String) != "cancelled" && ($0["isCancelled"] as? Bool) != true }.map { try Self.snapshot($0, route: route, account: account, calendar: calendar) }
-        let text = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return events.filter { text.isEmpty || $0.title.localizedCaseInsensitiveContains(text) || ($0.notes ?? "").localizedCaseInsensitiveContains(text) }.sorted { $0.start < $1.start }.prefix(40).map { $0 }
+        return events.filter { CalendarSearchMatch.matches(query, title: $0.title, notes: $0.notes, location: $0.location) }.sorted { $0.start < $1.start }.prefix(CalendarSearchMatch.resultLimit).map { $0 }
     }
     func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? {
         let (route, account, calendar) = try await context(destination)

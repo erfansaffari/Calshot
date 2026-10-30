@@ -47,6 +47,47 @@ struct CalendarDestinationInfo: Sendable, Equatable, Identifiable {
 }
 
 /// Immutable calendar data safe to pass into the model and approval UI.
+/// Search text matching shared by every provider: each query word must appear in the title, notes or location,
+/// in any order, ignoring case, accents and punctuation. "Blockchain challenge" matches "Blockchain Innovation
+/// Challenge Kick-off"; "kickoff" matches "Kick-off"; a one-letter slip in a longer word ("blockchian") still matches.
+enum CalendarSearchMatch {
+    /// Per-calendar and per-search cap on returned events.
+    static let resultLimit = 120
+    static func words(_ query: String?) -> [String] {
+        (query ?? "").folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+    }
+    static func matches(_ query: String?, title: String?, notes: String?, location: String? = nil) -> Bool {
+        let wanted = words(query)
+        guard !wanted.isEmpty else { return true }
+        let tokens = words([title, notes, location].compactMap { $0 }.joined(separator: " "))
+        let joined = tokens.joined()
+        return wanted.allSatisfy { word in
+            joined.contains(word) || tokens.contains { close(word, $0) }
+        }
+    }
+    /// Typo tolerance only for words long enough that a slip cannot match an unrelated short word.
+    private static func close(_ word: String, _ token: String) -> Bool {
+        let allowed = word.count >= 8 ? 2 : word.count >= 5 ? 1 : 0
+        guard allowed > 0, abs(word.count - token.count) <= allowed else { return false }
+        return distance(Array(word), Array(token)) <= allowed
+    }
+    /// Edit distance counting a swap of adjacent letters as one edit.
+    private static func distance(_ a: [Character], _ b: [Character]) -> Int {
+        var previous2 = [Int](repeating: 0, count: b.count + 1)
+        var previous = Array(0...b.count)
+        for i in 1...a.count {
+            var current = [i] + [Int](repeating: 0, count: b.count)
+            for j in stride(from: 1, through: b.count, by: 1) {
+                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+                if i > 1, j > 1, a[i - 1] == b[j - 2], a[i - 2] == b[j - 1] { current[j] = min(current[j], previous2[j - 2] + 1) }
+            }
+            previous2 = previous; previous = current
+        }
+        return previous[b.count]
+    }
+}
+
 public struct CalendarEventSnapshot: Codable, Sendable {
     public var eventIdentifier: String
     public var title: String

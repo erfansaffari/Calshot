@@ -215,6 +215,24 @@ final class CalendarActionTests: XCTestCase {
         XCTAssertTrue(coordinator.proposals.last!.issues.contains("Choose a time or confirm all-day."))
         XCTAssertEqual(CalendarDraftValidation.calendar(for: assignment).component(.year, from: coordinator.proposals.first!.draft.startDate!), 2027)
     }
+    func testConfirmYearPreservesAllDaySpanAndRejectsInvalidLeapDate() throws {
+        let coordinator = CalendarActionCoordinator(service: TestCalendarService())
+        var trip = draft("Fictional multi-day trip")
+        let calendar = CalendarDraftValidation.calendar(for: trip)
+        trip.startDate = calendar.startOfDay(for: trip.startDate!)
+        trip.endDate = calendar.date(byAdding: .day, value: 3, to: trip.startDate!)
+        trip.isAllDay = true; trip.ambiguities = [.missingYear]
+        var leap = draft("Fictional leap day")
+        leap.startDate = calendar.date(from: DateComponents(year: 2024, month: 2, day: 29, hour: 10))
+        leap.endDate = leap.startDate?.addingTimeInterval(3600); leap.ambiguities = [.missingYear]
+        coordinator.replace(with: [CalendarActionProposal(draft: trip), CalendarActionProposal(draft: leap)])
+        coordinator.applyYear(2027)
+        let changed = try XCTUnwrap(coordinator.proposals.first { $0.id == trip.id }?.draft)
+        XCTAssertFalse(changed.ambiguities.contains(.missingYear))
+        XCTAssertEqual(calendar.dateComponents([.day], from: try XCTUnwrap(changed.startDate), to: try XCTUnwrap(changed.endDate)).day, 3)
+        XCTAssertTrue(coordinator.proposals.first { $0.id == leap.id }?.draft.ambiguities.contains(.missingYear) == true)
+        XCTAssertTrue(coordinator.proposals.allSatisfy { $0.receipt == nil })
+    }
 
     func testLegacyAndBatchHistoryRoundTrip() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

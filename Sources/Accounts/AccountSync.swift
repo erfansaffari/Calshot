@@ -48,6 +48,7 @@ extension MemoryCaptureRecord {
             }, agentTranscript: (agentTranscript ?? []).filter { $0.toolName == nil && ["user", "assistant"].contains($0.role) }.map { turn in
                 var value = AgentTurn(role: turn.role, content: turn.content); value.sharedCalendarContext = turn.sharedCalendarContext; return value
             })
+        copy.isMainChat = isMainChat; copy.mergedIntoMainChat = mergedIntoMainChat
         return copy
     }
     func syncHash() throws -> String {

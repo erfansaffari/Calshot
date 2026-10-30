@@ -59,7 +59,8 @@ final class CalendarConnectionTests: XCTestCase {
         XCTAssertEqual(result?["calendars"]?.arrayValue?.count, 3)
         XCTAssertTrue(result?["calendars"]?.arrayValue?.last?.objectValue?["error"]?.stringValue?.contains("calendar access") == true)
         let searched = await service.searched
-        XCTAssertEqual(searched, ["apple", "google", "outlook"])
+        // Calendars are read concurrently; every one is searched, and results keep calendar order (checked above).
+        XCTAssertEqual(Set(searched), ["apple", "google", "outlook"]); XCTAssertEqual(searched.count, 3)
     }
 
     func testICloudDAVDiscoveryAndPrivilegeParsing() throws {

@@ -319,6 +319,12 @@ final class RealtimeVoiceClient: ObservableObject {
         try await send(.itemCreate, ["item": ["type": "message", "role": "user", "content": [["type": "input_text", "text": text]]]])
         try await requestResponse()
     }
+    /// Native clock/routing guidance only. Never pass screen, history or model text here.
+    /// Creating context is separate from response.create, so it cannot produce an unsolicited reply.
+    func sendContext(_ text: String) async throws {
+        try requireReady()
+        try await send(.itemCreate, ["item": ["type": "message", "role": "system", "content": [["type": "input_text", "text": text]]]])
+    }
     func sendToolResult(callID: String, outputJSON: String) async throws {
         try requireReady()
         guard let data = outputJSON.data(using: .utf8), (try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)) != nil else { throw RealtimeConnectionError.invalidFrame }

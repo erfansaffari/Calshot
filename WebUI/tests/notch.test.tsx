@@ -42,18 +42,18 @@ it("keeps removals unchecked in inline review and never offers a quick write", a
   mock.state.proposals = [{ ...mock.state.proposals[0], operation: "delete", isSelected: false }];
   render(<NotchApp />);
   expect(screen.queryByRole("button", { name: "Add all" })).toBeNull();
-  await userEvent.click(screen.getByRole("button", { name: "Review" }));
+  expect(screen.getByRole("button", { name: "Hide review" })).toBeTruthy();
   expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
   await waitFor(() => expect(mock.command).toHaveBeenCalledWith(expect.objectContaining({ action: "notchLayout", detail: true })));
 });
-it("shows the assistant reply and supports follow-up without a workspace navigation", async () => {
+it("keeps conversation text out of the notch and supports follow-up without navigation", async () => {
   mock.state.proposals = [];
   mock.state.messages = [{ role: "assistant", content: "Both classes are on Friday." }];
   mock.state.running = false;
   render(<NotchApp />);
   expect(screen.queryByText("Both classes are on Friday.")).toBeNull();
-  await userEvent.click(screen.getByRole("button", { name: "View conversation" }));
-  expect(screen.getByText("Both classes are on Friday.")).toBeDefined();
+  expect(screen.queryByRole("button", { name: "View conversation" })).toBeNull();
+  expect(screen.queryByLabelText("Calendar conversation")).toBeNull();
   fireEvent(window, new Event("calshot:notch-collapsed"));
   expect(screen.queryByText("Both classes are on Friday.")).toBeNull();
   expect(screen.getByRole("button", { name: "Capture" })).toBeDefined();
@@ -64,7 +64,7 @@ it("shows the assistant reply and supports follow-up without a workspace navigat
 it("closes the editor with Escape while preserving the review and focus", async () => {
   mock.state.proposals = [{ ...mock.state.proposals[0], operation: "create" }];
   render(<NotchApp />);
-  await userEvent.click(screen.getByRole("button", { name: "Review" }));
+  expect(screen.getByRole("button", { name: "Hide review" })).toBeTruthy();
   const edit = screen.getByRole("button", { name: "Edit " + mock.state.proposals[0].draft.title });
   await userEvent.click(edit);
   expect(screen.getByRole("dialog")).toBeDefined();
@@ -76,7 +76,7 @@ it("closes the editor with Escape while preserving the review and focus", async 
 it("preserves unfinished event edits when pointer leave hides the notch", async () => {
   mock.state.proposals = [{ ...mock.state.proposals[0], operation: "create" }];
   render(<NotchApp />);
-  await userEvent.click(screen.getByRole("button", { name: "Review" }));
+  expect(screen.getByRole("button", { name: "Hide review" })).toBeTruthy();
   await userEvent.click(screen.getByRole("button", { name: "Edit " + mock.state.proposals[0].draft.title }));
   const title = screen.getByRole("textbox", { name: "Event title" });
   await userEvent.clear(title);
@@ -104,12 +104,12 @@ it("shows live voice level while talking and stops with its current session toke
   await userEvent.click(screen.getByRole("button", { name: "Stop", exact: true }));
   expect(mock.command).toHaveBeenCalledWith({ action: "stopVoice", token: "voice-current" });
 });
-it("shows speaking captions and a voice billing acknowledgement inline", async () => {
+it("keeps voice captions hidden while showing the billing acknowledgement", async () => {
   voiceFixture(); mock.state.voice!.state = "speaking"; mock.state.voice!.caption = "Fictional appointment at noon.";
   mock.state.voice!.needsAcknowledgement = true;
   render(<NotchApp />); expect(screen.getByText("Speaking")).toBeTruthy();
-  await userEvent.click(screen.getByRole("button", { name: "Voice details" }));
-  expect(screen.getByText("Fictional appointment at noon.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Voice details" })).toBeNull();
+  expect(screen.queryByText("Fictional appointment at noon.")).toBeNull();
   await userEvent.click(screen.getByText("I understand"));
   expect(mock.command).toHaveBeenCalledWith({ action: "acknowledgeVoiceBilling", token: "voice-current" });
 });
@@ -125,6 +125,7 @@ function voiceReview() {
 }
 it("Return requires a visible clean review and ignores repeats, controls, and replacement tokens", async () => {
   voiceReview(); const view = render(<NotchApp />);
+  await userEvent.click(screen.getByRole("button", { name: "Hide review", exact: true }));
   fireEvent.keyDown(window, { key: "Enter" });
   expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
   await userEvent.click(screen.getByRole("button", { name: "Review", exact: true }));
@@ -139,7 +140,7 @@ it("Return requires a visible clean review and ignores repeats, controls, and re
 });
 it.each(["update", "delete", "move"] as const)("Return never approves %s", async operation => {
   voiceReview(); mock.state.proposals.forEach(p => { p.operation = operation; }); render(<NotchApp />);
-  await userEvent.click(screen.getByRole("button", { name: "Review", exact: true }));
+  expect(screen.getByRole("button", { name: "Hide review", exact: true })).toBeTruthy();
   fireEvent.keyDown(window, { key: "Enter" });
   expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
 });
@@ -157,4 +158,81 @@ it("Return never approves a visible task change review", () => {
   voiceFixture(); mock.state.taskReview = { id: "task-review", token: "task-token", digest: "digest", kind: "edit", heading: "Review task change", phase: "waiting", reason: "Voice requires review", calendarWrites: 0, rows: [{ id: "task", title: "Fictional task", changes: [{ label: "Title", before: "Before", after: "After" }] }] };
   render(<NotchApp />); expect(screen.getByText("Fictional task")).toBeTruthy(); fireEvent.keyDown(window, { key: "Enter" });
   expect(mock.command.mock.calls.some(([c]) => c.action === "approveTaskChange")).toBe(false);
+});
+
+it("restores an unfinished review after leaving and removes it when the task finishes", async () => {
+  voiceReview(); const view = render(<NotchApp />);
+  expect(screen.getByRole("button", { name: "Hide review", exact: true })).toBeTruthy();
+  await userEvent.click(screen.getByRole("button", { name: "Hide review", exact: true }));
+  expect(screen.queryByText("Review changes")).toBeNull();
+  fireEvent(window, new Event("calshot:notch-collapsed"));
+  expect(screen.getByText("Review changes")).toBeTruthy();
+  mock.state = { ...mock.state, waitingApproval: false, canApprove: false,
+    proposals: mock.state.proposals.map(p => ({ ...p, isFinished: true, state: "added" })),
+    messages: [{ role: "assistant", content: "Saved this fictional event." }], summary: "Saved this fictional event." };
+  view.rerender(<NotchApp />);
+  expect(screen.queryByText("Review changes")).toBeNull();
+  expect(screen.queryByText("Saved this fictional event.")).toBeNull();
+  expect(screen.queryByRole("button", { name: /review|conversation/i })).toBeNull();
+  await waitFor(() => expect(mock.command).toHaveBeenCalledWith(expect.objectContaining({ action: "notchLayout", detail: false })));
+});
+it("hides spoken transcripts and keeps focus drawing on the compact voice bar", async () => {
+  voiceFixture(); mock.state.voice!.caption = "Private assistant transcript"; mock.state.voice!.userTranscript = "Private spoken request";
+  mock.state.streaming = "Private streaming response";
+  render(<NotchApp />);
+  expect(screen.queryByText("Private assistant transcript")).toBeNull();
+  expect(screen.queryByText("Private spoken request")).toBeNull();
+  expect(screen.queryByText("Private streaming response")).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Draw focus" }));
+  expect(mock.command).toHaveBeenCalledWith({ action: "setVoiceDrawing", token: "voice-current", drawing: true });
+  await waitFor(() => expect(mock.command).toHaveBeenCalledWith(expect.objectContaining({ action: "notchLayout", detail: false })));
+});
+it("keeps successful task results compact while preserving partial failure details", () => {
+  voiceFixture();
+  mock.state.taskOutcome = { id: "result", status: "saved", headline: "Saved task", viaSavedPermission: true, rows: [] };
+  const view = render(<NotchApp />);
+  expect(screen.queryByLabelText("Task result")).toBeNull();
+  mock.state = { ...mock.state, taskOutcome: { ...mock.state.taskOutcome!, status: "partial", headline: "One task needs attention", rows: [{ id: "failed", title: "Fictional task", status: "failed", message: "Could not save" }] } };
+  view.rerender(<NotchApp />);
+  expect(screen.getByText("Could not save")).toBeTruthy();
+});
+it("does not revive skipped proposal rows when returning to the notch", () => {
+  mock.state.waitingApproval = false; mock.state.canApprove = false;
+  mock.state.proposals = mock.state.proposals.map(p => ({ ...p, isSelected: false }));
+  render(<NotchApp />); fireEvent(window, new Event("calshot:notch-collapsed"));
+  expect(screen.queryByText("Review changes")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Review", exact: true })).toBeNull();
+});
+it("does not offer a completed screenshot for import again", () => {
+  mock.state.waitingApproval = false; mock.state.canApprove = false; mock.state.messages = [];
+  mock.state.imageURL = "fixture://finished-capture";
+  mock.state.proposals = mock.state.proposals.map(p => ({ ...p, isFinished: true, state: "added" }));
+  render(<NotchApp />);
+  expect(screen.queryByRole("button", { name: "Add to calendar", exact: true })).toBeNull();
+  expect(screen.getByRole("button", { name: "Capture" })).toBeTruthy();
+});
+
+it("keeps the glowing voice pill in compact mode and requires expansion for review controls", async () => {
+ voiceReview(); mock.state.notchExpanded=false; mock.state.voice!.state="waitingForReview";
+ render(<NotchApp />);
+ expect(screen.getByText("Ready to approve")).toBeTruthy();
+ expect(screen.queryByRole("region",{name:"Review calendar changes"})).toBeNull();
+ fireEvent.keyDown(window,{key:"Enter"});
+ expect(mock.command.mock.calls.some(([c])=>c.action==="approve")).toBe(false);
+ await userEvent.click(screen.getByRole("button",{name:"Show task controls"}));
+ expect(mock.command).toHaveBeenCalledWith({action:"expandNotch"});
+ expect(screen.queryByRole("button",{name:"Voice details"})).toBeNull();
+});
+
+it("suspends an unfinished editor behind the compact pill and restores its input", async () => {
+ voiceReview(); mock.state.notchExpanded=true; const view=render(<NotchApp />);
+ await userEvent.click(screen.getAllByRole("button",{name:"Edit "+mock.state.proposals[0].draft.title})[0]);
+ const title=screen.getByRole("textbox",{name:"Event title"});
+ await userEvent.clear(title); await userEvent.type(title,"Unfinished fictional title");
+ mock.state={...mock.state,notchExpanded:false}; view.rerender(<NotchApp />);
+ expect(screen.queryByRole("dialog")).toBeNull();
+ expect(screen.getByRole("button",{name:"Show task controls"})).toBeTruthy();
+ mock.state={...mock.state,notchExpanded:true}; view.rerender(<NotchApp />);
+ expect(screen.getByRole("dialog")).toBeTruthy();
+ expect((screen.getByRole("textbox",{name:"Event title"}) as HTMLInputElement).value).toBe("Unfinished fictional title");
 });

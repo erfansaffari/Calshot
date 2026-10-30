@@ -412,8 +412,10 @@ const previewPermissions = (): NonNullable<AppState["agentPermissions"]> => ({
   calendar: { calendarIDs: [], expiresAt: null, notice: null, families: [
     { id: "create", label: "Add new events", detail: "Save new events you ask for when the date, year and time are already clear.", enabled: false, expired: false, alwaysAsks: false },
     { id: "edit", label: "Edit event details", detail: "Change the title, date, time or details of one event you ask about.", enabled: false, expired: false, alwaysAsks: false },
-    { id: "delete", label: "Delete events", detail: "Always asks before an event is removed.", enabled: false, expired: false, alwaysAsks: true },
-    { id: "move", label: "Move events", detail: "Always asks before an event changes calendars.", enabled: false, expired: false, alwaysAsks: true },
+    { id: "delete", label: "Delete events", detail: "Remove one event you ask about. Say “undo” to bring it back.", enabled: false, expired: false, alwaysAsks: false },
+    { id: "move", label: "Move events", detail: "Move an event you ask about to another calendar, checking the copy first.", enabled: false, expired: false, alwaysAsks: false },
+    { id: "guests", label: "Events with guests", detail: "Always asks, because saving notifies the other people.", enabled: false, expired: false, alwaysAsks: true },
+    { id: "series", label: "Repeating series", detail: "Always asks before changing or removing a repeating event.", enabled: false, expired: false, alwaysAsks: true },
   ] },
 });
 preview.agentPermissions = previewPermissions();

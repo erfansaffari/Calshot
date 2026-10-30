@@ -137,9 +137,10 @@ final class CalendarActionCoordinator: ObservableObject {
             guard let changed = calendar.date(from: parts), calendar.component(.month, from: changed) == parts.month,
                   calendar.component(.day, from: changed) == parts.day else { continue }
             let duration = proposals[index].draft.endDate?.timeIntervalSince(start)
+            let days = proposals[index].draft.endDate.map { max(1, calendar.dateComponents([.day], from: start, to: $0).day ?? 1) } ?? 1
             proposals[index].draft.startDate = changed
             if proposals[index].draft.isAllDay {
-                proposals[index].draft.endDate = calendar.date(byAdding: .day, value: 1, to: changed)
+                proposals[index].draft.endDate = calendar.date(byAdding: .day, value: days, to: changed)
             } else { proposals[index].draft.endDate = duration.map { changed.addingTimeInterval($0) } }
             proposals[index].draft.ambiguities.removeAll { $0 == .missingYear }
             proposals[index].duplicateIdentifiers = []

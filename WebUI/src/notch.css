@@ -12,6 +12,10 @@ html[data-surface="notch"] body { background: #000; }
 .notch-thumb { flex-shrink:0; width:36px; height:32px; padding:0; overflow:hidden; border-radius:7px; }
 .notch-thumb img { width:100%; height:100%; object-fit:cover; }
 .notch-details { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; background:var(--canvas); color:var(--text); border-radius:14px; margin-top:8px; padding:12px; scrollbar-width:thin; }
+.notch-shell.is-compact .notch-details { visibility:hidden; pointer-events:none; }
+html[data-surface="notch"] body:has(.notch-shell.is-compact) .modal-backdrop,
+html[data-surface="notch"] body:has(.notch-shell.is-compact) .modal { visibility:hidden; pointer-events:none; }
+.notch-shell.is-compact .notch-bar { pointer-events:auto; }
 .notch-detail-heading,.notch-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:11px; color:var(--muted); margin-bottom:8px; }
 .notch-footer { margin:12px 0 0; }
 .notch-details .card { margin:0 0 10px; padding:12px; }
@@ -23,11 +27,6 @@ html[data-surface="notch"] body { background: #000; }
 .notch-details .before-after { grid-template-columns:1fr 1fr; }
 .notch-details .review-footer { position:sticky; bottom:0; background:var(--surface); flex-wrap:wrap; }
 .notch-source { width:100%; max-height:310px; object-fit:contain; border-radius:8px; }
-.notch-message { padding:9px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
-.notch-message small { color:var(--muted); }
-.notch-message p { margin:5px 0; }
-.notch-message ul,.notch-message ol { padding-left:20px; }
-.notch-reopen { color:#b4b4b8; font-size:10px; display:flex; align-items:center; justify-content:center; gap:5px; height:12px; flex-shrink:0; }
 html[data-surface="notch"] .modal-backdrop { background:rgba(0,0,0,.55); }
 html[data-surface="notch"] .modal,html[data-surface="notch"] .modal.wide { width:calc(100% - 20px); max-width:none; max-height:calc(100% - 16px); padding:14px; border-radius:14px; }
 html[data-surface="notch"] .editor-columns { grid-template-columns:1fr; }
@@ -82,4 +81,3 @@ html[data-surface="notch"] .event-form footer { position:sticky; bottom:-14px; b
   .voice-pill-label { animation:voice-label-in 220ms ease-out both; }
 }
 @keyframes voice-label-in { from { opacity:0; transform:translateY(2px); } to { opacity:1; transform:none; } }
-.voice-transcript p { margin:0 0 6px; } .voice-transcript small { color:var(--muted); margin-right:6px; }

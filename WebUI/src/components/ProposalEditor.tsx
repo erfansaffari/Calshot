@@ -30,10 +30,12 @@ export function ProposalEditor({
   item,
   token,
   onClose,
+  suspended = false,
 }: {
   item: Proposal;
   token: string;
   onClose: () => void;
+  suspended?: boolean;
 }) {
   const d = item.draft;
   const [form, setForm] = useState({
@@ -53,7 +55,7 @@ export function ProposalEditor({
   const change = (key: string, value: unknown) =>
     setForm({ ...form, [key]: value });
   return (
-    <Modal title="Review event details" onClose={onClose}>
+    <Modal title="Review event details" onClose={onClose} suspended={suspended}>
       <form
         className="event-form"
         onSubmit={async (e) => {

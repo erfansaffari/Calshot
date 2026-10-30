@@ -39,17 +39,20 @@ export function Modal({
   onClose,
   wide = false,
   className = "",
+  suspended = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
   className?: string;
+  suspended?: boolean;
 }) {
   const previousFocus = useRef(document.activeElement as HTMLElement | null);
   return (
     <Dialog.Root
       open
+      modal={!suspended}
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
@@ -63,6 +66,8 @@ export function Modal({
               previousFocus.current.focus();
           }}
           aria-describedby={undefined}
+          aria-hidden={suspended || undefined}
+          style={suspended ? { visibility: "hidden", pointerEvents: "none" } : undefined}
           className={"modal " + (wide ? "wide " : "") + className}
         >
           <header>

@@ -73,12 +73,18 @@ final class FocusFrameComposer {
             try Task.checkCancellation()
             let capturedAt = Date()
             let selected = marks.filter { $0.displayID == id }
-            let composed = try FocusFrameGeometry.render(image: image, marks: selected, displayFrame: screen.frame)
-            let size = CGSize(width: composed.width, height: composed.height)
+            let displayFrame = screen.frame
+            // Composite/encode and text recognition run concurrently off the main actor, so a capture
+            // started while the user talks never stalls microphone delivery or the notch.
+            async let encoded = Task.detached(priority: .userInitiated) {
+                let composed = try FocusFrameGeometry.render(image: image, marks: selected, displayFrame: displayFrame)
+                return (CGSize(width: composed.width, height: composed.height), try FocusFrameGeometry.jpeg(image: composed))
+            }.value
             // Read text from the full-resolution capture; the 1280 px frame is too small for exact dates in an email.
             let text = try? await ScreenTextRecognizer.recognizeLayout(in: image)
+            let (size, jpeg) = try await encoded
             try Task.checkCancellation()
-            return FocusFrame(jpegData: try FocusFrameGeometry.jpeg(image: composed), pixelSize: size, displayID: id,
+            return FocusFrame(jpegData: jpeg, pixelSize: size, displayID: id,
                               regions: selected.map { FocusFrameGeometry.region(for: $0, displayFrame: screen.frame, pixelSize: size) },
                               capturedAt: capturedAt, screenText: text)
         } catch is CancellationError { throw CancellationError() }

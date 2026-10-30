@@ -5,7 +5,7 @@ import { InlineError, Select, Spinner, formatDate } from "./ui";
 
 /**
  * Device-local calendar grants. Off by default; only clear, single, guest-free, non-repeating events the user asked
- * for save without review, and only in the checked calendars. Deletes and moves always ask.
+ * for save without review, and only in the checked calendars. Guests, repeating series and screenshot imports always ask.
  */
 export function AgentCalendarPermissions({ state }: { state: AppState }) {
   const permissions = state.agentPermissions, calendar = permissions?.calendar;

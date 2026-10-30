@@ -114,8 +114,8 @@ extension CalshotModel {
         let store = PersonalMemoryStore(directory: directory, ownerID: account.userID)
         personalMemoryCache = store; return store
     }
-    func personalMemoryContext(for request: String) -> String {
-        MemoryContextBuilder.build(request: request, items: personalMemory.items)
+    func personalMemoryContext(for request: String, relevantOnly: Bool = false) -> String {
+        MemoryContextBuilder.build(request: request, items: personalMemory.items, characterBudget: relevantOnly ? 2_000 : 6_000, relevantOnly: relevantOnly)
     }
     @discardableResult
     func suggestPersonalMemory(kind: MemoryItem.Kind, text: String, sourceReference: String? = nil) throws -> MemoryItem {
@@ -156,3 +156,4 @@ extension CalshotModel {
         }
     }
 }
+

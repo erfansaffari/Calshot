@@ -143,16 +143,7 @@ function simulate(message: Command) {
           : [],
       },
     });
-  } else if (message.action === "newTask")
-    update({
-      ...state,
-      messages: [],
-      proposals: [],
-      waitingApproval: false,
-      selectedCount: 0,
-      canApprove: false,
-    });
-  else if (message.action === "selectProposal")
+  } else if (message.action === "selectProposal")
     update({
       ...state,
       proposals: state.proposals.map((p) =>

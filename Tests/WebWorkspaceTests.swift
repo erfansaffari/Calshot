@@ -425,6 +425,7 @@ final class WebWorkspaceTests: XCTestCase {
     func testVoiceSpokenApprovalStopAndTimedReviewUseRealExecutor() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, client) = wiredVoice(model)
         await voice.toggle(); voice.handle(.sessionUpdated)
+        XCTAssertEqual(model.agentToolExecutor?.clarifyByReview, true)
         let args = #"{"events":[{"title":"Fictional workshop","date":"2026-11-10","startTime":"10:00","endTime":"11:00","allDay":false,"timeZone":"America/Toronto","location":null,"url":null,"notes":null,"evidence":"Fictional workshop November 10 2026 10-11am"}]}"#
         voice.handle(.functionCall(callID: "pending", name: "create_events", argumentsJSON: args))
         for _ in 0..<1000 { if model.agentIsWaitingForApproval { break }; await Task.yield() }
@@ -478,6 +479,18 @@ final class WebWorkspaceTests: XCTestCase {
         try voice.transcript?("assistant", "Fictional shared friend result")
         XCTAssertTrue(model.agentMessages.allSatisfy { $0.sharedCalendarContext == true })
         XCTAssertFalse(model.memoryStore.agentMemory().contains { $0.content?.contains("Fictional shared friend") == true }); voice.stop()
+    }
+    func testVoiceAgendaRecordsActualToolArgumentsAndResultsInItsOwnHistory() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
+        let (voice, _) = wiredVoice(model); await voice.toggle()
+        let args: JSONValue = .object(["day": .string("2026-11-10"), "timeZone": .string("America/Toronto")])
+        let result = await voice.execute?("get_agenda", args)
+        let turn = try XCTUnwrap(model.agentMessages.last)
+        XCTAssertEqual(turn.role, "tool"); XCTAssertEqual(turn.toolName, "get_agenda")
+        XCTAssertEqual(turn.arguments, args.jsonString()); XCTAssertEqual(turn.result, result)
+        let record = try XCTUnwrap(model.memoryStore.listRecords().first { $0.id == model.currentMemoryRecordID })
+        XCTAssertEqual(record.agentTranscript?.last, turn)
+        voice.stop()
     }
     func testVoiceShortcutCollisionRegistrationFailureAndNotchMemoryValidation() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
@@ -940,31 +953,114 @@ final class WebWorkspaceTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 100)
         var state = NotchPresentationState()
         state.pointerChanged(true, now: now)
-        state.advance(to: now.addingTimeInterval(0.04))
-        XCTAssertFalse(state.isExpanded)
-        state.advance(to: now.addingTimeInterval(0.09))
+        let delay = NotchPresentationState.hoverDelay
+        XCTAssertLessThan(delay, 0.5, "Resting on the notch opens it quickly")
+        state.pointerChanged(true, now: now.addingTimeInterval(delay * 0.9))
+        state.advance(to: now.addingTimeInterval(delay - 0.01))
+        XCTAssertFalse(state.isExpanded, "Continuous hover for the full dwell is required")
+        state.advance(to: now.addingTimeInterval(delay))
         XCTAssertTrue(state.isExpanded)
-        state.pointerChanged(false, now: now.addingTimeInterval(1))
-        // Repeated pointer polling must not postpone the leave deadline.
-        state.pointerChanged(false, now: now.addingTimeInterval(1.3))
-        state.advance(to: now.addingTimeInterval(1.3))
+        state.pointerChanged(false, now: now.addingTimeInterval(2))
+        state.pointerChanged(false, now: now.addingTimeInterval(2.1))
+        state.advance(to: now.addingTimeInterval(2.49))
         XCTAssertTrue(state.isExpanded)
-        state.advance(to: now.addingTimeInterval(1.36))
+        state.advance(to: now.addingTimeInterval(2.51))
+        XCTAssertFalse(state.isExpanded, "Repeated polls cannot postpone closing")
+    }
+    func testYearConfirmationUsesCurrentReviewAndDoesNotSaveAnEvent() async throws {
+        let model = fixture(); await model.loadCalendars()
+        var proposal = row(); proposal.draft.ambiguities = [.missingYear, .missingTime]
+        model.calendarActions.replace(with: [proposal]); model.agentIsWaitingForApproval = true
+        let bridge = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
+        let token = WebWorkspaceState.approvalToken(model)
+        try await bridge.handle("confirmProposalYears", ["token": token, "year": 2027])
+        let draft = try XCTUnwrap(model.calendarActions.proposals.first?.draft)
+        XCTAssertFalse(draft.ambiguities.contains(.missingYear)); XCTAssertTrue(draft.ambiguities.contains(.missingTime))
+        XCTAssertEqual(CalendarDraftValidation.calendar(for: draft).component(.year, from: try XCTUnwrap(draft.startDate)), 2027)
+        XCTAssertNil(model.calendarActions.proposals.first?.receipt)
+        do { try await bridge.handle("confirmProposalYears", ["token": token, "year": 2028]); XCTFail("Stale review accepted") } catch {}
+        let invalidYears: [NSNumber] = [true, 2026.5, 1800]
+        for year in invalidYears {
+            do { try await bridge.handle("confirmProposalYears", ["token": WebWorkspaceState.approvalToken(model), "year": year]); XCTFail("Invalid year accepted") } catch {}
+        }
+    }
+    func testNotchExpansionControlCannotOpenWorkspaceOrAuthorizeWrites() async throws {
+        let model = fixture()
+        let bridge = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
+        var opened = 0; bridge.onNotchExpand = { opened += 1 }
+        try await bridge.handle("expandNotch", [:]); XCTAssertEqual(opened, 1)
+        bridge.setNotchExpanded(true); XCTAssertTrue(bridge.notchExpanded)
+        bridge.setNotchExpanded(false); XCTAssertFalse(bridge.notchExpanded)
+        let workspace = WebWorkspaceController(model: model, loadsResources: false)
+        do { try await workspace.handle("expandNotch", [:]); XCTFail("Workspace expanded notch") } catch {}
+        XCTAssertTrue(model.calendarActions.proposals.isEmpty)
+    }
+    func testCompactVoiceActivityDoesNotRequireAnExpandedPanel() {
+        XCTAssertEqual(NotchVoiceActivity.resolve(state: .listening, transmittingAudio: true), .listening)
+        XCTAssertEqual(NotchVoiceActivity.resolve(state: .thinking, transmittingAudio: false), .thinking)
+        XCTAssertEqual(NotchVoiceActivity.resolve(state: .speaking, transmittingAudio: false), .speaking)
+        XCTAssertNil(NotchVoiceActivity.resolve(state: .listening, transmittingAudio: false))
+        XCTAssertEqual(NotchVoiceActivity.resolve(state: .waitingForReview, transmittingAudio: false), .review)
+        var panel = NotchPresentationState()
+        panel.open(now: Date(timeIntervalSince1970: 100))
+        panel.advance(to: Date(timeIntervalSince1970: 101))
+        XCTAssertFalse(panel.isExpanded, "A voice status is independent of opening review controls")
+    }
+    func testNotchOpensOnlyAfterThePointerRestsOnIt() {
+        let now = Date(timeIntervalSince1970: 100)
+        let delay = NotchPresentationState.hoverDelay
+        var state = NotchPresentationState()
+        state.pointerChanged(true, now: now, location: CGPoint(x: 900, y: 1070))
+        state.pointerChanged(true, now: now.addingTimeInterval(delay * 0.5), location: CGPoint(x: 960, y: 1070))
+        state.advance(to: now.addingTimeInterval(delay * 1.2))
+        XCTAssertFalse(state.isExpanded, "Moving across the notch restarts the dwell")
+        state.pointerChanged(true, now: now.addingTimeInterval(delay * 1.3), location: CGPoint(x: 963, y: 1071))
+        state.advance(to: now.addingTimeInterval(delay * 1.5 - 0.01))
         XCTAssertFalse(state.isExpanded)
+        state.advance(to: now.addingTimeInterval(delay * 1.5))
+        XCTAssertTrue(state.isExpanded, "A small jitter while resting still opens after the dwell")
     }
     func testNotchBriefPassAndReentryDoNotFlicker() {
         let now = Date(timeIntervalSince1970: 100)
         var state = NotchPresentationState()
         state.pointerChanged(true, now: now)
-        state.pointerChanged(false, now: now.addingTimeInterval(0.04))
-        state.advance(to: now.addingTimeInterval(0.2))
-        XCTAssertFalse(state.isExpanded)
-        state.pointerChanged(true, now: now.addingTimeInterval(1))
+        let delay = NotchPresentationState.hoverDelay
+        state.pointerChanged(false, now: now.addingTimeInterval(delay * 0.9))
         state.advance(to: now.addingTimeInterval(1.1))
-        state.pointerChanged(false, now: now.addingTimeInterval(2))
-        state.pointerChanged(true, now: now.addingTimeInterval(2.2))
-        state.advance(to: now.addingTimeInterval(3))
+        XCTAssertFalse(state.isExpanded)
+        state.pointerChanged(true, now: now.addingTimeInterval(2))
+        state.advance(to: now.addingTimeInterval(2 + delay - 0.01))
+        XCTAssertFalse(state.isExpanded, "A new visit starts a fresh dwell")
+        state.advance(to: now.addingTimeInterval(2 + delay))
+        state.pointerChanged(false, now: now.addingTimeInterval(4))
+        state.pointerChanged(true, now: now.addingTimeInterval(4.1))
+        state.advance(to: now.addingTimeInterval(4.2))
+        XCTAssertTrue(state.isExpanded, "Crossing the bezel/WebKit seam within grace stays smooth")
+    }
+    func testNotchExplicitOpenOutsideAlwaysClosesWithoutALeaveEdge() {
+        let now = Date(timeIntervalSince1970: 100)
+        var state = NotchPresentationState()
+        state.open(now: now)
+        state.pointerChanged(false, now: now.addingTimeInterval(0.1))
+        state.observe(activityKey: "voice:speaking", notify: true, now: now.addingTimeInterval(0.12))
+        state.advance(to: now.addingTimeInterval(0.51))
+        XCTAssertFalse(state.isExpanded, "Updates and focus never pin an outside panel open")
+        state.pointerChanged(true, now: now.addingTimeInterval(1))
+        state.advance(to: now.addingTimeInterval(1 + NotchPresentationState.hoverDelay - 0.01))
+        XCTAssertFalse(state.isExpanded)
+        state.advance(to: now.addingTimeInterval(1 + NotchPresentationState.hoverDelay))
         XCTAssertTrue(state.isExpanded)
+    }
+    func testNotchPointerRegionExcludesOldAndFuturePanelSpace() {
+        let closed = NSRect(x: 200, y: 750, width: 180, height: 30)
+        let expanded = NSRect(x: 40, y: 270, width: 500, height: 510)
+        let shrinking = NotchExperienceController.pointerRegion(panelFrame: expanded, targetFrame: closed, expanded: false)
+        XCTAssertEqual(shrinking, closed)
+        XCTAssertFalse(shrinking.contains(NSPoint(x: 100, y: 400)))
+        let growing = NotchExperienceController.pointerRegion(panelFrame: closed, targetFrame: expanded, expanded: true)
+        XCTAssertEqual(growing, closed)
+        XCTAssertFalse(growing.contains(NSPoint(x: 100, y: 400)))
+        XCTAssertEqual(NotchExperienceController.pointerRegion(panelFrame: expanded, targetFrame: expanded, expanded: true), expanded)
     }
     func testNotchNotificationExpiresWithoutReopeningOrRearming() {
         let now = Date(timeIntervalSince1970: 100)
@@ -992,7 +1088,7 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertFalse(state.isExpanded)
         state.pointerChanged(false, now: now.addingTimeInterval(3))
         state.pointerChanged(true, now: now.addingTimeInterval(4))
-        state.advance(to: now.addingTimeInterval(4.1))
+        state.advance(to: now.addingTimeInterval(5))
         XCTAssertTrue(state.isExpanded)
     }
     func testNotchNotificationExpiryPreservesPendingReviewAndStableIdentity() {
@@ -1155,22 +1251,21 @@ final class WebWorkspaceTests: XCTestCase {
         catch { XCTAssertTrue(error.localizedDescription.contains("valid")) }
         XCTAssertEqual(model.calendarActions.proposals[0].draft.title, item.draft.title)
     }
-    func testNewTaskDoesNotReplayOrRemoveCalendarWrites() async throws {
+    func testThereIsNoNewTaskActionInTheOneChat() async throws {
         let model = fixture(); var item = row(); item.state = .added
-        model.calendarActions.replace(with: [item]); model.agentMessages = [AgentTurn(role: "user", content: "Previous task")]
+        model.calendarActions.replace(with: [item])
         let bridge = WebWorkspaceController(model: model, loadsResources: false)
-        try await bridge.handle("newTask", [:])
-        XCTAssertTrue(model.agentMessages.isEmpty)
-        XCTAssertTrue(model.calendarActions.proposals.isEmpty)
-        XCTAssertNotNil(model.currentCaptureSessionID)
+        do { try await bridge.handle("newTask", [:]); XCTFail("New task was removed") } catch {}
+        XCTAssertEqual(model.calendarActions.proposals.first?.state, .added, "Nothing is replayed or removed")
     }
-    func testCalendarQuestionStartsFreshHistoryWithoutOldScreenshotOrTranscript() async throws {
+    func testCalendarQuestionContinuesTheOneChatWithoutOldScreenshotOrReview() async throws {
         let model = fixture()
         let previous = try model.memoryStore.recordCommand("Previous fictional task", transcript: [AgentTurn(role: "user", content: "Previous fictional task")])
         model.currentMemoryRecordID = previous.id
         model.currentCaptureSessionID = UUID()
         let previousSession = model.currentCaptureSessionID
         var completed = row(); completed.state = .added
+        completed.receipt = CalendarActionReceipt(destinationID: "demo", calendarName: "Demo", eventIdentifier: "fictional-saved", savedAt: .now)
         _ = try model.memoryStore.updateProposals(for: previous.id, proposals: [completed])
         model.calendarActions.replace(with: [completed])
         model.agentMessages = [AgentTurn(role: "user", content: "Previous fictional task")]
@@ -1185,18 +1280,20 @@ final class WebWorkspaceTests: XCTestCase {
             if model.currentMemoryRecordID != nil && model.currentMemoryRecordID != previous.id { break }
             await Task.yield()
         }
+        let main = try XCTUnwrap(model.mainChatID())
         XCTAssertNotEqual(model.currentCaptureSessionID, previousSession)
-        XCTAssertNotNil(model.currentMemoryRecordID)
-        XCTAssertNotEqual(model.currentMemoryRecordID, previous.id)
+        XCTAssertEqual(model.currentMemoryRecordID, main, "Every request continues the one chat")
         XCTAssertNil(model.image); XCTAssertNil(model.currentAgentSourceID); XCTAssertNil(model.ocrTask)
-        XCTAssertTrue(model.recognizedText.isEmpty); XCTAssertTrue(model.agentTranscriptPrefix.isEmpty)
-        XCTAssertTrue(model.calendarActions.proposals.isEmpty)
+        XCTAssertTrue(model.recognizedText.isEmpty)
+        XCTAssertTrue(model.calendarActions.proposals.isEmpty, "Finished rows leave the review")
         XCTAssertNil(model.agentSummary)
-        XCTAssertFalse(model.agentMessages.contains { $0.content == "Previous fictional task" })
+        XCTAssertTrue(model.agentMessages.contains { $0.content == "Previous fictional task" }, "Earlier turns stay in the chat")
         XCTAssertEqual(model.workspaceSelection, .chat)
+        let chat = try XCTUnwrap(model.memoryStore.listRecords().first { $0.id == main })
+        XCTAssertEqual(chat.calendarProposals.first { $0.id == completed.id }?.state, .added, "Receipts stay in the chat's history")
         let preserved = try XCTUnwrap(model.memoryStore.listRecords().first { $0.id == previous.id })
-        XCTAssertEqual(preserved.agentTranscript?.first?.content, "Previous fictional task")
-        XCTAssertEqual(preserved.calendarProposals.first?.state, .added)
+        XCTAssertEqual(preserved.mergedIntoMainChat, true)
+        XCTAssertFalse(model.memoryRecords.contains { $0.id == previous.id }, "Merged chats are not listed separately")
     }
     func testCalendarQuestionRejectsInvalidOrStaleActionsBeforeClearingHistory() async throws {
         let model = fixture()
@@ -1636,21 +1733,24 @@ final class AgentTaskReviewIntegrationTests: XCTestCase {
         XCTAssertTrue(edit.saved.isEmpty, "A create grant never covers edits")
     }
 
-    func testAutonomySwitchGrantsRoutineActionsOnlyAndTurnsThemAllOff() async throws {
+    func testAutonomySwitchGrantsEveryRequestedActionAndTurnsThemAllOff() async throws {
         let model = fixture(); await model.loadCalendars(); model.selectedCalendarID = "demo"
+        model.autonomyDefaults = UserDefaults(suiteName: "autonomy-\(UUID())")!
         try await model.saveAgentAutonomy(enabled: true, revision: 0)
         var policy = try XCTUnwrap(model.agentPermissionPolicy)
-        XCTAssertEqual(Set(policy.grants.map(\.action)), [.taskCreate, .taskLink, .taskEdit, .taskComplete, .taskArchive, .calendarCreate, .calendarEdit])
-        XCTAssertFalse(policy.grants.contains { [.calendarDelete, .calendarMove].contains($0.action) || $0.backgroundEnabled })
-        XCTAssertTrue(policy.grants.filter { !$0.action.isTask }.allSatisfy { $0.calendarIDs == ["demo"] })
+        XCTAssertEqual(Set(policy.grants.map(\.action)), [.taskCreate, .taskLink, .taskEdit, .taskComplete, .taskArchive, .calendarCreate, .calendarEdit, .calendarDelete, .calendarMove])
+        XCTAssertFalse(policy.grants.contains { $0.backgroundEnabled }, "Never background")
+        XCTAssertTrue(policy.grants.filter { !$0.action.isTask }.allSatisfy { $0.calendarIDs == ["demo"] }, "Every writable calendar")
+        XCTAssertEqual(policy.grants.first { $0.action == .calendarDelete }?.fields, ["delete"])
+        XCTAssertGreaterThan(policy.grants.first { $0.action == .calendarMove }?.expiresAt ?? .distantPast, Date().addingTimeInterval(300 * 86_400))
         try await model.saveAgentAutonomy(enabled: false, revision: policy.revision)
         policy = try XCTUnwrap(model.agentPermissionPolicy)
         XCTAssertTrue(policy.grants.allSatisfy { !$0.requestedEnabled }, "Off means every action asks again")
     }
 
-    func testCalendarPermissionSettingsRejectMalformedChoicesAndDeletesAlwaysAsk() async throws {
+    func testCalendarPermissionSettingsRejectMalformedChoicesAndGuestsAndSeriesAlwaysAsk() async throws {
         let model = fixture(); await model.loadCalendars()
-        for (families, ids, days) in [(["delete": true], ["demo"], 30), (["move": true], ["demo"], 30), (["create": true], ["demo"], 14), (["create": true], ["not-a-calendar"], 30)] as [([String: Bool], [String], Int)] {
+        for (families, ids, days) in [(["guests": true], ["demo"], 30), (["series": true], ["demo"], 30), (["create": true], ["demo"], 14), (["create": true], ["not-a-calendar"], 30)] as [([String: Bool], [String], Int)] {
             do { try await model.saveAgentCalendarPermissions(revision: 0, families: families, calendarIDs: ids, days: days); XCTFail("Accepted \(families) \(ids) \(days)") } catch {}
         }
         try await calendarGrant(model, ["create": true, "edit": true])
@@ -1659,7 +1759,45 @@ final class AgentTaskReviewIntegrationTests: XCTestCase {
         XCTAssertTrue(policy.grants.allSatisfy { $0.calendarIDs == ["demo"] && !$0.backgroundEnabled })
         let snapshot = model.agentPermissionSnapshot().objectValue?["calendar"]?.objectValue
         let locked = snapshot?["families"]?.arrayValue?.filter { $0.objectValue?["alwaysAsks"]?.boolValue == true }.compactMap { $0.objectValue?["id"]?.stringValue }
-        XCTAssertEqual(locked, ["delete", "move"])
+        XCTAssertEqual(locked, ["guests", "series", "screenshot"])
+    }
+
+    func testGrantedDeletesSaveImmediatelyButGuestsAndSeriesStillAsk() async throws {
+        let model = fixture(); await model.loadCalendars(); model.selectedCalendarID = "demo"
+        try await calendarGrant(model, ["create": true, "delete": true])
+        let run = startRun(model)
+        let added = split(await model.applyAgentCalendarGrant(runID: run, destinationID: "demo", destinationName: "Demo", rows: [calendarRow("Fictional study group")]))
+        let saved = try XCTUnwrap(added.saved.first?.receipt)
+        func deletion(guests: Bool = false, recurring: Bool? = false) -> AgentCalendarGrantRow {
+            let draft = added.saved[0].draft
+            var removed = draft; removed.id = UUID()
+            var proposal = CalendarActionProposal(draft: removed, operation: .delete, targetEventIdentifier: saved.eventIdentifier, before: draft)
+            proposal.targetDestinationID = "demo"
+            return AgentCalendarGrantRow(proposal: proposal, recurring: recurring, guests: guests)
+        }
+        let guests = split(await model.applyAgentCalendarGrant(runID: run, destinationID: "demo", destinationName: "Demo", rows: [deletion(guests: true)]))
+        XCTAssertTrue(guests.review.first?.contains("Guests") == true)
+        let series = split(await model.applyAgentCalendarGrant(runID: run, destinationID: "demo", destinationName: "Demo", rows: [deletion(recurring: nil)]))
+        XCTAssertTrue(series.review.first?.contains("repeating") == true, "Unknown repetition is treated as a series")
+        let removed = split(await model.applyAgentCalendarGrant(runID: run, destinationID: "demo", destinationName: "Demo", rows: [deletion()]))
+        XCTAssertEqual(removed.saved.first?.state, .deleted, "Saved at once, with its own receipt")
+        let gone = try await model.calendarService.event(identifier: saved.eventIdentifier, in: .resolve(identifier: "demo"))
+        XCTAssertNil(gone)
+        model.agentTypedRunID = nil
+        let capture = split(await model.applyAgentCalendarGrant(runID: run, destinationID: "demo", destinationName: "Demo", rows: [calendarRow("Fictional screenshot class")]))
+        XCTAssertTrue(capture.saved.isEmpty, "Screenshot runs always review")
+    }
+
+    func testAutonomyIsOnByDefaultOnceAndTheUsersChoiceWins() async throws {
+        let model = fixture(); await model.loadCalendars(); model.selectedCalendarID = "demo"
+        model.appliesAutonomyDefault = true; model.autonomyDefaults = UserDefaults(suiteName: "autonomy-\(UUID())")!
+        await model.ensureAgentAutonomyDefault()
+        var policy = try XCTUnwrap(model.agentPermissionPolicy)
+        XCTAssertTrue([AgentPermissionAction.calendarCreate, .calendarEdit, .calendarDelete, .calendarMove].allSatisfy { action in policy.grants.contains { $0.action == action && $0.requestedEnabled } })
+        try await model.saveAgentAutonomy(enabled: false, revision: policy.revision)
+        await model.ensureAgentAutonomyDefault()
+        policy = try XCTUnwrap(model.agentPermissionPolicy)
+        XCTAssertTrue(policy.grants.allSatisfy { !$0.requestedEnabled }, "Turning it off is never undone by the default")
     }
 
     func testTaskOnlyCreateUsesTheGrantElseKeepsTheExistingImportReview() async throws {

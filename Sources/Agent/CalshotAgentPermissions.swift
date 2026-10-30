@@ -262,7 +262,9 @@ actor AgentPermissionStore {
             }
         }
         if operation.hasSharingEffects { return .deny("Sharing is not supported by this permission kernel.") }
-        if operation.hasGuestEffects || operation.affectsSeries || (!operation.action.isTask && operation.resourceIDs.count > 1) || [.calendarDelete, .calendarMove].contains(operation.action) {
+        // Deletes and moves of one confirmed, non-repeating event without guests may use a saved grant (Autonomy).
+        // Guests, series and multi-event operations always need review.
+        if operation.hasGuestEffects || operation.affectsSeries || (!operation.action.isTask && operation.resourceIDs.count > 1) {
             return .requireReview("This effect requires separate review and capability validation.")
         }
         let exactTask = operation.action.isTask && context.origin == .requested && context.exactTaskEffect == operation

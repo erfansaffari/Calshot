@@ -163,19 +163,6 @@ function App() {
                     : "Your calendars, a little easier"}
                 </small>
               </div>
-              <button
-                className="button secondary"
-                disabled={
-                  state.running ||
-                  state.saving ||
-                  state.isCapturing ||
-                  state.isRecognizing
-                }
-                onClick={() => void run("newTask")}
-              >
-                <Plus size={13} />
-                New task
-              </button>
               {state.imageURL && (
                 <button
                   className="icon-button"

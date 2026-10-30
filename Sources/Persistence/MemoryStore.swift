@@ -17,6 +17,11 @@ public struct MemoryCaptureRecord: Codable, Identifiable, Sendable {
     public var proposals: [CalendarActionProposal]?
     public var agentTranscript: [AgentTurn]?
     public var additionalScreenshots: [ScreenshotSource]?
+    /// The single ongoing conversation. Typed, voice and screenshot runs all continue it.
+    public var isMainChat: Bool? = nil
+    /// An earlier separate conversation whose turns and saved changes were copied into the main chat.
+    /// Kept on disk (hidden) and removed together with the main chat.
+    public var mergedIntoMainChat: Bool? = nil
 
     public struct ScreenshotSource: Codable, Identifiable, Sendable {
         public var id: UUID
@@ -160,7 +165,8 @@ public final class MemoryStore: @unchecked Sendable {
                 copy = MemoryCaptureRecord(id: copy.id, createdAt: copy.createdAt, screenshotFileName: local.screenshotFileName, imageFormat: local.imageFormat,
                     event: copy.event, recognizedText: copy.recognizedText, analysisProvider: copy.analysisProvider,
                     savedToCalendarAt: copy.savedToCalendarAt, savedCalendarName: copy.savedCalendarName, calendarEventIdentifier: copy.calendarEventIdentifier,
-                    schemaVersion: copy.schemaVersion, proposals: copy.proposals, agentTranscript: copy.agentTranscript, additionalScreenshots: local.additionalScreenshots)
+                    schemaVersion: copy.schemaVersion, proposals: copy.proposals, agentTranscript: copy.agentTranscript, additionalScreenshots: local.additionalScreenshots,
+                    isMainChat: remote.isMainChat, mergedIntoMainChat: remote.mergedIntoMainChat)
             }
             try encoder.encode(copy).write(to: url, options: .atomic)
         }
@@ -254,6 +260,64 @@ public final class MemoryStore: @unchecked Sendable {
         return record
     }
 
+    /// Saved changes kept in the main chat's history, so undo and "what did you change" reach older work.
+    static let mainChatChangeLimit = 300
+    /// Conversation turns kept in the main chat. The agent reads a bounded recent window of these.
+    static let mainChatTurnLimit = 600
+
+    /// Returns the single ongoing chat, creating it on first use. Earlier separate conversations (and a second main
+    /// chat synced from another Mac) are folded in once, oldest first: their turns, and their saved changes with
+    /// receipts. Unfinished reviews from old sessions are not carried over. Source records stay on disk, hidden.
+    public func mainChat() throws -> MemoryCaptureRecord {
+        let records = listRecords().sorted { $0.createdAt < $1.createdAt }
+        var main = records.first { $0.isMainChat == true }
+        if main == nil {
+            let created = MemoryCaptureRecord(id: UUID(), createdAt: records.first?.createdAt ?? .now, screenshotFileName: "", imageFormat: .png,
+                event: nil, recognizedText: nil, analysisProvider: "Calendar agent", savedToCalendarAt: nil,
+                savedCalendarName: nil, calendarEventIdentifier: nil, schemaVersion: 3, proposals: [], agentTranscript: [], isMainChat: true)
+            lock.lock()
+            do { try ensureDirectory(); try encoder.encode(created).write(to: metadataURL(for: created.id), options: .atomic) }
+            catch { lock.unlock(); throw error }
+            lock.unlock()
+            main = created
+        }
+        guard let main else { throw MemoryStoreError.unsupportedImageFormat }
+        let pending = records.filter { $0.id != main.id && $0.mergedIntoMainChat != true }
+        guard !pending.isEmpty else { return main }
+        let turns = pending.flatMap { $0.agentTranscript ?? [] }
+        let changes = pending.flatMap { $0.calendarProposals.filter { $0.isFinished && $0.receipt != nil } }
+        let updated = try updateRecord(id: main.id) { record in
+            record.agentTranscript = Array(((record.agentTranscript ?? []) + turns).suffix(Self.mainChatTurnLimit))
+            record.proposals = Self.mergedChanges(existing: record.proposals ?? [], incoming: changes)
+        }
+        for record in pending {
+            _ = try updateRecord(id: record.id) { $0.mergedIntoMainChat = true; $0.isMainChat = nil }
+        }
+        return updated ?? main
+    }
+
+    /// Ledger merge for the main chat: rows are replaced by id, new rows appended, and only the oldest finished
+    /// changes beyond the limit are dropped. Unfinished rows are never dropped.
+    static func mergedChanges(existing: [CalendarActionProposal], incoming: [CalendarActionProposal]) -> [CalendarActionProposal] {
+        let ids = Set(incoming.map(\.id))
+        var rows = existing.filter { !ids.contains($0.id) } + incoming
+        let finished = rows.filter(\.isFinished).sorted { ($0.receipt?.savedAt ?? .distantPast) < ($1.receipt?.savedAt ?? .distantPast) }
+        if finished.count > mainChatChangeLimit {
+            let dropped = Set(finished.prefix(finished.count - mainChatChangeLimit).map(\.id))
+            rows.removeAll { dropped.contains($0.id) }
+        }
+        return rows
+    }
+
+    /// Persists the current run's rows into the main chat without erasing its change history.
+    @discardableResult
+    public func mergeProposals(for id: UUID, proposals: [CalendarActionProposal]) throws -> MemoryCaptureRecord? {
+        try updateRecord(id: id) { record in
+            record.schemaVersion = 3
+            record.proposals = Self.mergedChanges(existing: record.proposals ?? [], incoming: proposals)
+        }
+    }
+
     /// Typed-only sessions have metadata without a fabricated screenshot.
     public func recordCommand(_ command: String, transcript: [AgentTurn] = []) throws -> MemoryCaptureRecord {
         let record = MemoryCaptureRecord(id: UUID(), createdAt: .now, screenshotFileName: "", imageFormat: .png,
@@ -289,7 +353,8 @@ public final class MemoryStore: @unchecked Sendable {
         let formatter = ISO8601DateFormatter()
         var result: [AgentTurn] = []
         var characters = 0
-        for record in listRecords().filter({ $0.id != id }).prefix(12) {
+        // Merged conversations already live in the main chat; listing them again would duplicate them.
+        for record in listRecords().filter({ $0.id != id && $0.mergedIntoMainChat != true }).prefix(12) {
             let actions: [[String: String]] = record.calendarProposals.compactMap { proposal in
                 guard let receipt = proposal.receipt, proposal.isFinished else { return nil }
                 return ["operation": proposal.operation.rawValue, "status": proposal.state.rawValue,
@@ -422,7 +487,11 @@ public final class MemoryStore: @unchecked Sendable {
     }
 
     /// Deletes one capture's metadata and image. Missing files are treated as already deleted.
+    /// Deleting the main chat also deletes the earlier conversations merged into it, so nothing hidden remains.
     public func deleteRecord(id: UUID) throws {
+        if listRecords().first(where: { $0.id == id })?.isMainChat == true {
+            for merged in listRecords() where merged.mergedIntoMainChat == true { try deleteRecord(id: merged.id) }
+        }
         lock.lock()
         defer { lock.unlock() }
         let metadata = metadataURL(for: id)

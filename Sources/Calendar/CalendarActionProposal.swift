@@ -41,6 +41,8 @@ public struct CalendarActionProposal: Codable, Identifiable, Sendable {
     /// Written before calling the calendar service to reconcile interrupted writes.
     public var attemptedDestinationID: String?
     public var attemptedCalendarName: String?
+    /// Set on the reversing change created by "undo": the change it reverses. Native-authored only.
+    public var undoOf: UUID?
 
     public init(draft: EventDraft) { self.init(draft: draft, operation: .create) }
 
@@ -55,7 +57,7 @@ public struct CalendarActionProposal: Codable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case sourceDestinationID, sourceCalendarName, moveCopyReceipt, moveDestinationBefore
         case draft, operation, targetDestinationID, targetCalendarName, targetEventIdentifier, targetOccurrence, before, isSelected, state, error, sourceCaptureID, receipt
-        case duplicateDestinationID, duplicateIdentifiers, allowDuplicate, attemptedDestinationID, attemptedCalendarName
+        case duplicateDestinationID, duplicateIdentifiers, allowDuplicate, attemptedDestinationID, attemptedCalendarName, undoOf
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -80,6 +82,7 @@ public struct CalendarActionProposal: Codable, Identifiable, Sendable {
         allowDuplicate = try values.decodeIfPresent(Bool.self, forKey: .allowDuplicate) ?? false
         attemptedDestinationID = try values.decodeIfPresent(String.self, forKey: .attemptedDestinationID)
         attemptedCalendarName = try values.decodeIfPresent(String.self, forKey: .attemptedCalendarName)
+        undoOf = try values.decodeIfPresent(UUID.self, forKey: .undoOf)
     }
     public var isFinished: Bool { [.added, .updated, .deleted, .moved].contains(state) }
     public var isApprovable: Bool {

@@ -114,6 +114,16 @@ final class PersonalMemoryTests: XCTestCase {
         for budget in [0, 20, 250, 6000] { XCTAssertLessThanOrEqual(MemoryContextBuilder.build(request: "tennis", items: store.items, characterBudget: budget, now: now).count, budget) }
         XCTAssertEqual(block, MemoryContextBuilder.build(request: "tennis", items: store.items.reversed(), now: now))
     }
+    func testRelevantOnlyMemoryMatchesTolerantlyAndSkipsFillerWords() throws {
+        let store = PersonalMemoryStore(directory: directory), now = Date(timeIntervalSince1970: 1_800_000_000)
+        try store.add(kind: .fact, text: "The hackathon is the Blockchain Innovation Challenge", now: now)
+        try store.add(kind: .preference, text: "Quiet mornings", now: now)
+        let relevant = MemoryContextBuilder.build(request: "when is the hackaton?", items: store.items, relevantOnly: true, now: now)
+        XCTAssertTrue(relevant.contains("Blockchain Innovation Challenge"), "A one-letter slip still finds the memory")
+        XCTAssertFalse(relevant.contains("Quiet mornings"), "Per-turn context adds only related memories")
+        XCTAssertEqual(MemoryContextBuilder.build(request: "when is the next event", items: store.items, relevantOnly: true, now: now), "", "Filler words alone match nothing")
+        XCTAssertTrue(MemoryContextBuilder.build(request: "anything", items: store.items, now: now).contains("Quiet mornings"), "The session block still includes everything that fits")
+    }
     @MainActor
     func testBridgeScopeTypesTokensAndVersions() throws {
         let model = CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: directory), loadsAIConnection: false)

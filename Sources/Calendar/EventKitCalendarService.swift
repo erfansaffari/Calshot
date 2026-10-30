@@ -93,10 +93,9 @@ actor EventKitCalendarService: CalendarDestinationService {
             throw CalendarDestinationError.invalidDraft("search range must be positive and at most one year")
         }
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: [calendar])
-        let text = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return store.events(matching: predicate).filter {
-            text.isEmpty || ($0.title ?? "").localizedCaseInsensitiveContains(text) || ($0.notes ?? "").localizedCaseInsensitiveContains(text)
-        }.sorted { $0.startDate < $1.startDate }.prefix(40).map(snapshot)
+            CalendarSearchMatch.matches(query, title: $0.title, notes: $0.notes, location: $0.location)
+        }.sorted { $0.startDate < $1.startDate }.prefix(CalendarSearchMatch.resultLimit).map(snapshot)
     }
 
     func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? {
@@ -115,7 +114,7 @@ actor EventKitCalendarService: CalendarDestinationService {
             throw CalendarDestinationError.invalidDraft("The selected occurrence has an invalid date range.")
         }
         // EventKit's identifier lookup resolves the first occurrence. Search the selected interval
-        // instead, with no title or duration inference and no 40-result presentation cap.
+        // instead, with no title or duration inference and no search presentation cap.
         let predicate = store.predicateForEvents(withStart: selected.start.addingTimeInterval(-1),
                                                 end: selected.end.addingTimeInterval(1), calendars: [calendar])
         let candidates = store.events(matching: predicate).filter { Self.belongsToCalendar($0, calendar: calendar) }.map(snapshot)

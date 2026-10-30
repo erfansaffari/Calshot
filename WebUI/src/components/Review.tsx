@@ -35,6 +35,7 @@ export function Review({ state }: { state: AppState }) {
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [compare, setCompare] = useState<string>();
+  const [year, setYear] = useState("");
   const rows = state.proposals.filter((p) => p.inScope && !p.isFinished),
     finished = state.proposals.filter((p) => p.isFinished);
   const selected = rows.filter((p) => p.isSelected),
@@ -121,6 +122,21 @@ export function Review({ state }: { state: AppState }) {
               </Select>
             )}
           </header>
+          {rows.some(p => p.operation !== "delete" && p.draft.ambiguities.includes("missingYear")) && (
+            <form className="review-year" onSubmit={e => {
+              e.preventDefault();
+              if (/^\d{4}$/.test(year) && Number(year) >= 1900 && Number(year) <= 2200) {
+                void run("confirmProposalYears", { year: Number(year) });
+              }
+            }}>
+              <label>Confirm missing years
+                <input aria-label="Year for unconfirmed events" type="number" inputMode="numeric" placeholder="YYYY"
+                  min="1900" max="2200" step="1" value={year} disabled={busy || state.saving}
+                  onChange={e => setYear(e.target.value)} />
+              </label>
+              <button className="button secondary" disabled={busy || state.saving || !/^\d{4}$/.test(year) || Number(year) < 1900 || Number(year) > 2200}>Confirm year</button>
+            </form>
+          )}
           {move && (
             <div className="transfer-path">
               <div>
@@ -444,6 +460,7 @@ export function Review({ state }: { state: AppState }) {
           key={editing.id}
           item={editing}
           token={state.approvalToken}
+          suspended={state.notchExpanded === false}
           onClose={() => setEditing(undefined)}
         />
       )}

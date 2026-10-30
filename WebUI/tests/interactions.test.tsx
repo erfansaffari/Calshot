@@ -70,3 +70,17 @@ describe('Appearance settings',()=>{
   expect(command).toHaveBeenLastCalledWith({action:'appearance',mode:'dark'});
  });
 });
+
+it('confirms missing years using the current native review token without approving', async()=>{
+ const state=structuredClone(preview);
+ state.proposals[0].draft.ambiguities=['missingYear'];
+ const view=render(<Review state={state}/>);
+ const confirm=screen.getByRole('button',{name:'Confirm year'});
+ expect((confirm as HTMLButtonElement).disabled).toBe(true);
+ await userEvent.type(screen.getByRole('spinbutton',{name:'Year for unconfirmed events'}),'2026');
+ await userEvent.click(confirm);
+ expect(command).toHaveBeenLastCalledWith({action:'confirmProposalYears',token:state.approvalToken,year:2026});
+ state.proposals[0].draft.ambiguities=[];
+ view.rerender(<Review state={state}/>);
+ expect(screen.queryByRole('button',{name:'Confirm year'})).toBeNull();
+});

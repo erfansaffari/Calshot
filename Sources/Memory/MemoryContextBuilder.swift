@@ -1,13 +1,20 @@
 import Foundation
 
 enum MemoryContextBuilder {
+    private static let stopWords: Set<String> = ["the", "and", "for", "with", "what", "when", "where", "which", "who", "how", "you", "your", "can", "could", "would", "please", "this", "that", "are", "was", "has", "have", "add", "put", "make", "about", "from", "into", "next", "event", "events", "calendar"]
     /// Total character budget includes labels and framing. Memory never conveys authority.
-    static func build(request: String, items: [MemoryItem], characterBudget: Int = 6_000, now: Date = .now) -> String {
-        func words(_ value: String) -> Set<String> { Set(value.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).filter { $0.count > 1 }.map(String.init)) }
-        let query = words(request)
-        let ranked = items.filter { $0.status == .active && !$0.isExpired(at: now) }.sorted { a, b in
+    /// `relevantOnly` keeps just memories sharing a word with the request (per-turn additions).
+    static func build(request: String, items: [MemoryItem], characterBudget: Int = 6_000, relevantOnly: Bool = false, now: Date = .now) -> String {
+        // Same tolerant matching as calendar search (case, accents, punctuation, small typos), minus filler words.
+        let query = Set(CalendarSearchMatch.words(request).filter { $0.count > 2 && !stopWords.contains($0) })
+        var scores: [UUID: Int] = [:]
+        func score(_ item: MemoryItem) -> Int {
+            if let known = scores[item.id] { return known }
+            let value = query.filter { CalendarSearchMatch.matches($0, title: item.text, notes: nil) }.count * 10 + (item.kind == .routine ? 2 : 1)
+            scores[item.id] = value; return value
+        }
+        let ranked = items.filter { $0.status == .active && !$0.isExpired(at: now) && (!relevantOnly || score($0) >= 10) }.sorted { a, b in
             if (a.kind == .preference) != (b.kind == .preference) { return a.kind == .preference }
-            func score(_ item: MemoryItem) -> Int { words(item.text).intersection(query).count * 10 + (item.kind == .routine ? 2 : 1) }
             if score(a) != score(b) { return score(a) > score(b) }
             if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
             return a.id.uuidString < b.id.uuidString

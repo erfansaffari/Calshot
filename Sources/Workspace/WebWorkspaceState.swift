@@ -90,7 +90,7 @@ enum WebWorkspaceState {
         
         
         state["memory"] = .array(model.memoryRecords.map { record in
-            let title = record.calendarProposals.first?.draft.title ?? record.agentTranscript?.first(where: { $0.role == "user" })?.content ?? "Screenshot"
+            let title = record.isMainChat == true ? "Your conversation with Calshot" : record.calendarProposals.first?.draft.title ?? record.agentTranscript?.first(where: { $0.role == "user" })?.content ?? "Screenshot"
             var row: [String: JSONValue] = [
                 "id": .string(record.id.uuidString), "title": .string(String(title.prefix(180))),
                 "createdAt": .string(ISO8601DateFormatter().string(from: record.createdAt)),

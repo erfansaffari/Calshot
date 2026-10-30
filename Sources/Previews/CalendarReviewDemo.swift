@@ -13,7 +13,7 @@ actor CalendarDemoService: CalendarDestinationService {
         items.filter { CalendarDraftValidation.sameEvent($0, draft) }.map { $0.id.uuidString }
     }
     func searchEvents(query: String?, start: Date, end: Date, in destination: CalendarDestination) async throws -> [CalendarEventSnapshot] {
-        items.filter { ($0.startDate ?? .distantPast) < end && ($0.endDate ?? .distantFuture) > start && (query == nil || $0.title.localizedCaseInsensitiveContains(query!)) }.prefix(40).compactMap(snapshot)
+        items.filter { ($0.startDate ?? .distantPast) < end && ($0.endDate ?? .distantFuture) > start && CalendarSearchMatch.matches(query, title: $0.title, notes: $0.notes, location: $0.location) }.prefix(CalendarSearchMatch.resultLimit).compactMap(snapshot)
     }
     func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? {
         items.first { $0.id.uuidString == identifier }.flatMap(snapshot)

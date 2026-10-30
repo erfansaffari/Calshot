@@ -172,40 +172,6 @@ export function Sidebar({
         </nav>
         {expanded && state.page === "calendars" ? (
           <CalendarSidebar state={state} onAction={onAction} />
-        ) : expanded ? (
-          <div className="recent-tasks">
-            <p className="sidebar-section">Recent conversations</p>
-            {state.memory.length ? (
-              state.memory.slice(0, 7).map((record) => (
-                <button
-                  key={record.id}
-                  className="recent-task"
-                  disabled={
-                    state.running ||
-                    state.saving ||
-                    state.isCapturing ||
-                    state.isRecognizing
-                  }
-                  onClick={() =>
-                    void onAction("restoreMemory", { recordID: record.id })
-                  }
-                >
-                  <span className="truncate">{record.title}</span>
-                  <small>
-                    {record.completed
-                      ? record.completed + " changes confirmed"
-                      : record.count
-                        ? "Needs review"
-                        : "Conversation"}
-                  </small>
-                </button>
-              ))
-            ) : (
-              <p className="fine-print" style={{ padding: "0 10px" }}>
-                Your conversations will show up here.
-              </p>
-            )}
-          </div>
         ) : (
           <div className="sidebar-spacer" />
         )}

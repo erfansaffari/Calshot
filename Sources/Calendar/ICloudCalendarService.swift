@@ -89,10 +89,10 @@ actor ICloudCalendarService: CalendarDestinationService {
                 var eventRoute = route; eventRoute.resource = resource; eventRoute.recurrence = component.line("RECURRENCE-ID") ?? ""
                 var event = try component.snapshot(route: eventRoute, name: names[route.id] ?? "iCloud")
                 if original?.has("RRULE") == true || original?.has("RDATE") == true { event.isRecurring = true }
-                if event.start < end && event.end > start && (query == nil || query!.isEmpty || event.title.localizedCaseInsensitiveContains(query!) || (event.notes ?? "").localizedCaseInsensitiveContains(query!)) { events.append(event) }
+                if event.start < end && event.end > start && CalendarSearchMatch.matches(query, title: event.title, notes: event.notes, location: event.location) { events.append(event) }
             }
         }
-        return Array(events.sorted { $0.start < $1.start }.prefix(40))
+        return Array(events.sorted { $0.start < $1.start }.prefix(CalendarSearchMatch.resultLimit))
     }
     func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? {
         let (calendar, account) = try context(destination)

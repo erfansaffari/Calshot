@@ -88,6 +88,24 @@ final class AgentPermissionTests: XCTestCase {
         isReview(try await store.reserve(calendar, context: .directTaskSubmission(calendar), resources: resources(calendar)))
     }
 
+    func testGrantedDeleteAndMoveOfOneEventAllowButGuestsSeriesAndBatchesAsk() async throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try store(dir)
+        try await configure(store, grants: [grant(.calendarDelete, calendar: ["fictional-calendar"], fields: ["delete"]),
+                                            grant(.calendarMove, calendar: ["fictional-calendar", "other-calendar"], fields: ["destination"])])
+        let delete = operation(action: .calendarDelete, calendar: ["fictional-calendar"], fields: ["delete"])
+        _ = try allowed(await store.reserve(delete, context: .userRequested(), resources: resources(delete)))
+        let move = operation(action: .calendarMove, calendar: ["fictional-calendar", "other-calendar"], fields: ["destination"])
+        _ = try allowed(await store.reserve(move, context: .userRequested(), resources: resources(move, calendars: ["fictional-calendar", "other-calendar"])))
+        for risky in [operation(action: .calendarDelete, calendar: ["fictional-calendar"], fields: ["delete"], guests: true),
+                      operation(action: .calendarDelete, calendar: ["fictional-calendar"], fields: ["delete"], series: true),
+                      operation(action: .calendarDelete, count: 2, calendar: ["fictional-calendar"], fields: ["delete"])] {
+            isReview(try await store.reserve(risky, context: .userRequested(), resources: resources(risky)))
+        }
+        let background = operation(action: .calendarDelete, calendar: ["fictional-calendar"], fields: ["delete"])
+        isReview(try await store.reserve(background, context: .background(), resources: resources(background)))
+    }
+
     func testCalendarScopeFieldsAndDangerousEffects() async throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = try store(dir)

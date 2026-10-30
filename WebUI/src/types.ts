@@ -215,6 +215,8 @@ export interface VoiceState {
   permissions: { microphone: boolean; screen: boolean }; model: string; voice: string; monthlyCap: number;
 }
 export interface AppState {
+  /** Native presentation only; omitted in the full workspace and browser fixtures. */
+  notchExpanded?: boolean;
   voice?: VoiceState;
   voiceShortcut?: string;
   taskReview?: TaskReview;

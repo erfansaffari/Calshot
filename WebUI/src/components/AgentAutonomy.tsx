@@ -28,8 +28,8 @@ export function AgentAutonomy({ state }: { state: AppState }) {
           <div>
             <h3 id="autonomy-label">Let Calshot act without asking {busy && <Spinner />}</h3>
             <p>
-              Clear requests you type or say are saved right away: new events, event edits and every task change.
-              Deletes, moves, guests, repeating events and anything from a screenshot still ask first.
+              Requests you type or say are saved right away: adding, editing, deleting and moving events, and every task change.
+              Say “undo” to reverse a change. Events with guests, repeating events and anything from a screenshot still ask first.
               {partial && " Some actions are already on; switching this on turns on the rest."}
             </p>
           </div>
