@@ -25,6 +25,8 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
     /// Task-only creation under a saved explicit grant. Returns nil when the user must review the import
     /// (no matching grant or a dated deadline needs its own calendar review). Never approves calendar writes.
     var commitTaskOnlyImport: ((UUID) async throws -> JSONValue?)?
+    /// Saved calendar grant. Nil keeps every create and update on the existing review path.
+    var applyCalendarGrant: ((UUID, String, String, [AgentCalendarGrantRow]) async -> AgentCalendarGrantOutcome)?
     var availableToolNames: Set<String> {
         var names = CalendarAgent.toolNames
         if remember == nil { names.remove("remember") }; if recall == nil { names.remove("recall") }
@@ -269,9 +271,8 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 guard !requests.isEmpty else {
                     return JSONValue.object(["added": .array([]), "failed": .array([]), "skipped": .array(alreadyFinished.map(Self.skippedJSON))]).jsonString()
                 }
-                coordinator.replace(with: retained + requests)
-                try coordinator.persist?(coordinator.proposals)
-                return await awaitApproval(name: name, ids: Set(requests.map(\.id)), extraSkipped: alreadyFinished)
+                let rows = requests.map { AgentCalendarGrantRow(proposal: $0, recurring: false, guests: false) }
+                return await commitCalendarProposals(name: name, destinationID: calendar.id, destinationName: calendar.name, rows: rows, retained: retained, extraSkipped: alreadyFinished, sessionID: sessionID)
             case "move_events":
                 try CalendarToolDraftMapper.keys(fields, allowed: ["events", "calendarIdentifier"])
                 let destination = try resolveDestination(fields, required: true)
@@ -340,9 +341,13 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 onTargetDestination(calendarID)
                 var retained = coordinator.proposals
                 for index in retained.indices where !retained[index].isFinished { retained[index].isSelected = false }
-                coordinator.replace(with: retained + [proposal])
-                try coordinator.persist?(coordinator.proposals)
-                return await awaitApproval(name: name, ids: [proposal.id])
+                if name == "delete_event" {
+                    coordinator.replace(with: retained + [proposal])
+                    try coordinator.persist?(coordinator.proposals)
+                    return await awaitApproval(name: name, ids: [proposal.id])
+                }
+                let row = AgentCalendarGrantRow(proposal: proposal, recurring: existing.isRecurring, guests: false)
+                return await commitCalendarProposals(name: name, destinationID: calendarID, destinationName: calendarName, rows: [row], retained: retained, extraSkipped: [], sessionID: sessionID)
             default: throw CalendarToolArgumentError("Unknown calendar tool.")
             }
         } catch is CancellationError { return #"{"cancelled":true}"# }
@@ -397,6 +402,88 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
     }
 
     private var extraSkipped: [CalendarActionProposal] = []
+
+    /// Applies a saved calendar grant per row, then opens the existing review for whatever was not saved.
+    private func commitCalendarProposals(name: String, destinationID: String, destinationName: String, rows: [AgentCalendarGrantRow], retained: [CalendarActionProposal], extraSkipped: [CalendarActionProposal], sessionID: UUID) async -> String {
+        guard let applyCalendarGrant else {
+            coordinator.replace(with: retained + rows.map(\.proposal))
+            do { try coordinator.persist?(coordinator.proposals) }
+            catch { return JSONValue.object(["error": .string(error.localizedDescription)]).jsonString() }
+            return await awaitApproval(name: name, ids: Set(rows.map(\.proposal.id)), extraSkipped: extraSkipped)
+        }
+        let outcome = await applyCalendarGrant(sessionID, destinationID, destinationName, rows)
+        guard self.sessionID == sessionID, !sessionCancelled else { return #"{"cancelled":true}"# }
+        switch outcome {
+        case .blocked(let message):
+            return JSONValue.object(["error": .string(message), "blocked": .bool(true), "saved": .array([]), "awaitingReview": .array([]),
+                "note": .string("Automatic calendar saves are paused because saved permissions could not be read. Nothing was saved.")]).jsonString()
+        case .split(let saved, let review, let failed):
+            onStep(saved.isEmpty ? "Waiting for approval" : "Saving granted events")
+            coordinator.replace(with: retained + saved + review.map(\.proposal))
+            var history = ""
+            do { try coordinator.persist?(coordinator.proposals) }
+            catch { history = error.localizedDescription }
+            guard self.sessionID == sessionID, !sessionCancelled else { return #"{"cancelled":true}"# }
+            let reviewPayload: JSONValue?
+            if review.isEmpty { reviewPayload = nil }
+            else {
+                let raw = await awaitApproval(name: name, ids: Set(review.map(\.proposal.id)), extraSkipped: extraSkipped)
+                reviewPayload = try? JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))
+            }
+            guard self.sessionID == sessionID else { return #"{"cancelled":true}"# }
+            return Self.calendarGrantToolResult(name: name, saved: saved, review: review, failed: failed, extraSkipped: extraSkipped, reviewPayload: reviewPayload, historyError: history, proposals: coordinator.proposals)
+        }
+    }
+
+    private static func calendarGrantToolResult(name: String, saved: [CalendarActionProposal], review: [(proposal: CalendarActionProposal, reason: String)], failed: [(proposal: CalendarActionProposal, message: String)], extraSkipped: [CalendarActionProposal], reviewPayload: JSONValue?, historyError: String, proposals: [CalendarActionProposal]) -> String {
+        func outcome(_ id: UUID) -> String {
+            guard let item = proposals.first(where: { $0.id == id }) else { return "skipped" }
+            if item.state == .failed { return "failed" }
+            if item.isFinished { return item.state.rawValue }
+            return "skipped"
+        }
+        let savedRows: [JSONValue] = saved.map { item in
+            .object(["proposalID": .string(item.id.uuidString), "title": .string(item.draft.title), "outcome": .string("saved"),
+                     "eventIdentifier": .string(item.receipt?.eventIdentifier ?? ""), "calendarName": .string(item.receipt?.calendarName ?? item.targetCalendarName ?? ""),
+                     "savedAt": item.receipt.map { .string(ISO8601DateFormatter().string(from: $0.savedAt)) } ?? .null])
+        }
+        let awaiting: [JSONValue] = review.map { row in
+            let item = proposals.first { $0.id == row.proposal.id }
+            var fields: [String: JSONValue] = ["proposalID": .string(row.proposal.id.uuidString), "title": .string(row.proposal.draft.title), "reason": .string(row.reason), "outcome": .string(outcome(row.proposal.id))]
+            if let identifier = item?.receipt?.eventIdentifier, !identifier.isEmpty { fields["eventIdentifier"] = .string(identifier) }
+            if item?.state == .failed, let error = item?.error { fields["error"] = .string(error) }
+            return .object(fields)
+        }
+        let failedRows: [JSONValue] = failed.map { row in
+            .object(["proposalID": .string(row.proposal.id.uuidString), "title": .string(row.proposal.draft.title), "error": .string(row.message)])
+        }
+        var note = "Rows in saved were written immediately; their receipts are the only proof they were saved. Rows in awaitingReview were not saved by the calendar permission. Report each row on its own."
+        if !historyError.isEmpty { note += " Calendar history could not be updated: " + historyError }
+        if name == "update_event", review.isEmpty, saved.count == 1, failed.isEmpty {
+            return JSONValue.object(["updated": .bool(true), "eventIdentifier": .string(saved[0].receipt?.eventIdentifier ?? ""),
+                "saved": .array(savedRows), "awaitingReview": .array([]), "failed": .array([]), "note": .string(note)]).jsonString()
+        }
+        if name == "update_event", saved.isEmpty, let payload = reviewPayload?.objectValue {
+            var fields = payload
+            fields["saved"] = .array([]); fields["awaitingReview"] = .array(awaiting); fields["note"] = .string(note)
+            if !failedRows.isEmpty { fields["failed"] = .array(failedRows) }
+            return JSONValue.object(fields).jsonString()
+        }
+        var added = saved.filter { $0.state == .added }.map { item in
+            JSONValue.object(["proposalID": .string(item.id.uuidString), "eventIdentifier": .string(item.receipt?.eventIdentifier ?? "")])
+        }
+        var failedOut = failedRows
+        var skipped = extraSkipped.map(skippedJSON)
+        if let payload = reviewPayload?.objectValue {
+            added += payload["added"]?.arrayValue ?? []
+            failedOut += payload["failed"]?.arrayValue ?? []
+            if review.isEmpty { skipped += payload["skipped"]?.arrayValue ?? [] }
+            else { skipped = (payload["skipped"]?.arrayValue ?? []) }
+        }
+        return JSONValue.object(["added": .array(added), "failed": .array(failedOut), "skipped": .array(skipped),
+            "saved": .array(savedRows), "awaitingReview": .array(awaiting), "note": .string(note)]).jsonString()
+    }
+
     private func awaitApproval(name: String, ids: Set<UUID>, extraSkipped: [CalendarActionProposal] = []) async -> String {
         guard approvalContinuation == nil else { return #"{"error":"Another approval is waiting."}"# }
         coordinator.approvalScope = ids

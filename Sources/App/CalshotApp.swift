@@ -200,6 +200,7 @@ final class CalshotModel: ObservableObject {
     @Published var agentPermissionPolicy: AgentPermissionPolicy?
     @Published var agentPermissionError: String?
     @Published var agentPermissionNotice: String?
+    @Published var agentCalendarNotice: String?
     @Published var agentPermissionBusy = false
     @Published var agentCommand = ""
     var voiceShortcut: GlobalShortcut = {
