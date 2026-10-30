@@ -472,7 +472,7 @@ final class CalshotModel: ObservableObject {
 
     func registerShortcut() {
         shortcutRegistrationStatus = HotKeyController.shared.register(shortcut)
-        HotKeyController.shared.onVoicePress = { [weak self] in Task { @MainActor in await self?.voiceSession.toggle() } }
+        HotKeyController.shared.onVoicePress = { [weak self] pressed in Task { @MainActor in await self?.voiceSession.talk(pressed) } }
         let voiceStatus = HotKeyController.shared.registerVoice(voiceShortcut)
         reportVoiceShortcutRegistration(voiceStatus)
     }

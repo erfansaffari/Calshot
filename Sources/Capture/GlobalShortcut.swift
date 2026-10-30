@@ -30,7 +30,8 @@ struct GlobalShortcut: Codable, Equatable {
 final class HotKeyController {
     static let shared = HotKeyController()
     var onPress: (() -> Void)?
-    var onVoicePress: (() -> Void)?
+    /// Voice is push-to-talk: true on key down, false on key up.
+    var onVoicePress: ((Bool) -> Void)?
     private var voiceRef: EventHotKeyRef?
     private var hotKeyRef: EventHotKeyRef?
     private var handlerInstalled = false
@@ -42,16 +43,17 @@ final class HotKeyController {
     func register(_ shortcut: GlobalShortcut) -> OSStatus {
         unregister()
         if !handlerInstalled {
-            var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            var eventTypes = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+                              EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
             let handlerStatus = InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
                 guard let userData else { return noErr }
                 let controller = Unmanaged<HotKeyController>.fromOpaque(userData).takeUnretainedValue()
                 var key = EventHotKeyID()
                 if let event { GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &key) }
-                let id = key.id
-                DispatchQueue.main.async { controller.dispatch(id: id) }
+                let id = key.id, pressed = event.map { GetEventKind($0) == UInt32(kEventHotKeyPressed) } ?? true
+                DispatchQueue.main.async { controller.dispatch(id: id, pressed: pressed) }
                 return noErr
-            }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), nil)
+            }, eventTypes.count, &eventTypes, Unmanaged.passUnretained(self).toOpaque(), nil)
             guard handlerStatus == noErr else { lastRegistrationStatus = handlerStatus; return handlerStatus }
             handlerInstalled = true
         }
@@ -63,16 +65,13 @@ final class HotKeyController {
         return lastRegistrationStatus
     }
 
-    func dispatch(id: UInt32) {
-        NSLog("Calshot: hotkey pressed id=%u", id)
-        switch id { case 1: onPress?(); case 2: onVoicePress?(); default: break }
+    func dispatch(id: UInt32, pressed: Bool = true) {
+        switch id { case 1: if pressed { onPress?() }; case 2: onVoicePress?(pressed); default: break }
     }
     func unregisterVoice() { if let voiceRef { UnregisterEventHotKey(voiceRef); self.voiceRef = nil } }
     @discardableResult func registerVoice(_ shortcut: GlobalShortcut) -> OSStatus {
         if let voiceRef { UnregisterEventHotKey(voiceRef); self.voiceRef = nil }
-        let status = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: OSType(0x43414C53), id: 2), GetApplicationEventTarget(), 0, &voiceRef)
-        NSLog("Calshot: register voice shortcut %@ (keyCode=%u modifiers=%u), status=%d", shortcut.label, shortcut.keyCode, shortcut.modifiers, status)
-        return status
+        return RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: OSType(0x43414C53), id: 2), GetApplicationEventTarget(), 0, &voiceRef)
     }
     func unregister() {
         if let hotKeyRef { UnregisterEventHotKey(hotKeyRef); self.hotKeyRef = nil }

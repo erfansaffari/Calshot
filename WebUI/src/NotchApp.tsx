@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { ArrowUp, Check, ExternalLink, Mic, ScanLine, Square, X } from "lucide-react";
 import Markdown from "react-markdown";
 import { command, useAppState } from "./bridge";
@@ -20,6 +20,15 @@ export default function NotchApp() {
   const [dismissedOutcome, setDismissedOutcome] = useState("");
   const voice = state.voice;
   const voiceRun = (action: string, extra: Record<string, unknown> = {}) => run(action, { token: voice?.token, ...extra });
+  // Push-to-talk: press sends the current token; release is accepted after the press rotates it.
+  const talkProps = {
+    onPointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => { if (e.button !== 0) return; e.currentTarget.setPointerCapture?.(e.pointerId); void voiceRun("voiceTalk", { pressed: true }); },
+    onPointerUp: () => void run("voiceTalk", { pressed: false }),
+    onPointerCancel: () => void run("voiceTalk", { pressed: false }),
+    onKeyDown: (e: ReactKeyboardEvent) => { if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); void voiceRun("voiceTalk", { pressed: true }); } },
+    onKeyUp: (e: ReactKeyboardEvent) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); void run("voiceTalk", { pressed: false }); } },
+  };
+  const voiceLabel = !voice ? "" : voice.talking ? "Listening…" : voice.state === "thinking" ? "Thinking…" : voice.caption || (voice.state === "connecting" ? "Connecting…" : `Hold ${voice.shortcut || "⌃⇧V"} to talk`);
   const rows = state.proposals.filter(p => p.inScope && !p.isFinished);
   const selected = rows.filter(p => p.isSelected);
   const busy = state.running || state.saving || state.isRecognizing || state.isCapturing;
@@ -91,8 +100,9 @@ export default function NotchApp() {
   return <div className="notch-shell">
     <div className="notch-bar">
       {voice?.active && !state.waitingApproval && !taskReview ? <>
-        <Mic size={16} /><div className="voice-level" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={1} aria-valuenow={voice.inputLevel}><i style={{ transform: `scaleX(${Math.max(.03, voice.inputLevel)})` }} /></div>
-        <span className="notch-label" role="status">{voice.state === "thinking" ? "Thinking…" : voice.caption || (voice.state === "connecting" ? "Connecting…" : "Listening · Hold ⌥ to draw")}</span>
+        <button className={"icon-button voice-talk" + (voice.talking ? " is-talking" : "")} aria-label="Hold to talk" aria-pressed={Boolean(voice.talking)} title={`Hold to talk (${voice.shortcut || "⌃⇧V"}). Hold ⌥ to draw.`} {...talkProps}><Mic size={16} /></button>
+        {voice.talking && <div className="voice-level" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={1} aria-valuenow={voice.inputLevel}><i style={{ transform: `scaleX(${Math.max(.03, voice.inputLevel)})` }} /></div>}
+        <span className="notch-label" role="status" title={voiceLabel}>{voiceLabel}</span>
         <button className="button secondary" onClick={() => void voiceRun("stopVoice")}>Stop</button>
         <button className="text-button" aria-label="Voice usage" onClick={() => setConversation(!conversation)}>Details</button>
       </> : working ? <>
@@ -116,7 +126,7 @@ export default function NotchApp() {
         </form>
       </>}
       {voice?.active && voice.permissions.screen && <span className="fine-print">Calshot can see your screen</span>}
-      {!voice?.active && <button className="icon-button" aria-label="Start voice" disabled={busy} onClick={() => void voiceRun("startVoice")}><Mic size={15} /></button>}
+      {!voice?.active && <button className="icon-button" aria-label="Hold to talk" title={`Hold to talk (${voice?.shortcut || "⌃⇧V"})`} disabled={busy} {...talkProps}><Mic size={15} /></button>}
       <button className="icon-button notch-popout" aria-label="Open full app" title="Open full app" onClick={() => void run("openWorkspace")}><ExternalLink size={15} /></button>
     </div>
     {detail && <div className="notch-details">

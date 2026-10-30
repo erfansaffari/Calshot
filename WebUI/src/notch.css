@@ -53,3 +53,5 @@ html[data-surface="notch"] .event-form footer { position:sticky; bottom:-14px; b
 .voice-level { width: 38px; height: 5px; overflow: hidden; border-radius: 4px; background: #333; }
 .voice-level i { display: block; height: 100%; background: #78aaff; transform-origin: left; transition: transform 100ms ease-out; }
 @media (prefers-reduced-motion: reduce) { .voice-level i { transition: none; } }
+.voice-talk { touch-action: none; user-select: none; }
+.voice-talk.is-talking { color: #fff; background: #3b6fd8; box-shadow: 0 0 0 3px rgba(120, 170, 255, .28); }

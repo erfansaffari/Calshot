@@ -65,7 +65,7 @@ final class CalendarAgent: ObservableObject {
             ])]))
         }
         let instructions = Self.instructions + "\n" + personalMemoryContext + Self.memoryContext(memory)
-            + "\nCurrent instant: \(ISO8601DateFormatter().string(from: .now)). Default timezone: \(TimeZone.current.identifier)."
+            + "\n" + Self.clockContext()
         for index in 0..<8 {
             try check(sessionID)
             streamingText = ""
@@ -142,6 +142,12 @@ final class CalendarAgent: ObservableObject {
     }
     static let toolNames: Set<String> = ["remember", "recall", "list_tasks", "get_tasks", "get_selected_event_context", "link_event_to_task", "update_tasks", "set_task_completion", "set_task_archived", "create_tasks", "list_friends", "search_friend_events", "search_events", "read_screen_text", "ask_user", "create_events", "update_event", "delete_event", "move_events"]
     static let screenshotPrompt = "Read the screenshot and prepare calendar actions for every relevant dated item: appointments, meetings, classes, shifts, exams, deadlines, trips, reservations, reminders and other scheduled activities. Follow any user filters. Use visible headings and surrounding context to understand the dates. Include all new items in one review, preserving unresolved details without guessing."
+    /// Local wall-clock context. A UTC instant alone makes "tomorrow" wrong in the evening west of Greenwich.
+    static func clockContext(now: Date = .now, timeZone: TimeZone = .current) -> String {
+        let iso = ISO8601DateFormatter(); iso.timeZone = timeZone
+        let day = DateFormatter(); day.locale = Locale(identifier: "en_US_POSIX"); day.timeZone = timeZone; day.dateFormat = "EEEE, MMMM d, yyyy"
+        return "Current instant: \(iso.string(from: now)) (\(day.string(from: now)), local time). Default timezone: \(timeZone.identifier)."
+    }
     static let instructions = """
     You are Calshot, a practical calendar assistant for the user's connected calendars. Turn the user's request into a useful answer or a concrete calendar review with the fewest necessary interruptions. Be concise and specific. Act only within the user's requested scope.
 

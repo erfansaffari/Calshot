@@ -494,10 +494,19 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             throw CalendarToolArgumentError("Set up your AI service before confirming calendars.")
         }
         if model.voiceSession.active {
-            let safe: Set<String> = ["ready", "notchLayout", "collapseNotch", "openWorkspace", "navigate", "authSignOut", "appearance", "stop", "stopVoice", "setVoiceDrawing", "voiceAISettings", "voiceMicrophoneSettings", "screenSettings", "approve", "skipApproval", "editProposal", "selectProposal", "compareDuplicate", "allowDuplicate", "approveTaskChange", "cancelTaskChange", "answer", "cancelQuestion", "approveMemory", "rejectMemory", "agentEnabled"]
+            let safe: Set<String> = ["ready", "notchLayout", "collapseNotch", "openWorkspace", "navigate", "authSignOut", "appearance", "stop", "stopVoice", "voiceTalk", "setVoiceDrawing", "voiceAISettings", "voiceMicrophoneSettings", "screenSettings", "approve", "skipApproval", "editProposal", "selectProposal", "compareDuplicate", "allowDuplicate", "approveTaskChange", "cancelTaskChange", "answer", "cancelQuestion", "approveMemory", "rejectMemory", "agentEnabled"]
             guard safe.contains(action) else { throw CalendarToolArgumentError("Voice mode is on — stop it first") }
         }
         switch action {
+        case "voiceTalk":
+            // Press is token-bound; release only ends the caller's own held turn, so it stays valid after the press rotates the token.
+            guard Set(body.keys).isSubset(of: ["action", "id", "token", "pressed"]), let raw = body["pressed"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID(), let pressed = raw as? Bool else { throw CalendarToolArgumentError("Invalid voice control.") }
+            let voice = model.voiceSession
+            if pressed {
+                guard body["token"] as? String == voice.token else { throw CalendarToolArgumentError("Voice controls changed. Try again.") }
+                guard model.account.canUseWorkspace else { throw CalendarToolArgumentError("Sign in and finish onboarding to use voice.") }
+            }
+            await voice.talk(pressed)
         case "startVoice", "stopVoice", "setVoiceDrawing", "acknowledgeVoiceBilling", "voiceSettings", "voiceMicrophoneSettings", "voiceShortcut", "voiceAISettings", "voiceShortcutRecording":
             let voice = model.voiceSession
             var fields: Set<String> = ["action", "id", "token"]

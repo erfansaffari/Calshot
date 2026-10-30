@@ -183,7 +183,7 @@ enum RealtimeVoiceEvent: Equatable {
             // Code, type and param are diagnostic only; the message stays private in the local log.
             realtimeLog.error("Realtime error: type=\(loggable(e["type"]), privacy: .public) code=\(loggable(e["code"]), privacy: .public) param=\(loggable(e["param"]), privacy: .public) message=\(e["message"] as? String ?? "", privacy: .private)")
             let raw = e["code"] as? String ?? ""
-            let code = ["invalid_api_key", "insufficient_quota", "rate_limit_exceeded", "invalid_request_error", "conversation_already_has_active_response"].contains(raw) ? raw : "service_error"
+            let code = ["invalid_api_key", "insufficient_quota", "rate_limit_exceeded", "invalid_request_error", "conversation_already_has_active_response", "response_cancel_not_active", "input_audio_buffer_commit_empty"].contains(raw) ? raw : "service_error"
             return .error(code: code, message: code == "invalid_api_key" ? RealtimeConnectionError.authentication.description : code == "insufficient_quota" ? RealtimeConnectionError.quota.description : "Voice could not complete the request. Try again.")
         default: return .unknown(type)
         }
@@ -203,6 +203,8 @@ final class RealtimeVoiceClient: ObservableObject {
         var transcriptionModel = "gpt-4o-mini-transcribe"
         var tools: [JSONValue] = []
         var automaticResponse = true
+        /// Push-to-talk: no server voice detection; the caller commits each held turn.
+        var pushToTalk = false
     }
     enum State: Equatable { case disconnected, connecting, ready, responding, failed(String) }
     @Published private(set) var state: State = .disconnected
@@ -280,9 +282,10 @@ final class RealtimeVoiceClient: ObservableObject {
         _ = flushAudio(); currentAudio = nil; pendingCalls = []; outstandingTools = []; responseInFlight = false; responsePending = false; suppressAudio = false; state = .disconnected
     }
     private func session(_ c: Configuration) -> [String: Any] {
-        ["type": "realtime", "model": c.model, "instructions": c.instructions, "output_modalities": ["audio"],
+        let turnDetection: Any = c.pushToTalk ? NSNull() : ["type": "server_vad", "create_response": c.automaticResponse, "interrupt_response": false] as [String: Any]
+        return ["type": "realtime", "model": c.model, "instructions": c.instructions, "output_modalities": ["audio"],
          "audio": ["input": ["format": ["type": "audio/pcm", "rate": 24000], "transcription": ["model": c.transcriptionModel],
-                               "turn_detection": ["type": "server_vad", "create_response": c.automaticResponse, "interrupt_response": false]],
+                               "turn_detection": turnDetection] as [String: Any],
                    "output": ["format": ["type": "audio/pcm", "rate": 24000], "voice": c.voice]],
          "tools": c.tools.compactMap(Self.realtimeTool), "tool_choice": "auto"]
     }
@@ -330,6 +333,16 @@ final class RealtimeVoiceClient: ObservableObject {
         do { try await send(.responseCreate) } catch { responseInFlight = false; throw error }
     }
     func cancelResponse() async throws { try requireReady(); try await send(.cancel) }
+    /// User barge-in: stop playback now, cancel the in-flight response and truncate what was not heard.
+    func interrupt() async throws {
+        guard state == .ready || state == .responding else { return }
+        let played = flushAudio()
+        guard responseInFlight || currentAudio != nil else { return }
+        suppressAudio = true; pendingCalls = []
+        if responseInFlight { try await send(.cancel) }
+        if let (item, index) = currentAudio { try await send(.truncate, ["item_id": item, "content_index": index, "audio_end_ms": max(0, played)]) }
+        currentAudio = nil
+    }
     private func handle(_ event: RealtimeVoiceEvent) async throws {
         switch event {
         case .sessionUpdated: state = .ready
@@ -364,6 +377,9 @@ final class RealtimeVoiceClient: ObservableObject {
             }
         case .error(let code, let message):
             if code == "conversation_already_has_active_response" { responseInFlight = true; responsePending = true; return }
+            // Push-to-talk races: the response already finished, or the held turn had no audio. Neither ends the session.
+            if code == "response_cancel_not_active" { responseInFlight = false; return }
+            if code == "input_audio_buffer_commit_empty" { return }
             if code == "invalid_api_key" { throw RealtimeConnectionError.authentication }
             if code == "insufficient_quota" { throw RealtimeConnectionError.quota }
             state = .failed(message); _ = flushAudio(); transport?.close()

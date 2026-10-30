@@ -90,9 +90,17 @@ function voiceFixture() {
   mock.state.proposals = []; mock.state.messages = []; mock.state.running = false; mock.state.waitingApproval = false;
   mock.state.voice = { token: "voice-current", state: "listening", active: true, inputLevel: .5, caption: "", userTranscript: "", drawing: false, usage: { seconds: 12, estimatedCost: .03 }, needsKey: false, needsAcknowledgement: false, permissions: { microphone: true, screen: true }, model: "fictional-model", voice: "marin", monthlyCap: 10 };
 }
-it("shows live voice level and stops with its current session token", async () => {
-  voiceFixture(); render(<NotchApp />);
-  expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe("0.5");
+it("holds to talk: press uses the session token, release does not need it", async () => {
+  voiceFixture(); mock.state.voice!.shortcut = "⌃⇧V"; render(<NotchApp />);
+  expect(screen.queryByRole("meter")).toBeNull(); expect(screen.getByText("Hold ⌃⇧V to talk")).toBeTruthy();
+  const talk = screen.getByRole("button", { name: "Hold to talk" });
+  fireEvent.pointerDown(talk, { button: 0, pointerId: 1 }); fireEvent.pointerUp(talk, { pointerId: 1 });
+  expect(mock.command).toHaveBeenCalledWith({ action: "voiceTalk", token: "voice-current", pressed: true });
+  expect(mock.command).toHaveBeenCalledWith({ action: "voiceTalk", pressed: false });
+});
+it("shows live voice level while talking and stops with its current session token", async () => {
+  voiceFixture(); mock.state.voice!.talking = true; render(<NotchApp />);
+  expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe("0.5"); expect(screen.getByText("Listening…")).toBeTruthy();
   await userEvent.click(screen.getByRole("button", { name: "Stop", exact: true }));
   expect(mock.command).toHaveBeenCalledWith({ action: "stopVoice", token: "voice-current" });
 });
