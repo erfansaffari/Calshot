@@ -64,6 +64,9 @@ final class VoiceAudioEngine: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var isPlaying = false
     @Published private(set) var inputLevel: Float = 0
+    /// Approximate loudness of queued speech (chunk RMS), for the speaking animation; 0 when silent.
+    var outputLevel: Float { isPlaying ? lastOutputLevel : 0 }
+    private var lastOutputLevel: Float = 0
     /// False when the device pair cannot run voice processing; capture then pauses during playback so Calshot does not hear itself.
     private(set) var echoCancellation = false
     @Published private(set) var failure: AudioError?
@@ -168,6 +171,7 @@ final class VoiceAudioEngine: ObservableObject {
               data.count % 2 == 0 else { throw AudioError.graph }
         let samples = VoicePCM.decode(data)
         guard !samples.isEmpty else { return }
+        lastOutputLevel = min(1, VoicePCM.rms(samples) * 4)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
               let channel = buffer.floatChannelData?[0] else { throw AudioError.conversion }
         buffer.frameLength = AVAudioFrameCount(samples.count)

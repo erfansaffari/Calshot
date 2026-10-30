@@ -147,8 +147,20 @@ describe("Settings task permissions", () => {
   const settings = () => {
     mock.state = structuredClone(preview);
     mock.state.page = "settings"; mock.state.settingsSection = "privacy";
-    return render(<SettingsPage state={mock.state} />);
+    const view = render(<SettingsPage state={mock.state} />);
+    fireEvent.click(screen.getByRole("button", { name: "Customize" }));
+    return view;
   };
+  it("one autonomy switch saves every routine action against the current revision", async () => {
+    mock.state = structuredClone(preview); mock.state.page = "settings"; mock.state.settingsSection = "privacy";
+    render(<SettingsPage state={mock.state} />);
+    const toggle = screen.getByRole("switch", { name: /Let Calshot act without asking/ });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByRole("heading", { name: "Task actions" })).toBeNull(); // details stay behind Customize
+    await userEvent.click(toggle);
+    expect(mock.command).toHaveBeenCalledWith({ action: "saveAutonomy", revision: mock.state.agentPermissions!.revision, enabled: true });
+  });
+
   it("starts with nothing enabled, no background control and no reorder promise", () => {
     settings();
     const boxes = within(screen.getByRole("heading", { name: "Task actions" }).closest("section")!).getAllByRole("checkbox") as HTMLInputElement[];
@@ -180,7 +192,7 @@ describe("Settings task permissions", () => {
     mock.state = structuredClone(preview);
     mock.state.agentPermissions!.families[2] = { ...mock.state.agentPermissions!.families[2], enabled: true };
     mock.state.agentPermissions!.expiresAt = "2026-11-02T12:00:00Z";
-    render(<SettingsPage state={{ ...mock.state, page: "settings", settingsSection: "privacy" }} />);
+    render(<SettingsPage state={{ ...mock.state, page: "settings", settingsSection: "privacy" }} />); fireEvent.click(screen.getByRole("button", { name: "Customize" }));
     const save = screen.getByRole("button", { name: "Save task permissions" }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Allow for" }), "90");
@@ -192,7 +204,7 @@ describe("Settings task permissions", () => {
   it("does not renew an existing period when only another switch changes", async () => {
     mock.state = structuredClone(preview);
     mock.state.agentPermissions!.families[2] = { ...mock.state.agentPermissions!.families[2], enabled: true };
-    render(<SettingsPage state={{ ...mock.state, page: "settings", settingsSection: "privacy" }} />);
+    render(<SettingsPage state={{ ...mock.state, page: "settings", settingsSection: "privacy" }} />); fireEvent.click(screen.getByRole("button", { name: "Customize" }));
     await userEvent.click(screen.getByRole("checkbox", { name: "Complete or reopen tasks" }));
     await userEvent.click(screen.getByRole("button", { name: "Save task permissions" }));
     expect(mock.command).toHaveBeenCalledWith(expect.objectContaining({ action: "saveAgentPermissions", renew: false }));
@@ -210,7 +222,7 @@ describe("Settings task permissions", () => {
   it("pauses controls with a persistent error when the permission store cannot be opened", () => {
     mock.state = structuredClone(preview);
     mock.state.agentPermissions = { ...mock.state.agentPermissions!, loaded: false, error: "Saved task permissions couldn’t be read safely. The file was kept and task changes by Calshot are paused." };
-    render(<SettingsPage state={{ ...mock.state, page: "settings", settingsSection: "privacy" }} />);
+    render(<SettingsPage state={{ ...mock.state, page: "settings", settingsSection: "privacy" }} />); fireEvent.click(screen.getByRole("button", { name: "Customize" }));
     expect(screen.getAllByRole("alert").every((alert) => alert.textContent?.includes("task changes by Calshot are paused"))).toBe(true);
     expect(screen.getAllByRole("checkbox").every((box) => (box as HTMLInputElement).disabled)).toBe(true);
     expect((screen.getByRole("button", { name: "Save task permissions" }) as HTMLButtonElement).disabled).toBe(true);
@@ -231,7 +243,7 @@ describe("Settings task permissions", () => {
   it("adopts a newer native revision and flags an expired grant instead of silently enabling it", () => {
     mock.state = structuredClone(preview);
     mock.state.agentPermissions!.families[2] = { ...mock.state.agentPermissions!.families[2], expired: true };
-    render(<SettingsPage state={{ ...mock.state, page: "settings", settingsSection: "privacy" }} />);
+    render(<SettingsPage state={{ ...mock.state, page: "settings", settingsSection: "privacy" }} />); fireEvent.click(screen.getByRole("button", { name: "Customize" }));
     expect(screen.getByText(/Earlier permission expired/)).toBeTruthy();
     expect((screen.getByRole("checkbox", { name: "Edit tasks" }) as HTMLInputElement).checked).toBe(false);
   });

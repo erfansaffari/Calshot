@@ -679,6 +679,15 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             }
             let renew = (body["renew"] as? Bool) == true && CFGetTypeID((body["renew"] ?? false) as CFTypeRef) == CFBooleanGetTypeID()
             try await model.saveAgentTaskPermissions(revision: UInt64(revisionNumber.int64Value), families: families, days: days, renew: renew)
+        case "saveAutonomy":
+            guard !isNotch, model.workspaceSelection == .settings else { throw CalendarToolArgumentError("Change permissions in Settings.") }
+            try requireIdle()
+            guard Set(body.keys).isSubset(of: ["id", "action", "revision", "enabled"]),
+                  let revisionNumber = body["revision"] as? NSNumber, CFGetTypeID(revisionNumber) != CFBooleanGetTypeID(), revisionNumber.int64Value >= 0,
+                  let raw = body["enabled"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID(), let enabled = raw as? Bool else {
+                throw CalendarToolArgumentError("Choose a valid autonomy setting.")
+            }
+            try await model.saveAgentAutonomy(enabled: enabled, revision: UInt64(revisionNumber.int64Value))
         case "saveCalendarPermissions":
             guard !isNotch, model.workspaceSelection == .settings else { throw CalendarToolArgumentError("Change calendar permissions in Settings.") }
             try requireIdle()

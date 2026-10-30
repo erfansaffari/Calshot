@@ -26,6 +26,7 @@ extension RealtimeVoiceClient: VoiceClient {}
     var onError: ((VoiceAudioEngine.AudioError) -> Void)? { get set }
     var isPlaying: Bool { get }
     var inputLevel: Float { get }
+    var outputLevel: Float { get }
     func start() throws
     func stop()
     func flush() -> Int
@@ -331,7 +332,7 @@ extension FocusFrameComposer: VoiceFrames {}
     }
     var snapshot: JSONValue { .object([
         "token": .string(token), "state": .string(state.rawValue), "active": .bool(active),
-        "inputLevel": .number(Double(min(1, max(0, audio.inputLevel)))), "caption": .string(caption), "userTranscript": .string(userTranscript),
+        "inputLevel": .number(Double(min(1, max(0, audio.inputLevel)))), "outputLevel": .number(Double(min(1, max(0, audio.outputLevel)))), "caption": .string(caption), "userTranscript": .string(userTranscript),
         "drawing": .bool(drawing), "talking": .bool(talking || releasing), "shortcut": .string(shortcutLabel()), "usage": .object(["seconds": .number(seconds), "estimatedCost": .number(cost)]),
         "error": error.map(JSONValue.string) ?? .null, "needsKey": .bool(needsKey), "needsAcknowledgement": .bool(needsAcknowledgement),
         "permissions": .object(["microphone": .bool(microphone), "screen": .bool(screen)]),
@@ -447,6 +448,7 @@ extension CalshotModel {
     var onError: ((VoiceAudioEngine.AudioError) -> Void)?
     var isPlaying = false, running = false
     var inputLevel: Float = 0.4
+    var outputLevel: Float = 0.5
     func start() throws { running = true }
     func stop() { running = false }
     func flush() -> Int { 0 }
@@ -472,7 +474,7 @@ extension CalshotModel {
 }
 extension VoiceSessionController {
     func showPreview(_ value: State) {
-        state = value; caption = value == .speaking ? "You have two fictional appointments tomorrow." : ""
+        state = value; talking = value == .listening; caption = value == .speaking ? "You have two fictional appointments tomorrow." : ""
         microphone = true; screen = true; needsKey = false; needsAcknowledgement = false
         error = value == .failed ? "Fictional connection error. Start a new session." : nil
         changed()

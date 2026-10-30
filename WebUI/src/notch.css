@@ -55,3 +55,31 @@ html[data-surface="notch"] .event-form footer { position:sticky; bottom:-14px; b
 @media (prefers-reduced-motion: reduce) { .voice-level i { transition: none; } }
 .voice-talk { touch-action: none; user-select: none; }
 .voice-talk.is-talking { color: #fff; background: #3b6fd8; box-shadow: 0 0 0 3px rgba(120, 170, 255, .28); }
+
+/* Voice pill: one colour per phase (blue listens, violet thinks, green speaks). Glow and orb are decorative. */
+.notch-bar > div:has(> .voice-pill), .notch-bar > .voice-pill { flex:1; min-width:0; border-radius:22px; }
+.voice-pill { position:relative; display:flex; align-items:center; gap:8px; height:40px; padding:0 6px 0 4px; border-radius:22px; background:#0d0d0f; box-shadow:inset 0 0 0 1px rgba(255,255,255,.07); transition:box-shadow 260ms ease, background-color 260ms ease; }
+.voice-pill > * { position:relative; z-index:5; }
+.voice-pill .voice-talk { display:grid; place-items:center; width:32px; height:32px; padding:0; border:0; border-radius:50%; color:#d8d8dc; background:#1c1c1f; cursor:pointer; flex:none; transition:background-color 200ms ease, transform 160ms ease; }
+.voice-pill .voice-talk:active { transform:scale(.94); }
+.voice-pill-label { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:13px; font-weight:600; letter-spacing:.01em; color:#a9a9ae; transition:color 220ms ease; }
+.voice-pill.is-listening { box-shadow:inset 0 0 0 1px rgba(90,170,255,.45); }
+.voice-pill.is-listening .voice-talk { background:#123456; }
+.voice-pill.is-listening .voice-pill-label { color:#8cc8ff; }
+.voice-pill.is-thinking { box-shadow:inset 0 0 0 1px rgba(190,140,255,.4); }
+.voice-pill.is-thinking .voice-talk { background:#2a1747; }
+.voice-pill.is-thinking .voice-pill-label { color:#cfb0ff; }
+.voice-pill.is-speaking { box-shadow:inset 0 0 0 1px rgba(90,220,150,.4); }
+.voice-pill.is-speaking .voice-talk { background:#0f3a26; }
+.voice-pill.is-speaking .voice-pill-label { color:#86e5ae; }
+.voice-pill.is-review .voice-pill-label { color:#f3cf72; }
+.voice-pill.is-connecting .voice-pill-label { color:#8b8b90; }
+.voice-pill-action { display:grid; place-items:center; width:28px; height:28px; padding:0; border:0; border-radius:50%; background:transparent; color:#8d8d92; cursor:pointer; flex:none; }
+.voice-pill-action:hover { background:#1f1f22; color:#eee; }
+.voice-eye { color:#6f6f75; flex:none; }
+.sr-only { position:absolute !important; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+@media (prefers-reduced-motion: no-preference) {
+  .voice-pill-label { animation:voice-label-in 220ms ease-out both; }
+}
+@keyframes voice-label-in { from { opacity:0; transform:translateY(2px); } to { opacity:1; transform:none; } }
+.voice-transcript p { margin:0 0 6px; } .voice-transcript small { color:var(--muted); margin-right:6px; }

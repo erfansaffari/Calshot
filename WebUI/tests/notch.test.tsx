@@ -100,14 +100,16 @@ it("holds to talk: press uses the session token, release does not need it", asyn
 });
 it("shows live voice level while talking and stops with its current session token", async () => {
   voiceFixture(); mock.state.voice!.talking = true; render(<NotchApp />);
-  expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe("0.5"); expect(screen.getByText("Listening…")).toBeTruthy();
+  expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe("0.5"); expect(screen.getByText("Listening")).toBeTruthy();
   await userEvent.click(screen.getByRole("button", { name: "Stop", exact: true }));
   expect(mock.command).toHaveBeenCalledWith({ action: "stopVoice", token: "voice-current" });
 });
 it("shows speaking captions and a voice billing acknowledgement inline", async () => {
   voiceFixture(); mock.state.voice!.state = "speaking"; mock.state.voice!.caption = "Fictional appointment at noon.";
   mock.state.voice!.needsAcknowledgement = true;
-  render(<NotchApp />); expect(screen.getByText("Fictional appointment at noon.")).toBeTruthy();
+  render(<NotchApp />); expect(screen.getByText("Speaking")).toBeTruthy();
+  await userEvent.click(screen.getByRole("button", { name: "Voice details" }));
+  expect(screen.getByText("Fictional appointment at noon.")).toBeTruthy();
   await userEvent.click(screen.getByText("I understand"));
   expect(mock.command).toHaveBeenCalledWith({ action: "acknowledgeVoiceBilling", token: "voice-current" });
 });
@@ -142,7 +144,7 @@ it.each(["update", "delete", "move"] as const)("Return never approves %s", async
   expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
 });
 it("shows screen access while voice frames may be captured", () => {
-  voiceFixture(); render(<NotchApp />); expect(screen.getByText("Calshot can see your screen")).toBeTruthy();
+  voiceFixture(); render(<NotchApp />); expect(screen.getByRole("img", { name: "Calshot can see your screen" })).toBeTruthy();
 });
 it("offers only token-bound approval and dismissal for pending memory in voice", async () => {
   voiceFixture(); mock.state.personalMemory = { loaded: true, items: [], token: "memory-current", pending: [{ id: "suggestion", version: "version", kind: "preference", text: "Fictional memory", origin: "suggested", status: "pendingApproval", createdAt: "2026-10-29", updatedAt: "2026-10-29" }] };

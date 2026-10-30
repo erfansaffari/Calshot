@@ -1397,6 +1397,16 @@ extension CalshotModel {
         catch let error as AgentPermissionError { throw CalendarToolArgumentError(Self.agentPermissionMessage(error)) }
     }
 
+    /// The single Settings switch: every task action plus adding and editing clear events, for 30 days, or all off.
+    /// Deletes, moves, guests, series and screenshot-started runs keep their reviews regardless.
+    func saveAgentAutonomy(enabled: Bool, revision: UInt64) async throws {
+        let tasks = Dictionary(uniqueKeysWithValues: Self.agentTaskFamilies.map { ($0.id, enabled) })
+        try await saveAgentTaskPermissions(revision: revision, families: tasks, days: 30, renew: enabled)
+        guard let next = agentPermissionPolicy?.revision else { throw CalendarToolArgumentError("Permissions changed. Try again.") }
+        let current = Set(agentPermissionPolicy?.grants.filter { $0.action == .calendarCreate || $0.action == .calendarEdit }.flatMap(\.calendarIDs) ?? [])
+        try await saveAgentCalendarPermissions(revision: next, families: ["create": enabled, "edit": enabled], calendarIDs: enabled ? Array(current) : [], days: 30, renew: enabled)
+    }
+
     func saveAgentCalendarPermissions(revision: UInt64, families: [String: Bool], calendarIDs: [String], days: Int, renew: Bool = false) async throws {
         guard [7, 30, 90].contains(days), Set(families.keys).isSubset(of: Set(Self.agentCalendarFamilies.map(\.id))) else {
             throw CalendarToolArgumentError("Choose valid calendar permissions.")

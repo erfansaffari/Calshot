@@ -1636,6 +1636,18 @@ final class AgentTaskReviewIntegrationTests: XCTestCase {
         XCTAssertTrue(edit.saved.isEmpty, "A create grant never covers edits")
     }
 
+    func testAutonomySwitchGrantsRoutineActionsOnlyAndTurnsThemAllOff() async throws {
+        let model = fixture(); await model.loadCalendars(); model.selectedCalendarID = "demo"
+        try await model.saveAgentAutonomy(enabled: true, revision: 0)
+        var policy = try XCTUnwrap(model.agentPermissionPolicy)
+        XCTAssertEqual(Set(policy.grants.map(\.action)), [.taskCreate, .taskLink, .taskEdit, .taskComplete, .taskArchive, .calendarCreate, .calendarEdit])
+        XCTAssertFalse(policy.grants.contains { [.calendarDelete, .calendarMove].contains($0.action) || $0.backgroundEnabled })
+        XCTAssertTrue(policy.grants.filter { !$0.action.isTask }.allSatisfy { $0.calendarIDs == ["demo"] })
+        try await model.saveAgentAutonomy(enabled: false, revision: policy.revision)
+        policy = try XCTUnwrap(model.agentPermissionPolicy)
+        XCTAssertTrue(policy.grants.allSatisfy { !$0.requestedEnabled }, "Off means every action asks again")
+    }
+
     func testCalendarPermissionSettingsRejectMalformedChoicesAndDeletesAlwaysAsk() async throws {
         let model = fixture(); await model.loadCalendars()
         for (families, ids, days) in [(["delete": true], ["demo"], 30), (["move": true], ["demo"], 30), (["create": true], ["demo"], 14), (["create": true], ["not-a-calendar"], 30)] as [([String: Bool], [String], Int)] {

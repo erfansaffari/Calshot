@@ -14,7 +14,9 @@
     "lucide-react": "^0.577.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "react-markdown": "^10.1.0"
+    "react-markdown": "^10.1.0",
+    "thinking-orbs": "^0.3.2",
+    "voice-glow": "^0.3.0"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.3",

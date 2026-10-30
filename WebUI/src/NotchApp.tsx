@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { ArrowUp, Check, ExternalLink, Mic, ScanLine, Square, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, ExternalLink, Eye, Mic, ScanLine, Square, X } from "lucide-react";
+import { VoicePill } from "./components/VoicePill";
 import Markdown from "react-markdown";
 import { command, useAppState } from "./bridge";
 import { Question } from "./components/Question";
@@ -28,7 +29,6 @@ export default function NotchApp() {
     onKeyDown: (e: ReactKeyboardEvent) => { if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); void voiceRun("voiceTalk", { pressed: true }); } },
     onKeyUp: (e: ReactKeyboardEvent) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); void run("voiceTalk", { pressed: false }); } },
   };
-  const voiceLabel = !voice ? "" : voice.talking ? "Listening…" : voice.state === "thinking" ? "Thinking…" : voice.caption || (voice.state === "connecting" ? "Connecting…" : `Hold ${voice.shortcut || "⌃⇧V"} to talk`);
   const rows = state.proposals.filter(p => p.inScope && !p.isFinished);
   const selected = rows.filter(p => p.isSelected);
   const busy = state.running || state.saving || state.isRecognizing || state.isCapturing;
@@ -100,11 +100,12 @@ export default function NotchApp() {
   return <div className="notch-shell">
     <div className="notch-bar">
       {voice?.active && !state.waitingApproval && !taskReview ? <>
-        <button className={"icon-button voice-talk" + (voice.talking ? " is-talking" : "")} aria-label="Hold to talk" aria-pressed={Boolean(voice.talking)} title={`Hold to talk (${voice.shortcut || "⌃⇧V"}). Hold ⌥ to draw.`} {...talkProps}><Mic size={16} /></button>
-        {voice.talking && <div className="voice-level" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={1} aria-valuenow={voice.inputLevel}><i style={{ transform: `scaleX(${Math.max(.03, voice.inputLevel)})` }} /></div>}
-        <span className="notch-label" role="status" title={voiceLabel}>{voiceLabel}</span>
-        <button className="button secondary" onClick={() => void voiceRun("stopVoice")}>Stop</button>
-        <button className="text-button" aria-label="Voice usage" onClick={() => setConversation(!conversation)}>Details</button>
+        <VoicePill voice={voice} talkProps={talkProps}>
+          {voice.talking && <span className="sr-only" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={1} aria-valuenow={voice.inputLevel} />}
+          {voice.permissions.screen && <Eye size={14} className="voice-eye" role="img" aria-label="Calshot can see your screen" />}
+          <button className="voice-pill-action" aria-label="Voice details" aria-expanded={conversation} onClick={() => setConversation(!conversation)}><ChevronDown size={15} /></button>
+          <button className="voice-pill-action" aria-label="Stop" onClick={() => void voiceRun("stopVoice")}><X size={15} /></button>
+        </VoicePill>
       </> : working ? <>
         <Spinner /><span className="notch-label" role="status">{state.streaming || state.agentStatus || (state.isRecognizing ? "Reading screenshot" : state.saving ? "Saving changes" : "Working…")}</span>
         <button className="button secondary" onClick={() => void run("stop")}><Square size={11} /> Stop</button>
@@ -125,13 +126,16 @@ export default function NotchApp() {
           {(text.trim() || captured) && <button className={captured ? "button primary" : "icon-button"} disabled={sending || !state.ready} aria-label={captured ? "Add to calendar" : "Send message"}>{captured ? "Add to calendar" : <ArrowUp size={16} />}</button>}
         </form>
       </>}
-      {voice?.active && voice.permissions.screen && <span className="fine-print">Calshot can see your screen</span>}
       {!voice?.active && <button className="icon-button" aria-label="Hold to talk" title={`Hold to talk (${voice?.shortcut || "⌃⇧V"})`} disabled={busy} {...talkProps}><Mic size={15} /></button>}
       <button className="icon-button notch-popout" aria-label="Open full app" title="Open full app" onClick={() => void run("openWorkspace")}><ExternalLink size={15} /></button>
     </div>
     {detail && <div className="notch-details">
       <div className="notch-detail-heading"><span>{state.question ? "Your answer stays in this task" : taskReview ? "Review task change" : outcome ? "Task result" : review ? "Review changes" : source ? "Captured screenshot" : "Calendar conversation"}</span><button className="icon-button" aria-label="Hide details" onClick={() => { if (outcome) setDismissedOutcome(outcome.id); else if (state.question || taskReview) void run("collapseNotch"); else { setReview(false); setConversation(false); setSource(false); } }}><X size={14} /></button></div>
       <InlineError message={error || state.notice} />
+      {voice?.active && (voice.userTranscript || voice.caption) && <div className="voice-transcript">
+        {voice.userTranscript && <p><small>You</small> {voice.userTranscript}</p>}
+        {voice.caption && <p><small>Calshot</small> {voice.caption}</p>}
+      </div>}
       {voice?.active && <p>{voice.usage.seconds.toFixed(0)} audio seconds · estimated ${voice.usage.estimatedCost.toFixed(3)} <button className="text-button" onClick={() => void voiceRun("setVoiceDrawing", { drawing: !voice.drawing })}>{voice.drawing ? "Finish drawing" : "Draw focus"}</button></p>}
       <InlineError message={voice?.error}>{voice?.needsKey ? <button onClick={() => void voiceRun("voiceAISettings")}>Open Settings → AI service</button> : <>{voice?.permissions && !voice.permissions.microphone && <button onClick={() => void voiceRun("voiceMicrophoneSettings")}>Microphone settings</button>}{voice?.permissions && !voice.permissions.screen && <button onClick={() => void run("screenSettings")}>Screen Recording settings</button>}</>}</InlineError>
       {voice?.needsAcknowledgement && <div><p>Microphone audio and screen frames are sent to OpenAI. Voice uses paid OpenAI Realtime API billing, including transcription, even when text uses your ChatGPT plan. Your text billing choice stays the same.</p><button className="button primary" onClick={() => void voiceRun("acknowledgeVoiceBilling")}>I understand</button></div>}

@@ -17,8 +17,7 @@ import type { AppState, PersonalMemoryItem } from "../types";
 import { command } from "../bridge";
 import { SoftwareUpdates } from "./SoftwareUpdates";
 import { FriendsSettings } from "./FriendsSettings";
-import { AgentTaskPermissions } from "../components/AgentTaskPermissions";
-import { AgentCalendarPermissions } from "../components/AgentCalendarPermissions";
+import { AgentAutonomy } from "../components/AgentAutonomy";
 import {
   Badge,
   Empty,
@@ -1049,8 +1048,7 @@ export function SettingsPage({ state }: { state: AppState }) {
           </section>
         )}
         {tab === "privacy" && <PersonalMemorySettings state={state} />}
-        {tab === "privacy" && <AgentTaskPermissions state={state} />}
-        {tab === "privacy" && <AgentCalendarPermissions state={state} />}
+        {tab === "privacy" && <AgentAutonomy state={state} />}
         {tab === "privacy" && (
           <section>
             <h2 className="section-label">Privacy & storage</h2>

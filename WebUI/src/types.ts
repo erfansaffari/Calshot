@@ -211,7 +211,7 @@ export interface AgentPermissionsState {
 }
 export interface VoiceState {
   token: string; state: string; active: boolean; inputLevel: number; caption: string; userTranscript: string; drawing: boolean;
-  usage: { seconds: number; estimatedCost: number }; error?: string; needsKey: boolean; needsAcknowledgement: boolean; talking?: boolean; shortcut?: string;
+  usage: { seconds: number; estimatedCost: number }; error?: string; needsKey: boolean; needsAcknowledgement: boolean; talking?: boolean; shortcut?: string; outputLevel?: number;
   permissions: { microphone: boolean; screen: boolean }; model: string; voice: string; monthlyCap: number;
 }
 export interface AppState {
