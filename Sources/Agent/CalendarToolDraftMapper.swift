@@ -54,7 +54,9 @@ enum CalendarToolDraftMapper {
         return url
     }
 
-    static func create(_ value: JSONValue, context: String, confirmedContext: String = "") throws -> EventDraft {
+    /// Relative phrases in the user's own words resolve from the clock, so they settle the year (screen text never does).
+    static let relativeDatePattern = #"(?i)\b(today|tonight|tomorrow|day after tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next (week|month)|this (week|weekend|month)|in \d+ (days?|weeks?))\b"#
+    static func create(_ value: JSONValue, context: String, confirmedContext: String = "", now: Date = .now) throws -> EventDraft {
         guard let fields = value.objectValue else { throw CalendarToolArgumentError("Each event must be an object.") }
         try keys(fields, allowed: ["title", "date", "startTime", "endTime", "allDay", "timeZone", "location", "url", "notes", "evidence", "yearInferred", "dateAmbiguous"])
         guard let title = try string(fields, "title", required: true, limit: 500), !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CalendarToolArgumentError("Every event needs a title.") }
@@ -74,7 +76,9 @@ enum CalendarToolDraftMapper {
         let day = try date(dateValue, calendar: calendar)
         var issues: [EventAmbiguity] = []
         if day == nil { issues.append(.missingDate) }
-        if let year = dateValue?.prefix(4), yearInferred == true || !(context + "\n" + evidence).contains(String(year)) { issues.append(.missingYear) }
+        let spokenRelative = confirmedContext.range(of: relativeDatePattern, options: .regularExpression) != nil
+        let clockYear = calendar.component(.year, from: now)
+        if let year = dateValue?.prefix(4), yearInferred == true || !((context + "\n" + evidence).contains(String(year)) || (spokenRelative && yearInferred == false && [clockYear, clockYear + 1].contains(Int(year) ?? 0))) { issues.append(.missingYear) }
         let explicitAllDay = (confirmedContext + "\n" + evidence).range(of: #"(?i)\ball[- ]day\b"#, options: .regularExpression) != nil
         if startTime == nil && !(requestedAllDay == true && explicitAllDay) { issues.append(.missingTime) }
         if dateAmbiguous == true { issues.append(.ambiguousDate) }

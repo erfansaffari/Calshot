@@ -378,6 +378,16 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         XCTAssertEqual(client.commits, 0); XCTAssertEqual(client.responses, 0)
         await say(s); XCTAssertEqual(client.commits, 1); XCTAssertEqual(client.responses, 1); XCTAssertEqual(s.state, .thinking); s.stop()
     }
+    func testHeldTalkIsAPenAndTurnCarriesRecognizedScreenText() async {
+        let s = make(); var shared: ScreenTextRecognition?; s.onScreenText = { shared = $0 }
+        frames.text = ScreenTextRecognition(lines: [RecognizedScreenLine(text: "Fictional kick-off Nov 3, 2026 · 6:00 PM", region: SourceRegion(x: 0, y: 0, width: 1, height: 0.1))])
+        await s.toggle(); s.handle(.sessionUpdated)
+        await s.talk(true); XCTAssertTrue(s.drawing); XCTAssertEqual(overlay.drawingCalls.last, true)
+        audio.onInput?(Data(count: 9600)); await s.talk(false); await settle()
+        XCTAssertFalse(s.drawing); XCTAssertEqual(overlay.drawingCalls.last, false)
+        XCTAssertTrue(client.captions.last?.contains("Nov 3, 2026 · 6:00 PM") == true); XCTAssertTrue(client.captions.last?.contains("untrusted") == true)
+        XCTAssertEqual(shared?.text, "Fictional kick-off Nov 3, 2026 · 6:00 PM"); s.stop()
+    }
     func testTooShortHoldIsDiscardedAndQuickTapEndsSession() async throws {
         let s = make(); await s.toggle(); s.handle(.sessionUpdated)
         await s.talk(true); audio.onInput?(Data(count: 960)); try await Task.sleep(for: .milliseconds(400)); await s.talk(false); await settle()

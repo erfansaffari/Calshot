@@ -39,6 +39,22 @@ private actor ToolCalendarService: CalendarDestinationService {
 
 @MainActor
 final class CalendarAgentToolTests: XCTestCase {
+    func testSpokenRelativeDateSettlesTheYearButScreenDatesWithoutYearStillAsk() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-10-29T22:00:00-04:00")!
+        func event(_ evidence: String, inferred: Bool = false) -> JSONValue {
+            .object(["title": .string("Fictional study block"), "date": .string("2026-10-30"), "startTime": .string("08:00"), "endTime": .string("10:00"),
+                     "allDay": .bool(false), "timeZone": .string("America/New_York"), "location": .null, "url": .null, "notes": .null,
+                     "evidence": .string(evidence), "yearInferred": .bool(inferred), "dateAmbiguous": .bool(false)])
+        }
+        let spoken = try CalendarToolDraftMapper.create(event("tomorrow 8 to 10"), context: "", confirmedContext: "Add a study block tomorrow from 8 to 10", now: now)
+        XCTAssertFalse(spoken.ambiguities.contains(.missingYear))
+        let screen = try CalendarToolDraftMapper.create(event("Oct 30, 8–10 AM"), context: "Kick-off Oct 30, 8–10 AM", confirmedContext: "Add this to my calendar", now: now)
+        XCTAssertTrue(screen.ambiguities.contains(.missingYear), "A screen date without a year is never settled by the clock")
+        let inferred = try CalendarToolDraftMapper.create(event("tomorrow", inferred: true), context: "", confirmedContext: "tomorrow at 8", now: now)
+        XCTAssertTrue(inferred.ambiguities.contains(.missingYear), "The model's own inferred flag still wins")
+        let farYear = try CalendarToolDraftMapper.create(.object(event("next week").objectValue!.merging(["date": .string("2031-10-30")]) { $1 }), context: "", confirmedContext: "next week", now: now)
+        XCTAssertTrue(farYear.ambiguities.contains(.missingYear))
+    }
     private func snapshot(_ identifier: String, title: String) -> CalendarEventSnapshot {
         CalendarEventSnapshot(eventIdentifier: identifier, title: title,
             start: ISO8601DateFormatter().date(from: "2026-11-01T15:00:00Z")!,

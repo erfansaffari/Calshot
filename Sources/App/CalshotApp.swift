@@ -209,6 +209,8 @@ final class CalshotModel: ObservableObject {
         didSet { if let data = try? JSONEncoder().encode(voiceShortcut) { UserDefaults.standard.set(data, forKey: "voice.shortcut") }; registerShortcut() }
     }
     var voiceRunID: UUID?
+    /// Text recognized in the latest voice frame; cleared when a voice session starts.
+    var voiceScreenText = ""
     var voicePreparedRunID: UUID?
     lazy var voiceSession = makeVoiceSession()
     var calendarAgent: CalendarAgent?

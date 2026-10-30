@@ -30,7 +30,7 @@ extension CalshotModel {
             }, searchDestinations: { [weak self] in self?.readableCalendars ?? [] },
             onTargetDestination: { [weak self] in self?.selectedCalendarID = $0 }, screenText: { [weak self] in
                 guard let self else { return "" }
-                if self.voicePreparedRunID == self.activeAgentRunID, self.voicePreparedRunID != nil { return "" }
+                if self.voicePreparedRunID == self.activeAgentRunID, self.voicePreparedRunID != nil { return self.voiceScreenText }
                 let captureID = self.currentCaptureSessionID
                 if let task = self.ocrTask, let result = try? await task.value {
                     guard self.currentCaptureSessionID == captureID, !Task.isCancelled else { return "" }
@@ -38,7 +38,14 @@ extension CalshotModel {
                     return result.text
                 }
                 return self.recognizedText
-            }, sourceContext: { [weak self] in self?.currentAgentPrompt ?? "" },
+            }, sourceContext: { [weak self] in
+                guard let self else { return "" }
+                // Voice requests are spoken: the user's own transcribed words are the request text.
+                if self.voicePreparedRunID == self.activeAgentRunID, self.voicePreparedRunID != nil {
+                    return self.agentMessages.filter { $0.role == "user" }.suffix(12).compactMap(\.content).joined(separator: "\n")
+                }
+                return self.currentAgentPrompt
+            },
             sourceRegion: { [weak self] in self?.screenRecognition.region(for: $0) },
             sourceCaptureID: { [weak self] in self?.currentAgentSourceID },
             onApproval: { [weak self] value in self?.agentIsWaitingForApproval = value; self?.voiceSession.review(value) },

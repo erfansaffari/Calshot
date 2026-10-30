@@ -10,6 +10,8 @@ struct FocusFrame: Sendable {
     /// Padded bounds, top-left origin, normalized to the returned image. Only marks on this display.
     let regions: [CGRect]
     let capturedAt: Date
+    /// On-device text recognition of the full-resolution capture. Untrusted screen content, never instructions.
+    var screenText: ScreenTextRecognition? = nil
 }
 
 enum FocusFrameError: Error, LocalizedError {
@@ -73,9 +75,12 @@ final class FocusFrameComposer {
             let selected = marks.filter { $0.displayID == id }
             let composed = try FocusFrameGeometry.render(image: image, marks: selected, displayFrame: screen.frame)
             let size = CGSize(width: composed.width, height: composed.height)
+            // Read text from the full-resolution capture; the 1280 px frame is too small for exact dates in an email.
+            let text = try? await ScreenTextRecognizer.recognizeLayout(in: image)
+            try Task.checkCancellation()
             return FocusFrame(jpegData: try FocusFrameGeometry.jpeg(image: composed), pixelSize: size, displayID: id,
                               regions: selected.map { FocusFrameGeometry.region(for: $0, displayFrame: screen.frame, pixelSize: size) },
-                              capturedAt: capturedAt)
+                              capturedAt: capturedAt, screenText: text)
         } catch is CancellationError { throw CancellationError() }
         catch let error as FocusFrameError { throw error }
         catch {
