@@ -1241,7 +1241,10 @@ extension CalshotModel {
         let store: AgentPermissionStore
         do { store = try await openAgentPermissionStore() }
         catch is CancellationError { return .blocked("Stopped before anything was saved.") }
-        catch { return .blocked(error.localizedDescription) }
+        catch {
+            // Automatic saves pause and the error stays in Settings; the normal review still works.
+            return .split(saved: [], review: rows.map { ($0.proposal, "Saved permissions couldn’t be read, so Calshot asks first. " + Self.agentPermissionMessage(error)) }, failed: [])
+        }
         var saved: [CalendarActionProposal] = []
         var review: [(proposal: CalendarActionProposal, reason: String)] = []
         var failed: [(proposal: CalendarActionProposal, message: String)] = []

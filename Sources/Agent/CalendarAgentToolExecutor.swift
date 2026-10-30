@@ -346,7 +346,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                     try coordinator.persist?(coordinator.proposals)
                     return await awaitApproval(name: name, ids: [proposal.id])
                 }
-                let row = AgentCalendarGrantRow(proposal: proposal, recurring: existing.isRecurring, guests: false)
+                let row = AgentCalendarGrantRow(proposal: proposal, recurring: existing.isRecurring, guests: existing.hasAttendees != false)
                 return await commitCalendarProposals(name: name, destinationID: calendarID, destinationName: calendarName, rows: [row], retained: retained, extraSkipped: [], sessionID: sessionID)
             default: throw CalendarToolArgumentError("Unknown calendar tool.")
             }

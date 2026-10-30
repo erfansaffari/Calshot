@@ -1900,3 +1900,4 @@ section[aria-label="Personal memory"] form > .button { margin: 0 8px; }
 .voice-settings > label:first-of-type { display: flex; align-items: center; gap: 16px; }
 .voice-settings button { justify-self: start; }
 .voice-settings > p { margin: 0; }
+.agent-permissions .inline-check { margin-top: 8px; font-size: 13px; }

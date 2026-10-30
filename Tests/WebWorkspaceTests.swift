@@ -1586,6 +1586,70 @@ final class AgentTaskReviewIntegrationTests: XCTestCase {
         XCTAssertNil(committed, "A new calendar deadline always keeps its own review"); XCTAssertTrue(model.taskDocument.items.isEmpty)
     }
 
+    // MARK: Calendar grants (fictional demo calendar, never a real provider)
+    private func calendarRow(_ title: String, hour: Int = 9, ambiguities: [EventAmbiguity] = [], recurring: Bool? = false, guests: Bool = false) -> AgentCalendarGrantRow {
+        let start = Date(timeIntervalSince1970: 1_800_000_000 + Double(hour) * 3600)
+        let draft = EventDraft(title: title, startDate: start, endDate: start.addingTimeInterval(7200), isAllDay: false, timeZoneIdentifier: "America/New_York",
+                               location: nil, url: nil, notes: nil, sourceText: "Fictional request", confidence: 1, ambiguities: ambiguities)
+        return AgentCalendarGrantRow(proposal: CalendarActionProposal(draft: draft), recurring: recurring, guests: guests)
+    }
+    private func calendarGrant(_ model: CalshotModel, _ families: [String: Bool]) async throws {
+        let revision = model.agentPermissionPolicy?.revision ?? 0
+        try await model.saveAgentCalendarPermissions(revision: revision, families: families, calendarIDs: ["demo"], days: 30)
+    }
+    private func split(_ outcome: AgentCalendarGrantOutcome) -> (saved: [CalendarActionProposal], review: [String], failed: [String]) {
+        guard case .split(let saved, let review, let failed) = outcome else { XCTFail("Unexpected block: \(outcome)"); return ([], [], []) }
+        return (saved, review.map(\.reason), failed.map(\.message))
+    }
+
+    func testCalendarCreateWithoutGrantGoesToReviewAndWritesNothing() async throws {
+        let model = fixture(); await model.loadCalendars(); let run = startRun(model)
+        let result = split(await model.applyAgentCalendarGrant(runID: run, destinationID: "demo", destinationName: "Demo", rows: [calendarRow("Fictional planning")]))
+        XCTAssertTrue(result.saved.isEmpty); XCTAssertEqual(result.review.count, 1)
+        let matches = try await model.calendarService.matchingEvents(calendarRow("Fictional planning").proposal.draft, in: .resolve(identifier: "demo"))
+        XCTAssertTrue(matches.isEmpty, "No write without a saved grant")
+    }
+
+    func testCalendarCreateGrantSavesClearRowsAndReviewsUnclearDuplicateRepeatingAndGuestRows() async throws {
+        let model = fixture(); await model.loadCalendars(); try await calendarGrant(model, ["create": true]); let run = startRun(model)
+        let rows = [calendarRow("Fictional study block", hour: 8), calendarRow("Fictional missing year", hour: 11, ambiguities: [.missingYear]),
+                    calendarRow("Fictional study block", hour: 8), calendarRow("Fictional weekly sync", hour: 13, recurring: true),
+                    calendarRow("Fictional lunch with guests", hour: 15, guests: true)]
+        let result = split(await model.applyAgentCalendarGrant(runID: run, destinationID: "demo", destinationName: "Demo", rows: rows))
+        XCTAssertEqual(result.saved.map(\.draft.title), ["Fictional study block"], "Only the clear row saves; rows apply independently")
+        XCTAssertNotNil(result.saved.first?.receipt, "A saved row carries its native receipt")
+        XCTAssertEqual(result.review.count, 4); XCTAssertTrue(result.failed.isEmpty)
+        XCTAssertTrue(result.review.contains { $0.contains("matching event") }, "The same event in one batch is a duplicate")
+        let saved = try await model.calendarService.matchingEvents(rows[0].proposal.draft, in: .resolve(identifier: "demo"))
+        XCTAssertEqual(saved.count, 1)
+    }
+
+    func testCalendarGrantNeverAppliesToScreenshotRunsAndEditNeedsItsOwnGrant() async throws {
+        let model = fixture(); await model.loadCalendars(); try await calendarGrant(model, ["create": true]); let run = startRun(model)
+        model.agentTypedRunID = nil
+        let capture = split(await model.applyAgentCalendarGrant(runID: run, destinationID: "demo", destinationName: "Demo", rows: [calendarRow("Fictional captured class")]))
+        XCTAssertTrue(capture.saved.isEmpty); XCTAssertTrue(capture.review.first?.contains("screenshot") == true)
+        model.agentTypedRunID = run
+        var update = calendarRow("Fictional renamed", recurring: false).proposal; update.operation = .update; update.targetEventIdentifier = "missing-event"
+        update.draft.changedFieldNames = ["title"]
+        let edit = split(await model.applyAgentCalendarGrant(runID: run, destinationID: "demo", destinationName: "Demo", rows: [AgentCalendarGrantRow(proposal: update, recurring: false, guests: false)]))
+        XCTAssertTrue(edit.saved.isEmpty, "A create grant never covers edits")
+    }
+
+    func testCalendarPermissionSettingsRejectMalformedChoicesAndDeletesAlwaysAsk() async throws {
+        let model = fixture(); await model.loadCalendars()
+        for (families, ids, days) in [(["delete": true], ["demo"], 30), (["move": true], ["demo"], 30), (["create": true], ["demo"], 14), (["create": true], ["not-a-calendar"], 30)] as [([String: Bool], [String], Int)] {
+            do { try await model.saveAgentCalendarPermissions(revision: 0, families: families, calendarIDs: ids, days: days); XCTFail("Accepted \(families) \(ids) \(days)") } catch {}
+        }
+        try await calendarGrant(model, ["create": true, "edit": true])
+        let policy = try XCTUnwrap(model.agentPermissionPolicy)
+        XCTAssertEqual(Set(policy.grants.map(\.action)), [.calendarCreate, .calendarEdit])
+        XCTAssertTrue(policy.grants.allSatisfy { $0.calendarIDs == ["demo"] && !$0.backgroundEnabled })
+        let snapshot = model.agentPermissionSnapshot().objectValue?["calendar"]?.objectValue
+        let locked = snapshot?["families"]?.arrayValue?.filter { $0.objectValue?["alwaysAsks"]?.boolValue == true }.compactMap { $0.objectValue?["id"]?.stringValue }
+        XCTAssertEqual(locked, ["delete", "move"])
+    }
+
     func testTaskOnlyCreateUsesTheGrantElseKeepsTheExistingImportReview() async throws {
         let model = fixture(); let record = try model.memoryStore.recordCommand("Add tasks"); model.currentMemoryRecordID = record.id
         let run = startRun(model)

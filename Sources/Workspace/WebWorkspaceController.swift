@@ -679,6 +679,22 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             }
             let renew = (body["renew"] as? Bool) == true && CFGetTypeID((body["renew"] ?? false) as CFTypeRef) == CFBooleanGetTypeID()
             try await model.saveAgentTaskPermissions(revision: UInt64(revisionNumber.int64Value), families: families, days: days, renew: renew)
+        case "saveCalendarPermissions":
+            guard !isNotch, model.workspaceSelection == .settings else { throw CalendarToolArgumentError("Change calendar permissions in Settings.") }
+            try requireIdle()
+            guard Set(body.keys).isSubset(of: ["id", "action", "revision", "families", "calendarIDs", "days", "renew"]),
+                  let revisionNumber = body["revision"] as? NSNumber, CFGetTypeID(revisionNumber) != CFBooleanGetTypeID(), revisionNumber.int64Value >= 0,
+                  let days = body["days"] as? Int, let raw = body["families"] as? [String: Any],
+                  let calendarIDs = body["calendarIDs"] as? [String], calendarIDs.count <= 100 else {
+                throw CalendarToolArgumentError("Choose valid calendar permissions.")
+            }
+            var families: [String: Bool] = [:]
+            for (key, value) in raw {
+                guard let flag = value as? Bool, CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID() else { throw CalendarToolArgumentError("Choose valid calendar permissions.") }
+                families[key] = flag
+            }
+            let renew = (body["renew"] as? Bool) == true && CFGetTypeID((body["renew"] ?? false) as CFTypeRef) == CFBooleanGetTypeID()
+            try await model.saveAgentCalendarPermissions(revision: UInt64(revisionNumber.int64Value), families: families, calendarIDs: calendarIDs, days: days, renew: renew)
         case "linkCalendarEventTask": try await linkCalendarEventTask(body)
         case "changeCalendarEvent": try await changeCalendarEvent(body)
         case "dismissCalendarChange": calendarChange = .null

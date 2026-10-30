@@ -286,6 +286,13 @@ function simulate(message: Command) {
       headline: approved ? "Preview: task change saved" : "Nothing changed",
       rows: approved ? (state.taskReview?.rows || []).slice(0, 12).map((r) => ({ id: r.id, title: r.title, status: "saved" })) : [] } });
   } else if (message.action === "loadAgentPermissions") return;
+  else if (message.action === "saveCalendarPermissions" && state.agentPermissions?.calendar) {
+    const families = (message.families || {}) as Record<string, boolean>, calendar = state.agentPermissions.calendar;
+    update({ ...state, agentPermissions: { ...state.agentPermissions, revision: state.agentPermissions.revision + 1,
+      calendar: { ...calendar, notice: "Preview only. Nothing was saved.", calendarIDs: (message.calendarIDs || []) as string[],
+        expiresAt: new Date(Date.now() + Number(message.days) * 86400000).toISOString(),
+        families: calendar.families.map((f) => (f.alwaysAsks ? f : { ...f, enabled: Boolean(families[f.id]), expired: false })) } } });
+  }
   else if (message.action === "saveAgentPermissions" && state.agentPermissions) {
     const families = (message.families || {}) as Record<string, boolean>;
     update({ ...state, agentPermissions: { ...state.agentPermissions, revision: state.agentPermissions.revision + 1,

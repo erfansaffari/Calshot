@@ -409,6 +409,12 @@ const previewPermissions = (): NonNullable<AppState["agentPermissions"]> => ({
     { id: "complete", label: "Complete or reopen tasks", detail: "Mark tasks done, or open them again.", enabled: false, expired: false },
     { id: "archive", label: "Archive or restore tasks", detail: "Move tasks out of your list, or bring them back.", enabled: false, expired: false },
   ],
+  calendar: { calendarIDs: [], expiresAt: null, notice: null, families: [
+    { id: "create", label: "Add new events", detail: "Save new events you ask for when the date, year and time are already clear.", enabled: false, expired: false, alwaysAsks: false },
+    { id: "edit", label: "Edit event details", detail: "Change the title, date, time or details of one event you ask about.", enabled: false, expired: false, alwaysAsks: false },
+    { id: "delete", label: "Delete events", detail: "Always asks before an event is removed.", enabled: false, expired: false, alwaysAsks: true },
+    { id: "move", label: "Move events", detail: "Always asks before an event changes calendars.", enabled: false, expired: false, alwaysAsks: true },
+  ] },
 });
 preview.agentPermissions = previewPermissions();
 export const previewTaskRows = (count: number) => Array.from({ length: count }, (_, i) => ({

@@ -42,7 +42,7 @@ export function AgentTaskPermissions({ state }: { state: AppState }) {
       <div className="card settings-card agent-permissions">
         <p className="fine-print">
           By default Calshot asks you to review every task change. Choose the routine ones it may save right away
-          when you ask. Calendar changes always ask first. These choices stay on this Mac and are not synced.
+          when you ask. Calendar changes have their own choices below. These choices stay on this Mac and are not synced.
         </p>
         <InlineError message={permissions.error || ""} />
         {!permissions.loaded && !permissions.error && <p className="fine-print" role="status"><Spinner /> Loading task permissions…</p>}

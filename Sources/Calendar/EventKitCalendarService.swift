@@ -235,6 +235,7 @@ actor EventKitCalendarService: CalendarDestinationService {
                               isAllDay: event.isAllDay, timeZone: event.timeZone?.identifier,
                               location: event.location, calendarName: event.calendar.title, url: event.url, notes: event.notes, externalEventIdentifier: event.calendarItemExternalIdentifier, isFree: event.availability == .notSupported ? nil : event.availability == .free)
         result.isRecurring = event.hasRecurrenceRules || event.isDetached || event.occurrenceDate != nil
+        result.hasAttendees = event.hasAttendees
         result.modifiedAt = event.lastModifiedDate
         if let original = event.occurrenceDate {
             if event.isAllDay {

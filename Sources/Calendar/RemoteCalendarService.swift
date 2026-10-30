@@ -180,6 +180,7 @@ actor RemoteCalendarService: CalendarDestinationService {
             url: (value[account.provider == .google ? "htmlLink" : "webLink"] as? String).flatMap(URL.init(string:)), notes: account.provider == .google ? value["description"] as? String : body?["content"] as? String)
         event.isFree = account.provider == .google ? value["transparency"] as? String == "transparent" : value["showAs"] as? String == "free"
         event.externalEventIdentifier = value[account.provider == .google ? "iCalUID" : "iCalUId"] as? String
+        if let attendees = value["attendees"] as? [Any] { event.hasAttendees = !attendees.isEmpty } else if account.provider == .google { event.hasAttendees = false }
         if account.provider == .google {
             event.isRecurring = value["recurringEventId"] != nil || value["recurrence"] != nil || value["originalStartTime"] != nil
             if let original = value["originalStartTime"] as? [String: Any] {

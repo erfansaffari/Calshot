@@ -67,6 +67,8 @@ public struct CalendarEventSnapshot: Codable, Sendable {
     public var recurrenceDate: String? = nil
     /// nil means the provider did not establish whether this event repeats.
     public var isRecurring: Bool? = nil
+    /// nil means the provider did not establish whether the event has guests. Editing an event with guests may notify them.
+    public var hasAttendees: Bool? = nil
     /// Provider modification time; absence does not imply an unchanged source.
     public var modifiedAt: Date? = nil
 

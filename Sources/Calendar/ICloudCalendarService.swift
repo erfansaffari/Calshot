@@ -229,6 +229,7 @@ struct ICS {
                          location: value("LOCATION").map(ICS.unescape), calendarName: name, url: value("URL").flatMap(URL.init(string:)), notes: value("DESCRIPTION").map(ICS.unescape), externalEventIdentifier: uid, isFree: value("TRANSP")?.uppercased() == "TRANSPARENT")
             let recurrence = line("RECURRENCE-ID")
             result.isRecurring = recurrence != nil || has("RRULE") || has("RDATE")
+            result.hasAttendees = has("ATTENDEE")
             if let recurrence, let raw = value("RECURRENCE-ID") {
                 if raw.count == 8 {
                     // Keep the provider's original date, independent of a moved DTSTART.

@@ -206,6 +206,8 @@ export interface AgentPermissionsState {
   loaded: boolean; busy: boolean; error?: string | null; notice?: string | null; revision: number;
   families: { id: string; label: string; detail: string; enabled: boolean; expired: boolean }[];
   expiresAt?: string | null; limits: { perRun: number; perWindow: number; windowMinutes: number };
+  calendar?: { families: { id: string; label: string; detail: string; enabled: boolean; expired: boolean; alwaysAsks: boolean }[];
+    calendarIDs: string[]; expiresAt?: string | null; notice?: string | null };
 }
 export interface VoiceState {
   token: string; state: string; active: boolean; inputLevel: number; caption: string; userTranscript: string; drawing: boolean;

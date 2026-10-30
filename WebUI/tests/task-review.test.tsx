@@ -156,7 +156,10 @@ describe("Settings task permissions", () => {
     expect(boxes.every((box) => !box.checked)).toBe(true);
     expect(screen.queryByText(/Reorder/)).toBeNull(); // only implemented grant families appear
     expect(screen.queryByRole("checkbox", { name: /background/i })).toBeNull();
-    expect(screen.getByText(/Calendar changes always ask first/)).toBeTruthy();
+    const calendar = screen.getByRole("heading", { name: "Calendar actions" }).closest("section")!;
+    expect(within(calendar).getAllByText("Always asks")).toHaveLength(2); // delete and move have no switch
+    expect(within(calendar).getByRole("checkbox", { name: "Add new events" })).toHaveProperty("checked", false);
+    expect(within(calendar).getByRole("checkbox", { name: "Edit event details" })).toHaveProperty("checked", false);
     expect((screen.getByRole("button", { name: "Save task permissions" }) as HTMLButtonElement).disabled).toBe(true);
     expect(mock.command).toHaveBeenCalledWith({ action: "loadAgentPermissions" });
   });
@@ -208,9 +211,21 @@ describe("Settings task permissions", () => {
     mock.state = structuredClone(preview);
     mock.state.agentPermissions = { ...mock.state.agentPermissions!, loaded: false, error: "Saved task permissions couldn’t be read safely. The file was kept and task changes by Calshot are paused." };
     render(<SettingsPage state={{ ...mock.state, page: "settings", settingsSection: "privacy" }} />);
-    expect(screen.getByRole("alert").textContent).toContain("task changes by Calshot are paused");
+    expect(screen.getAllByRole("alert").every((alert) => alert.textContent?.includes("task changes by Calshot are paused"))).toBe(true);
     expect(screen.getAllByRole("checkbox").every((box) => (box as HTMLInputElement).disabled)).toBe(true);
     expect((screen.getByRole("button", { name: "Save task permissions" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Save calendar permissions" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("saves calendar permissions with the checked writable calendars", async () => {
+    settings();
+    const calendar = screen.getByRole("heading", { name: "Calendar actions" }).closest("section")!;
+    await userEvent.click(within(calendar).getByRole("checkbox", { name: "Add new events" }));
+    const save = within(calendar).getByRole("button", { name: "Save calendar permissions" }) as HTMLButtonElement;
+    const scope = mock.state.selectedCalendarID ? [mock.state.selectedCalendarID] : [];
+    if (!scope.length) { expect(save.disabled).toBe(true); return; } // no writable calendar chosen yet
+    await userEvent.click(save);
+    expect(mock.command).toHaveBeenCalledWith(expect.objectContaining({ action: "saveCalendarPermissions", families: { create: true, edit: false }, calendarIDs: scope, days: 30, renew: false }));
   });
 
   it("adopts a newer native revision and flags an expired grant instead of silently enabling it", () => {
