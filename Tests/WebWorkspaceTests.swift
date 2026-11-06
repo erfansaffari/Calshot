@@ -498,6 +498,13 @@ final class WebWorkspaceTests: XCTestCase {
         let model = fixture(agentClient: VoiceFixtureTextClient()), hotKeys = FakeHotKeys()
         let defaults = UserDefaults(suiteName: "ShortcutTests." + UUID().uuidString)!
         model.hotKeys = hotKeys; model.shortcutDefaults = defaults; model.systemReservesShortcut = { _ in false }
+        // Establish fixture keys through the fake registrar; never depend on the user's saved keys.
+        let temporary = GlobalShortcut(keyCode: UInt32(kVK_F18), modifiers: UInt32(controlKey | optionKey | cmdKey | shiftKey), label: "fixture")
+        XCTAssertTrue(model.applyShortcut(temporary, target: .capture))
+        XCTAssertTrue(model.applyShortcut(.voiceDefault, target: .voice))
+        XCTAssertTrue(model.applyShortcut(.default, target: .capture))
+        defaults.removeObject(forKey: GlobalShortcut.captureDefaultsKey)
+        defaults.removeObject(forKey: GlobalShortcut.voiceDefaultsKey)
         return (model, hotKeys, defaults)
     }
     private func keyPress(_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags, repeating: Bool = false) -> NSEvent {
