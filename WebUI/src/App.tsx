@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useGlassAppearance } from "./appearance";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   CalendarDays,
   MessageSquare,
@@ -16,13 +17,19 @@ import {
   Image as ImageIcon,
   X,
   ShieldCheck,
+  CalendarClock,
+  ArrowRightLeft,
+  GraduationCap,
 } from "lucide-react";
 import Markdown from "react-markdown";
 import { command, useAppState } from "./bridge";
 import type { AppState, Page } from "./types";
 import { Badge, Empty, InlineError, Modal, Spinner } from "./components/ui";
 import { Review } from "./components/Review";
-import { TaskChangeReview, TaskOutcomeCard } from "./components/TaskChangeReview";
+import {
+  TaskChangeReview,
+  TaskOutcomeCard,
+} from "./components/TaskChangeReview";
 import { Question } from "./components/Question";
 import { HomeTasks } from "./components/HomeTasks";
 import { AccountScreen } from "./views/AccountScreen";
@@ -30,13 +37,24 @@ import { TasksPage } from "./views/TasksPage";
 import { CalendarPage } from "./views/CalendarPage";
 import { Sidebar } from "./components/Sidebar";
 import { HistoryPage, SettingsPage } from "./views/Pages";
+function greeting(hour: number) {
+  return hour < 5 || hour >= 18 ? "Good evening" : hour < 12 ? "Good morning" : "Good afternoon";
+}
+/** A profile name only; an address is not something to greet someone by. */
+function firstName(state: AppState) {
+  const name = state.accountSync?.displayName.trim().split(/\s+/)[0] ?? "";
+  return name.includes("@") ? "" : name;
+}
+
 function App() {
   const state = useAppState(),
     [source, setSource] = useState(false),
+    [compact, setCompact] = useState(window.innerWidth <= 1120),
     [historyPicker, setHistoryPicker] = useState(false),
     [error, setError] = useState(""),
     [text, setText] = useState(""),
     [sending, setSending] = useState(false);
+  useGlassAppearance(state);
   useEffect(() => {
     document.documentElement.dataset.appearance =
       state.settings.appearance || "system";
@@ -44,6 +62,12 @@ function App() {
   const bottom = useRef<HTMLDivElement>(null),
     nearBottom = useRef(true),
     composer = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const field = composer.current;
+    if (!field) return;
+    field.style.height = "auto";
+    field.style.height = `${Math.min(field.scrollHeight, 144)}px`;
+  }, [text, state.ready, state.page]);
   const hasTask = Boolean(
       state.messages.length ||
       state.imageURL ||
@@ -63,6 +87,14 @@ function App() {
       setError((e as Error).message);
     }
   };
+  // Returning to the conversation always starts at the newest turn. While it
+  // stays open, streamed updates still respect someone reading older messages.
+  useLayoutEffect(() => {
+    if (!assistant) return;
+    nearBottom.current = true;
+    const timeline = bottom.current?.closest(".timeline");
+    if (timeline) timeline.scrollTop = timeline.scrollHeight;
+  }, [assistant, state.ready]);
   useEffect(() => {
     if (!nearBottom.current) return;
     const frame = requestAnimationFrame(() => {
@@ -71,6 +103,7 @@ function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [
+    assistant,
     state.messages.length,
     state.streaming,
     state.question?.id,
@@ -110,6 +143,7 @@ function App() {
   }, [state.imageURL]);
   useEffect(() => {
     const resize = () => {
+      setCompact(window.innerWidth <= 1120);
       if (window.innerWidth <= 1120) setSource(false);
       if (nearBottom.current)
         requestAnimationFrame(() => {
@@ -121,7 +155,15 @@ function App() {
     return () => window.removeEventListener("resize", resize);
   }, []);
   const submit = async () => {
-    if (!text.trim() || sending) return;
+    if (
+      !text.trim() ||
+      sending ||
+      state.saving ||
+      state.isCapturing ||
+      state.isRecognizing ||
+      (state.running && !state.question)
+    )
+      return;
     setSending(true);
     setError("");
     try {
@@ -138,28 +180,35 @@ function App() {
     }
   };
   if (!state.ready) return <Startup />;
-  if (state.auth?.required && (!state.auth.signedIn || !state.auth.onboarded || state.auth.phase === "passwordRecovery")) return <AccountScreen state={state} />;
+  if (
+    state.auth?.required &&
+    (!state.auth.signedIn ||
+      !state.auth.onboarded ||
+      state.auth.phase === "passwordRecovery")
+  )
+    return <AccountScreen state={state} />;
   return (
-    <div className={"app" + (state.page === "calendars" ? " calendar-workspace" : "")}>
+    <div
+      className={
+        "app" + (state.page === "calendars" ? " calendar-workspace" : "")
+      }
+    >
       <Sidebar state={state} onAction={run} />
       <main className="workspace">
         {assistant ? (
           <>
             <header className="workspace-header">
               <div className="heading">
-                <h1 className="truncate">
-                  {hasTask
-                    ? (
-                        state.messages.find((m) => m.role === "user")
-                          ?.content || "Screenshot task"
-                      ).slice(0, 90)
-                    : "Assistant"}
-                </h1>
+                <h1 className="truncate">Assistant</h1>
                 <small>
                   {hasTask
                     ? state.imageURL
                       ? "From a screenshot"
-                      : "Your calendar assistant"
+                      : state.question
+                        ? "Waiting for your answer"
+                        : state.waitingApproval || state.taskReview
+                          ? "Review proposed changes"
+                          : "Your calendars and tasks"
                     : "Your calendars, a little easier"}
                 </small>
               </div>
@@ -194,10 +243,12 @@ function App() {
                 {!hasTask ? (
                   <div className="timeline">
                     <div className="home">
-                      <div className="home-logo">
-                        <Sparkles size={23} />
-                      </div>
-                      <h1>What should go on your calendar?</h1>
+                      <div className="home-orb" aria-hidden="true" />
+                      <h2>
+                        {greeting(new Date().getHours())}
+                        {firstName(state) && <> <b>{firstName(state)}</b></>},
+                        <span>What should go on your calendar?</span>
+                      </h2>
                       <p>Capture something on your screen, or just ask.</p>
                       <div className="capture-options">
                         <button
@@ -223,11 +274,11 @@ function App() {
                       <HomeTasks state={state} onCommand={command} />
                       <p className="section-label">Ask Calshot</p>
                       <div className="suggestions">
-                        {[
-                          "What do I have tomorrow?",
-                          "Move my weekend shifts to Work",
-                          "Help me add my course deadlines",
-                        ].map((prompt) => (
+                        {([
+                          ["What do I have tomorrow?", CalendarClock, "suggestion-blue"],
+                          ["Move my weekend shifts to Work", ArrowRightLeft, "suggestion-violet"],
+                          ["Help me add my course deadlines", GraduationCap, "suggestion-cyan"],
+                        ] as const).map(([prompt, Icon, tint]) => (
                           <button
                             key={prompt}
                             onClick={() => {
@@ -235,6 +286,7 @@ function App() {
                               composer.current?.focus();
                             }}
                           >
+                            <Icon size={15} className={tint} aria-hidden="true" />
                             {prompt}
                           </button>
                         ))}
@@ -253,7 +305,8 @@ function App() {
                           <h3>Let Calshot see your calendars</h3>
                           <p className="fine-print">
                             Use calendars already on this Mac or connect an
-                            account. Calendar changes always need your approval.
+                            account. Choose how Calshot saves changes in
+                            Settings.
                           </p>
                           <button
                             className="text-button"
@@ -317,12 +370,20 @@ function App() {
                         />
                       )}
                       {state.taskReview && (
-                        <TaskChangeReview key={state.taskReview.id} review={state.taskReview} />
+                        <TaskChangeReview
+                          key={state.taskReview.id}
+                          review={state.taskReview}
+                        />
                       )}
                       {state.taskOutcome && !state.taskReview && (
-                        <TaskOutcomeCard key={state.taskOutcome.id} outcome={state.taskOutcome} />
+                        <TaskOutcomeCard
+                          key={state.taskOutcome.id}
+                          outcome={state.taskOutcome}
+                        />
                       )}
-                      {(state.proposals.length > 0 || state.taskImport) && <Review state={state} />}
+                      {(state.proposals.length > 0 || state.taskImport) && (
+                        <Review state={state} />
+                      )}
                       {state.summary &&
                         !state.running &&
                         !state.messages.some(
@@ -386,14 +447,14 @@ function App() {
                             ? "Saving the task change…"
                             : "Waiting for your review of the task change"
                           : state.waitingApproval
-                          ? "Waiting for your approval"
-                          : state.saving
-                            ? "Saving approved changes…"
-                            : state.isRecognizing
-                              ? "Reading the screenshot…"
-                              : state.running
-                                ? "Calshot is working…"
-                                : "Calendar changes need your approval"}
+                            ? "Waiting for your approval"
+                            : state.saving
+                              ? "Saving approved changes…"
+                              : state.isRecognizing
+                                ? "Reading the screenshot…"
+                                : state.running
+                                  ? "Calshot is working…"
+                                  : "Ask about your calendars or tasks"}
                     </span>
                     {(state.running || state.saving) && (
                       <button
@@ -437,7 +498,14 @@ function App() {
                       value={text}
                       maxLength={8000}
                       rows={1}
-                      disabled={
+                      readOnly={
+                        sending ||
+                        state.saving ||
+                        state.isCapturing ||
+                        state.isRecognizing ||
+                        (state.running && !state.question)
+                      }
+                      aria-disabled={
                         sending ||
                         state.saving ||
                         state.isCapturing ||
@@ -490,51 +558,45 @@ function App() {
                   </form>
                 </div>
               </section>
-              {state.imageURL && source && (
-                <aside className="source-panel is-open">
-                  <div className="section-heading">
-                    <h3>Source</h3>
-                    <button
-                      className="icon-button"
-                      aria-label="Close source"
-                      onClick={() => setSource(false)}
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                  <img
-                    className="source-image"
-                    src={state.imageURL}
-                    alt="Captured screenshot for the current task"
-                  />
-                  <p className="fine-print">
-                    Only the captured area was read. Content above or below it
-                    isn't included.
-                  </p>
-                  <details>
-                    <summary>Show recognized text</summary>
-                    <pre className="source-text">
-                      {state.ocr ||
-                        "Recognized text will appear when available."}
-                    </pre>
-                  </details>
-                  <button
-                    className="button secondary"
-                    style={{ marginTop: 15 }}
-                    disabled={state.saving || state.isCapturing}
-                    onClick={() => void run("capture", { append: true })}
+              {state.imageURL &&
+                source &&
+                (compact ? (
+                  <Modal
+                    title="Source"
+                    onClose={() => setSource(false)}
+                    className="source-dialog"
                   >
-                    <Plus size={13} />
-                    Add another screenshot
-                  </button>
-                </aside>
-              )}
+                    <SourceContent state={state} run={run} />
+                  </Modal>
+                ) : (
+                  <aside
+                    className="source-panel is-open"
+                    aria-label="Source screenshot"
+                  >
+                    <div className="section-heading">
+                      <h3>Source</h3>
+                      <button
+                        className="icon-button"
+                        aria-label="Close source"
+                        title="Close source"
+                        onClick={() => setSource(false)}
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                    <SourceContent state={state} run={run} />
+                  </aside>
+                ))}
             </div>
           </>
         ) : state.page === "calendars" ? (
           <CalendarPage state={state} onCommand={command} />
         ) : state.page === "tasks" ? (
-          <TasksPage state={state} onCommand={command} deadlineReview={<Review state={state} />} />
+          <TasksPage
+            state={state}
+            onCommand={command}
+            deadlineReview={<Review state={state} />}
+          />
         ) : state.page === "library" ? (
           <HistoryPage state={state} />
         ) : (
@@ -583,6 +645,42 @@ function App() {
         </div>
       )}
     </div>
+  );
+}
+function SourceContent({
+  state,
+  run,
+}: {
+  state: AppState;
+  run: (action: string, extra?: Record<string, unknown>) => Promise<void>;
+}) {
+  return (
+    <>
+      <img
+        className="source-image"
+        src={state.imageURL}
+        alt="Captured screenshot for the current task"
+      />
+      <p className="fine-print">
+        Only the captured area was read. Content above or below it isn't
+        included.
+      </p>
+      <details>
+        <summary>Show recognized text</summary>
+        <pre className="source-text">
+          {state.ocr || "Recognized text will appear when available."}
+        </pre>
+      </details>
+      <button
+        className="button secondary"
+        style={{ marginTop: 15 }}
+        disabled={state.saving || state.isCapturing}
+        onClick={() => void run("capture", { append: true })}
+      >
+        <Plus size={13} />
+        Add another screenshot
+      </button>
+    </>
   );
 }
 function Startup() {

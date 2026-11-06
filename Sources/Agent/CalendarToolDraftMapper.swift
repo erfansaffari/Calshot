@@ -66,19 +66,33 @@ enum CalendarToolDraftMapper {
         let negated = #"(?i)\b(?:not|isn't|is not|don't use|do not use)\s+(?:the year\s+)?"# + year + #"\b"#
         return text.range(of: negated, options: .regularExpression) == nil
     }
+    /// Separates the user's turns inside a confirmed context, so one turn's date is read with that turn's year.
+    static let turnSeparator = "\n\u{1E}\n"
+    /// The one year these words state, for filling in a review. Competing or negated years settle nothing.
+    static func singleStatedYear(in text: String) -> Int? {
+        guard let regex = try? NSRegularExpression(pattern: #"\b(?:19\d{2}|20\d{2}|21\d{2}|2200)\b"#) else { return nil }
+        let ns = text as NSString
+        let years = Set(regex.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range) })
+        guard years.count == 1, let year = years.first, explicitlyConfirmsYear(year, in: text) else { return nil }
+        return Int(year)
+    }
     private static let monthPatterns = ["jan(?:uary)?", "feb(?:ruary)?", "mar(?:ch)?", "apr(?:il)?", "may", "june?", "july?", "aug(?:ust)?",
                                         "sep(?:t(?:ember)?)?", "oct(?:ober)?", "nov(?:ember)?", "dec(?:ember)?"]
-    /// True when the user's own words name this month and day ("Nov 12", "November 12th", "12 November", "the 12th of Nov").
+    private static let spokenDays = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth",
+                                     "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth", "twenty[- ]first", "twenty[- ]second", "twenty[- ]third", "twenty[- ]fourth", "twenty[- ]fifth",
+                                     "twenty[- ]sixth", "twenty[- ]seventh", "twenty[- ]eighth", "twenty[- ]ninth", "thirtieth", "thirty[- ]first"]
+    /// True when the user's own words name this month and day ("Nov 12", "November 12th", "12 November", "the 12th of Nov", "November twelfth").
     /// Numeric forms such as 11/12 are skipped: day/month order is ambiguous.
     static func userNamesMonthDay(month: Int, day: Int, in text: String) -> Bool {
         guard (1...12).contains(month), (1...31).contains(day) else { return false }
-        let name = monthPatterns[month - 1], number = "0?\(day)(?:st|nd|rd|th)?"
+        let name = monthPatterns[month - 1], number = "(?:0?\(day)(?:st|nd|rd|th)?|\(spokenDays[day - 1]))"
         let patterns = [#"(?i)\b"# + name + #"\.?,?\s+(?:the\s+)?"# + number + #"\b"#,
                         #"(?i)\b(?:the\s+)?"# + number + #"\s+(?:of\s+)?"# + name + #"\b"#]
         return patterns.contains { text.range(of: $0, options: .regularExpression) != nil }
     }
     static func mentionsAnyYear(_ text: String) -> Bool {
-        text.range(of: #"\b(?:19|20|21)\d{2}\b"#, options: .regularExpression) != nil
+        // "next year" counts: moving that date to its next occurrence would silently pick the wrong year.
+        text.range(of: #"(?i)\b(?:19|20|21)\d{2}\b|\b(?:next|last|this) year\b|'\d{2}\b"#, options: .regularExpression) != nil
     }
     /// The next time this month/day occurs, today included, in the event's calendar. Skips years where it does not exist (Feb 29).
     static func nextOccurrence(month: Int, day: Int, from now: Date, calendar: Calendar) -> Date? {
@@ -116,15 +130,20 @@ enum CalendarToolDraftMapper {
         // Native code settles that year deterministically (correcting a past year the model chose); dates that
         // appear only in a screenshot or other source keep their year unresolved for review.
         var yearFromUserWords = false
-        if let parsed = day, !mentionsAnyYear(confirmedContext) {
+        // A year counts only from the turn naming this date or a later one. Other turns may be about other events.
+        var yearContext = confirmedContext
+        if let parsed = day {
             let month = calendar.component(.month, from: parsed), dayOfMonth = calendar.component(.day, from: parsed)
-            if userNamesMonthDay(month: month, day: dayOfMonth, in: confirmedContext),
-               let upcoming = nextOccurrence(month: month, day: dayOfMonth, from: now, calendar: calendar) {
-                day = upcoming; yearFromUserWords = true
+            let turns = confirmedContext.components(separatedBy: turnSeparator)
+            if let naming = turns.lastIndex(where: { userNamesMonthDay(month: month, day: dayOfMonth, in: $0) }) {
+                yearContext = turns[naming...].joined(separator: "\n")
+                if !mentionsAnyYear(yearContext), let upcoming = nextOccurrence(month: month, day: dayOfMonth, from: now, calendar: calendar) {
+                    day = upcoming; yearFromUserWords = true
+                }
             }
         }
         let resolvedYear = day.map { String(calendar.component(.year, from: $0)) }
-        if !yearFromUserWords, let year = resolvedYear ?? dateValue.map({ String($0.prefix(4)) }), !explicitlyConfirmsYear(String(year), in: confirmedContext),
+        if !yearFromUserWords, let year = resolvedYear ?? dateValue.map({ String($0.prefix(4)) }), !explicitlyConfirmsYear(String(year), in: yearContext),
            yearInferred == true || !((context + "\n" + evidence).contains(String(year)) || (spokenRelative && yearInferred == false && [clockYear, clockYear + 1].contains(Int(year) ?? 0))) {
             issues.append(.missingYear)
         }

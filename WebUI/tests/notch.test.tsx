@@ -130,13 +130,70 @@ it("Return requires a visible clean review and ignores repeats, controls, and re
   expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
   await userEvent.click(screen.getByRole("button", { name: "Review", exact: true }));
   fireEvent.keyDown(window, { key: "Enter", repeat: true });
-  fireEvent.keyDown(screen.getByRole("textbox", { name: "Follow-up message" }), { key: "Enter" });
+  fireEvent.keyDown(screen.getByRole("button", { name: "Hide review", exact: true }), { key: "Enter" });
   expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
   fireEvent.keyDown(window, { key: "Enter" });
   expect(mock.command.mock.calls.filter(([c]) => c.action === "approve")).toHaveLength(1);
   mock.state = { ...mock.state, approvalToken: "replacement" }; view.rerender(<NotchApp />);
   fireEvent.keyDown(window, { key: "Enter" });
   expect(mock.command.mock.calls.filter(([c]) => c.action === "approve")).toHaveLength(1);
+});
+function voiceYearReview() {
+  voiceReview();
+  mock.state.approvalToken = "review-first"; mock.state.canApprove = false; mock.state.checking = false;
+  mock.state.proposals = [{ ...mock.state.proposals[0], isSelected: false, isApprovable: false, canSelect: false, issues: ["Confirm the year.", "Confirm the event duration."] }];
+  mock.state.proposals[0].draft = { ...mock.state.proposals[0].draft, ambiguities: ["missingYear", "missingEndTime"] };
+}
+it("confirms the year of a voice review in the notch with the newest token and never approves it", async () => {
+  voiceYearReview(); const view = render(<NotchApp />);
+  const field = screen.getByRole("spinbutton", { name: "Year for unconfirmed events" });
+  await userEvent.type(field, "2027");
+  // A native refresh arrives while the user is typing: the text stays and the new token is the one sent.
+  mock.state = { ...mock.state, approvalToken: "review-refreshed" }; view.rerender(<NotchApp />);
+  expect((screen.getByRole("spinbutton", { name: "Year for unconfirmed events" }) as HTMLInputElement).value).toBe("2027");
+  fireEvent.keyDown(field, { key: "Enter" });
+  await userEvent.click(screen.getByRole("button", { name: "Confirm year" }));
+  expect(mock.command).toHaveBeenCalledWith({ action: "confirmProposalYears", token: "review-refreshed", year: 2027 });
+  expect(document.activeElement).toBe(screen.getByRole("region", { name: "Proposed changes" }));
+  expect(mock.command.mock.calls.some(([c]) => ["approve", "stopVoice", "skipApproval"].includes(c.action))).toBe(false);
+  // Other unresolved details stay on the row after the year is settled.
+  mock.state = { ...mock.state, approvalToken: "review-after-year", proposals: [{ ...mock.state.proposals[0], issues: ["Confirm the event duration."], draft: { ...mock.state.proposals[0].draft, ambiguities: ["missingEndTime"] } }] };
+  view.rerender(<NotchApp />);
+  expect(screen.getByText("Confirm the event duration.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Confirm year" })).toBeNull();
+});
+it("keeps a rejected year typed and explains it beside the field", async () => {
+  voiceYearReview(); render(<NotchApp />);
+  mock.command.mockImplementation(async (c: { action: string }) => { if (c.action === "confirmProposalYears") throw new Error("The review changed. Check the latest events before continuing."); });
+  await userEvent.type(screen.getByRole("spinbutton", { name: "Year for unconfirmed events" }), "2027");
+  await userEvent.click(screen.getByRole("button", { name: "Confirm year" }));
+  const error = await screen.findByText("The review changed. Check the latest events before continuing.");
+  expect(error.closest(".review-year")).toBeTruthy();
+  expect((screen.getByRole("spinbutton", { name: "Year for unconfirmed events" }) as HTMLInputElement).value).toBe("2027");
+  mock.command.mockReset(); mock.command.mockResolvedValue(undefined);
+});
+it("waits for the native duplicate check before a year can be confirmed", async () => {
+  voiceYearReview(); mock.state.checking = true; render(<NotchApp />);
+  await userEvent.type(screen.getByRole("spinbutton", { name: "Year for unconfirmed events" }), "2027");
+  expect((screen.getByRole("button", { name: "Confirm year" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText("Checking your calendar for duplicates…")).toBeTruthy();
+});
+it("Escape in the year field leaves voice and its review alone", async () => {
+  voiceYearReview(); render(<NotchApp />);
+  const field = screen.getByRole("spinbutton", { name: "Year for unconfirmed events" });
+  field.focus(); fireEvent.keyDown(field, { key: "Escape" });
+  expect(document.activeElement).not.toBe(field);
+  expect(mock.command.mock.calls.some(([c]) => ["stopVoice", "approve", "skipApproval"].includes(c.action))).toBe(false);
+});
+it("does not let Return approve a review that just replaced the one being edited", async () => {
+  voiceReview(); const view = render(<NotchApp />);
+  mock.state = { ...mock.state, approvalToken: "year-just-confirmed" }; view.rerender(<NotchApp />);
+  fireEvent.keyDown(window, { key: "Enter" });
+  expect(mock.command.mock.calls.some(([c]) => c.action === "approve")).toBe(false);
+});
+it("hides typed follow-ups that voice mode would reject", () => {
+  voiceReview(); render(<NotchApp />);
+  expect(screen.queryByRole("textbox", { name: "Follow-up message" })).toBeNull();
 });
 it.each(["update", "delete", "move"] as const)("Return never approves %s", async operation => {
   voiceReview(); mock.state.proposals.forEach(p => { p.operation = operation; }); render(<NotchApp />);
@@ -235,4 +292,34 @@ it("suspends an unfinished editor behind the compact pill and restores its input
  mock.state={...mock.state,notchExpanded:true}; view.rerender(<NotchApp />);
  expect(screen.getByRole("dialog")).toBeTruthy();
  expect((screen.getByRole("textbox",{name:"Event title"}) as HTMLInputElement).value).toBe("Unfinished fictional title");
+});
+
+it("keeps the talk button mounted as a held turn starts listening", () => {
+  voiceFixture();
+  const view = render(<NotchApp />);
+  const button = screen.getByRole("button", { name: "Hold to talk" });
+  fireEvent.pointerDown(button, { button: 0, pointerId: 1 });
+  mock.state = { ...mock.state, voice: { ...mock.state.voice!, talking: true } };
+  view.rerender(<NotchApp />);
+  expect(screen.getByRole("button", { name: "Hold to talk" })).toBe(button);
+  fireEvent.pointerUp(window, { pointerId: 1 });
+  expect(mock.command.mock.calls.filter(([c]) => c.action === "voiceTalk" && !c.pressed)).toHaveLength(1);
+});
+
+it("releases an idle microphone press after it becomes a live voice pill", () => {
+  voiceFixture(); mock.state.voice!.active = false;
+  const view = render(<NotchApp />);
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Hold to talk" }), { button: 0, pointerId: 1 });
+  mock.state = { ...mock.state, voice: { ...mock.state.voice!, active: true, talking: true } };
+  view.rerender(<NotchApp />);
+  fireEvent.pointerUp(window, { pointerId: 1 });
+  expect(mock.command.mock.calls.filter(([c]) => c.action === "voiceTalk" && !c.pressed)).toHaveLength(1);
+});
+
+it("releases a held keyboard turn once when focus leaves the notch", () => {
+  voiceFixture(); render(<NotchApp />);
+  fireEvent.keyDown(screen.getByRole("button", { name: "Hold to talk" }), { key: " " });
+  fireEvent(window, new Event("blur"));
+  fireEvent.keyUp(window, { key: " " });
+  expect(mock.command.mock.calls.filter(([c]) => c.action === "voiceTalk" && !c.pressed)).toHaveLength(1);
 });

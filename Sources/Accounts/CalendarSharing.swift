@@ -161,11 +161,14 @@ extension CalshotModel {
     }
     func syncSharedCalendars(force: Bool = false) async {
         guard !softwareUpdates.installing else { return }
-        guard account.canUseWorkspace, let user = account.userID, !sharingBusy, !agentIsRunning, !isSaving, !isCapturing, !isRecognizing else { return }
+        guard account.canUseWorkspace, let user = account.userID, !sharingBusy else { return }
         sharingBusy = true
         defer { if account.userID == user { sharingBusy = false } }
         do {
             try await readSharing(user: user)
+            // Incoming metadata is read-only and must keep refreshing during a task.
+            // Publication of already shared local calendars still waits for idle.
+            guard !agentIsRunning, !isSaving, !isCapturing, !isRecognizing else { return }
             let sources = calendarSharing.sources.filter { !$0.withdrawn && $0.sourceKey.hasPrefix(Self.syncDeviceID + ":") }
             for source in sources {
                 let grants = calendarSharing.shares.filter { $0.outgoing && ["pending", "accepted"].contains($0.status) && $0.calendars.contains(where: { $0.id == source.id }) }
@@ -211,10 +214,13 @@ extension CalshotModel {
         }
     }
     var friendAccessToken: String {
-        let rows = friendBrowserSources.map { $0.id + ":" + $0.share.permission + ":" + $0.calendar.name }
+        let rows = friendBrowserSources.map { source in
+            [source.id, source.share.permission, source.calendar.name, source.calendar.syncedAt,
+             String(source.calendar.stale), source.calendar.error ?? ""].joined(separator: ":")
+        }
         return SHA256.hash(data: Data((rows.joined(separator: "|") + (sharingError ?? "") + (account.userID?.uuidString ?? "")).utf8)).map { String(format: "%02x", $0) }.joined()
     }
-    func browseFriendCalendar(id: String, start: Date, end: Date) async throws -> (events: [JSONValue], warning: String?) {
+    func browseFriendCalendar(id: String, start: Date, end: Date) async throws -> (events: [JSONValue], warning: String?, warningKind: String?, syncedAt: String) {
         guard let user = account.userID, let source = friendBrowserSources.first(where: { $0.id.lowercased() == id.lowercased() }) else { throw CalendarToolArgumentError("This friend calendar is no longer available. Refresh sharing.") }
         let token = friendAccessToken
         let result = try await sharingCall("read_shared_calendar", .object(["invite": .string(source.share.id.uuidString), "calendar": .string(source.calendar.id.uuidString), "starts": .string(ISO8601DateFormatter().string(from: start)), "ends": .string(ISO8601DateFormatter().string(from: end)), "search": .string("")]), user: user)
@@ -234,8 +240,11 @@ extension CalshotModel {
             if let url = row["url"]?.stringValue, !["http", "https", "mailto"].contains(URL(string: url)?.scheme?.lowercased() ?? "") { row.removeValue(forKey: "url") }
             return .object(row)
         }
-        let warning = fields["error"]?.stringValue ?? (fields["stale"]?.boolValue == true ? "This friend calendar is out of date. Ask your friend to open Calshot and sync before relying on availability." : fields["complete"]?.boolValue != true ? "This friend calendar does not cover the full displayed date range. Missing events do not mean free time." : nil)
-        return (rows, warning)
+        let failed = fields["error"]?.stringValue
+        let stale = fields["stale"]?.boolValue == true
+        let incomplete = fields["complete"]?.boolValue != true
+        let warning = failed ?? (stale ? "Showing the last shared copy. Your friend’s Mac must run Calshot to upload changes. Recent changes may be missing." : incomplete ? "This shared copy does not cover the full displayed date range. Missing events do not mean free time." : nil)
+        return (rows, warning, failed != nil ? "error" : stale ? "stale" : incomplete ? "coverage" : nil, fields["syncedAt"]?.stringValue ?? source.calendar.syncedAt)
     }
 }
 

@@ -468,6 +468,39 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         XCTAssertTrue(client.captions.last?.contains("Nov 3, 2026 · 6:00 PM") == true); XCTAssertTrue(client.captions.last?.contains("untrusted") == true)
         XCTAssertEqual(shared?.text, "Fictional kick-off Nov 3, 2026 · 6:00 PM"); s.stop()
     }
+    func testCreateWaitsForTheSpokenTurnsTranscriptButReadsDoNot() async throws {
+        let s = make(); var ran: [String] = []
+        s.execute = { name, _ in ran.append(name); return "{}" }
+        await s.toggle(); s.handle(.sessionUpdated); await say(s)
+        s.handle(.functionCall(callID: "read", name: "get_agenda", argumentsJSON: "{}"))
+        s.handle(.functionCall(callID: "write", name: "create_events", argumentsJSON: "{}"))
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(ran, ["get_agenda"])
+        s.handle(.userTranscript(itemID: "turn", text: "Fictional spoken request", final: true))
+        for _ in 0..<500 where ran.count < 2 { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(ran, ["get_agenda", "create_events"]); s.stop()
+    }
+    func testCreateProceedsWhenTranscriptionFailsOrNeverArrives() async throws {
+        let s = make(); var ran = 0
+        s.execute = { _, _ in ran += 1; return "{}" }
+        await s.toggle(); s.handle(.sessionUpdated); await say(s)
+        s.handle(.functionCall(callID: "a", name: "create_events", argumentsJSON: "{}"))
+        s.handle(.unknown(RealtimeWire.transcriptionFailed.rawValue))
+        for _ in 0..<500 where ran < 1 { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(ran, 1)
+        s.transcriptWait = .milliseconds(30); await say(s)
+        s.handle(.functionCall(callID: "b", name: "create_events", argumentsJSON: "{}"))
+        for _ in 0..<500 where ran < 2 { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(ran, 2); s.stop()
+    }
+    func testStoppingDuringTheTranscriptWaitRunsNothing() async throws {
+        let s = make(); var ran = 0
+        s.execute = { _, _ in ran += 1; return "{}" }
+        await s.toggle(); s.handle(.sessionUpdated); await say(s)
+        s.handle(.functionCall(callID: "a", name: "create_events", argumentsJSON: "{}"))
+        s.stop(); try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(ran, 0)
+    }
     func testTooShortHoldIsDiscardedAndQuickTapEndsSession() async throws {
         let s = make(); await s.toggle(); s.handle(.sessionUpdated)
         await s.talk(true); audio.onInput?(Data(count: 960)); try await Task.sleep(for: .milliseconds(400)); await s.talk(false); await settle()

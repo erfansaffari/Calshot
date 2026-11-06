@@ -1,3 +1,4 @@
+import { useGlassAppearance } from "./appearance";
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { ArrowUp, ChevronDown, ExternalLink, Eye, Mic, ScanLine, Square, X } from "lucide-react";
 import { VoicePill } from "./components/VoicePill";
@@ -10,7 +11,12 @@ import { InlineError, Spinner } from "./components/ui";
 /** Small by default. Questions, edits and approvals share the native task's state. */
 export default function NotchApp() {
   const state = useAppState();
+  useGlassAppearance(state);
   const lastReturn = useRef(-Infinity);
+  // A Return meant for the previous review must not land on the one that just replaced it.
+  const shownToken = useRef(state.approvalToken);
+  const tokenChangedAt = useRef(-Infinity);
+  const heldTalk = useRef<"pointer" | "keyboard" | null>(null);
   const [text, setText] = useState("");
   const [reviewRequested, setReview] = useState(true);
   const [sourceRequested, setSource] = useState(false);
@@ -21,12 +27,22 @@ export default function NotchApp() {
   const compact = state.notchExpanded === false;
   const voiceRun = (action: string, extra: Record<string, unknown> = {}) => run(action, { token: voice?.token, ...extra });
   // Push-to-talk: press sends the current token; release is accepted after the press rotates it.
+  const releaseTalk = () => {
+    if (!heldTalk.current) return;
+    heldTalk.current = null;
+    void run("voiceTalk", { pressed: false });
+  };
+  const startTalk = (input: "pointer" | "keyboard") => {
+    if (heldTalk.current) return;
+    heldTalk.current = input;
+    void voiceRun("voiceTalk", { pressed: true });
+  };
   const talkProps = {
-    onPointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => { if (e.button !== 0) return; e.currentTarget.setPointerCapture?.(e.pointerId); void voiceRun("voiceTalk", { pressed: true }); },
-    onPointerUp: () => void run("voiceTalk", { pressed: false }),
-    onPointerCancel: () => void run("voiceTalk", { pressed: false }),
-    onKeyDown: (e: ReactKeyboardEvent) => { if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); void voiceRun("voiceTalk", { pressed: true }); } },
-    onKeyUp: (e: ReactKeyboardEvent) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); void run("voiceTalk", { pressed: false }); } },
+    onPointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => { if (e.button !== 0) return; e.currentTarget.setPointerCapture?.(e.pointerId); startTalk("pointer"); },
+    onPointerUp: releaseTalk,
+    onPointerCancel: releaseTalk,
+    onKeyDown: (e: ReactKeyboardEvent) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); if (!e.repeat) startTalk("keyboard"); } },
+    onKeyUp: (e: ReactKeyboardEvent) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); releaseTalk(); } },
   };
   const pendingRows = state.proposals.filter(p => p.inScope && !p.isFinished);
   const rows = state.waitingApproval || state.canApprove || state.taskImport || pendingRows.some(p => p.state === "failed") ? pendingRows : [];
@@ -46,6 +62,28 @@ export default function NotchApp() {
     try { await command({ action, ...extra }); }
     catch (e) { setError((e as Error).message); }
   };
+  // The initial microphone button can be replaced by the live pill mid-press.
+  // Window listeners retain the release even if that original element is gone.
+  useEffect(() => {
+    const release = () => {
+      if (!heldTalk.current) return;
+      heldTalk.current = null;
+      void command({ action: "voiceTalk", pressed: false }).catch(e => setError((e as Error).message));
+    };
+    const pointerRelease = () => { if (heldTalk.current === "pointer") release(); };
+    const keyRelease = (e: KeyboardEvent) => { if (heldTalk.current === "keyboard" && (e.key === " " || e.key === "Enter")) release(); };
+    window.addEventListener("pointerup", pointerRelease);
+    window.addEventListener("pointercancel", pointerRelease);
+    window.addEventListener("keyup", keyRelease);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("pointerup", pointerRelease);
+      window.removeEventListener("pointercancel", pointerRelease);
+      window.removeEventListener("keyup", keyRelease);
+      window.removeEventListener("blur", release);
+      release();
+    };
+  }, []);
   useEffect(() => {
     document.documentElement.dataset.surface = "notch";
     document.documentElement.dataset.appearance = state.settings.appearance || "system";
@@ -69,16 +107,25 @@ export default function NotchApp() {
     window.addEventListener("calshot:notch-collapsed", reset);
     return () => window.removeEventListener("calshot:notch-collapsed", reset);
   }, [rows.length]);
-  useEffect(() => { setReview(true); }, [state.approvalToken]);
+  useEffect(() => {
+    setReview(true);
+    if (shownToken.current !== state.approvalToken) { shownToken.current = state.approvalToken; tokenChangedAt.current = performance.now(); }
+  }, [state.approvalToken]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       if (e.metaKey && e.key === ".") { e.preventDefault(); void run("stop"); }
       const interactive = e.target instanceof Element && e.target.closest('input,textarea,select,button,[contenteditable]:not([contenteditable="false"])');
-      if (e.key === "Enter" && voice?.active && !compact && !e.repeat && !interactive && !document.querySelector('[role="dialog"]') && review && !state.question && !taskReview && !outcome && quickApprove && state.canApprove && state.waitingApproval && performance.now() - lastReturn.current >= 500) {
+      if (e.key === "Enter" && voice?.active && !compact && !e.repeat && !interactive && !document.querySelector('[role="dialog"]') && review && !state.question && !taskReview && !outcome && quickApprove && state.canApprove && state.waitingApproval && performance.now() - lastReturn.current >= 500 && performance.now() - tokenChangedAt.current >= 500) {
         lastReturn.current = performance.now(); e.preventDefault(); void run("approve", { token: state.approvalToken }); return;
       }
-      if (e.key === "Escape" && voice?.active) { e.preventDefault(); void voiceRun("stopVoice"); return; }
+      if (e.key === "Escape" && voice?.active) {
+        e.preventDefault();
+        // Leaving a field, such as the year, must not end voice and discard the review being edited.
+        const field = e.target instanceof HTMLElement ? e.target.closest<HTMLElement>("input,textarea,select") : null;
+        if (field) field.blur(); else void voiceRun("stopVoice");
+        return;
+      }
       if (e.key === "Escape" && !document.querySelector('[role="dialog"]')) {
         e.preventDefault();
         if (review || source) { setReview(false); setSource(false); }
@@ -133,13 +180,13 @@ export default function NotchApp() {
     {detail && <div className="notch-details" aria-hidden={compact} inert={compact ? true : undefined}>
       <div className="notch-detail-heading"><span>{state.question ? "Your answer stays in this task" : taskReview ? "Review task change" : outcome ? "Task result" : review ? "Review changes" : source ? "Captured screenshot" : "Needs attention"}</span><button className="icon-button" aria-label="Hide details" onClick={() => { if (outcome) setDismissedOutcome(outcome.id); else if (state.question || taskReview) void run("collapseNotch"); else { setReview(false); setSource(false); } }}><X size={14} /></button></div>
       <InlineError message={error || state.notice} />
-      <InlineError message={voice?.error}>{voice?.needsKey ? <button onClick={() => void voiceRun("voiceAISettings")}>Open Settings → AI service</button> : <>{voice?.permissions && !voice.permissions.microphone && <button onClick={() => void voiceRun("voiceMicrophoneSettings")}>Microphone settings</button>}{voice?.permissions && !voice.permissions.screen && <button onClick={() => void run("screenSettings")}>Screen Recording settings</button>}</>}</InlineError>
+      <InlineError message={voice?.error}>{voice?.needsKey ? <button className="text-button" onClick={() => void voiceRun("voiceAISettings")}>Open Settings → AI service</button> : <>{voice?.permissions && !voice.permissions.microphone && <button className="text-button" onClick={() => void voiceRun("voiceMicrophoneSettings")}>Microphone settings</button>}{voice?.permissions && !voice.permissions.screen && <button className="text-button" onClick={() => void run("screenSettings")}>Screen Recording settings</button>}</>}</InlineError>
       {voice?.needsAcknowledgement && <div><p>Microphone audio and screen frames are sent to OpenAI. Voice uses paid OpenAI Realtime API billing, including transcription, even when text uses your ChatGPT plan. Your text billing choice stays the same.</p><button className="button primary" onClick={() => void voiceRun("acknowledgeVoiceBilling")}>I understand</button></div>}
-      {state.personalMemory?.pending.map(item => <div key={item.id}><p>Remember: {item.text}</p><button onClick={() => void run("approveMemory", { token: state.personalMemory!.token, memoryID: item.id, expectedVersion: item.version })}>Remember this</button><button onClick={() => void run("rejectMemory", { token: state.personalMemory!.token, memoryID: item.id, expectedVersion: item.version, dontSuggestAgain: false })}>Dismiss suggestion</button></div>)}
+      {state.personalMemory?.pending.map(item => <div key={item.id}><p>Remember: {item.text}</p><button className="text-button" onClick={() => void run("approveMemory", { token: state.personalMemory!.token, memoryID: item.id, expectedVersion: item.version })}>Remember this</button><button className="text-button" onClick={() => void run("rejectMemory", { token: state.personalMemory!.token, memoryID: item.id, expectedVersion: item.version, dontSuggestAgain: false })}>Dismiss suggestion</button></div>)}
       <InlineError message={state.agentError}>{state.canRetry && <button className="text-button" onClick={() => void run("retryAgent")}>Try again</button>}</InlineError>
       {state.screenPermissionNeeded && <InlineError message={state.status || "Allow Screen Recording to capture your screen."}><button className="text-button" onClick={() => void run("screenSettings")}>Open Screen Recording settings</button></InlineError>}
       {state.question ? <Question key={state.question.id} question={state.question} /> : taskReview ? <TaskChangeReview key={taskReview.id} review={taskReview} compact /> : outcome ? <TaskOutcomeCard key={outcome.id} outcome={outcome} /> : review ? <Review state={{ ...state, proposals: rows }} /> : source ? <img className="notch-source" src={state.imageURL} alt="Source screenshot" /> : null}
-      {!!rows.length && !state.question && <form className="notch-followup" onSubmit={e => { e.preventDefault(); void submit(); }}><input aria-label="Follow-up message" placeholder={busy ? "Approve or skip these changes to continue" : "Ask a follow-up…"} value={text} maxLength={8000} disabled={busy || sending} onChange={e => setText(e.target.value)} /><button className="button primary" disabled={busy || sending || !text.trim()} aria-label="Send follow-up"><ArrowUp size={14} /></button></form>}
+      {!!rows.length && !state.question && !voice?.active && <form className="notch-followup" onSubmit={e => { e.preventDefault(); void submit(); }}><input aria-label="Follow-up message" placeholder={busy ? "Approve or skip these changes to continue" : "Ask a follow-up…"} value={text} maxLength={8000} disabled={busy || sending} onChange={e => setText(e.target.value)} /><button className="button primary" disabled={busy || sending || !text.trim()} aria-label="Send follow-up"><ArrowUp size={14} /></button></form>}
       {!state.question && !busy && state.imageURL && (captured || rows.length > 0) && <div className="notch-footer"><button className="text-button" onClick={() => { setSource(!source); setReview(false); }}>View screenshot</button></div>}
     </div>}
 

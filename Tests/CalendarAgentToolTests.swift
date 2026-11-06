@@ -310,6 +310,36 @@ final class CalendarAgentToolTests: XCTestCase {
         let stated = try CalendarToolDraftMapper.create(event("2027-11-12"), context: "", confirmedContext: "Dentist Nov 12 2027 at 3", now: now)
         XCTAssertFalse(stated.ambiguities.contains(.missingYear)); XCTAssertEqual(day(stated), "2027-11-12", "A stated year is never moved")
     }
+    func testSpokenFormsAndTurnsSettleAMonthAndDaysYearCorrectly() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-10-29T22:00:00-04:00")!
+        let sep = CalendarToolDraftMapper.turnSeparator
+        func event(_ date: String) -> JSONValue {
+            .object(["title": .string("Fictional dentist"), "date": .string(date), "startTime": .string("15:00"), "endTime": .string("16:00"), "allDay": .bool(false), "timeZone": .string("America/New_York"),
+                     "location": .null, "url": .null, "notes": .null, "evidence": .string(""), "yearInferred": .bool(true), "dateAmbiguous": .bool(false)])
+        }
+        func year(_ draft: EventDraft) -> Int { CalendarDraftValidation.calendar(for: draft).component(.year, from: draft.startDate!) }
+        // How speech transcription writes dates, including a wrong year chosen by the model.
+        for text in ["dentist November twelfth from 3 to 4", "the twelfth of November", "Nov. 12th", "twelfth November"] {
+            let draft = try CalendarToolDraftMapper.create(event("2019-11-12"), context: "", confirmedContext: text, now: now)
+            XCTAssertFalse(draft.ambiguities.contains(.missingYear), text); XCTAssertEqual(year(draft), 2026, text)
+        }
+        let compound = try CalendarToolDraftMapper.create(event("2026-12-23"), context: "", confirmedContext: "December twenty-third", now: now)
+        XCTAssertFalse(compound.ambiguities.contains(.missingYear))
+        XCTAssertFalse(CalendarToolDraftMapper.userNamesMonthDay(month: 11, day: 12, in: "November thirteenth"), "A different day never matches")
+        // A year in an earlier turn is about something else; it no longer forces a year review.
+        let otherTurn = try CalendarToolDraftMapper.create(event("2026-11-12"), context: "", confirmedContext: "how was 2024 for me?" + sep + "add dentist Nov 12", now: now)
+        XCTAssertFalse(otherTurn.ambiguities.contains(.missingYear)); XCTAssertEqual(year(otherTurn), 2026)
+        // A year in the same or a later turn belongs to the date and is never moved.
+        let answered = try CalendarToolDraftMapper.create(event("2028-11-12"), context: "", confirmedContext: "add dentist Nov 12" + sep + "2028", now: now)
+        XCTAssertFalse(answered.ambiguities.contains(.missingYear)); XCTAssertEqual(year(answered), 2028)
+        // Relative years are not a next occurrence: never silently written for the wrong year.
+        for text in ["dentist Nov 12 next year", "dentist Nov 12 '28"] {
+            let draft = try CalendarToolDraftMapper.create(event("2027-11-12"), context: "", confirmedContext: text, now: now)
+            XCTAssertTrue(draft.ambiguities.contains(.missingYear), text); XCTAssertEqual(year(draft), 2027, text)
+        }
+        XCTAssertEqual(CalendarToolDraftMapper.singleStatedYear(in: "it's 2028"), 2028)
+        for text in ["2026 or 2028", "not 2028", "around twenty", "room 20281"] { XCTAssertNil(CalendarToolDraftMapper.singleStatedYear(in: text), text) }
+    }
     func testExplicitUserYearOverridesInferredFlagButModelAndScreenYearsDoNot() throws {
         var fields = payload(1).objectValue!; fields["yearInferred"] = .bool(true)
         let value = JSONValue.object(fields)

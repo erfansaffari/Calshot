@@ -72,7 +72,7 @@ export function Question({
       </form>
       <InlineError message={error} />
       <footer>
-        <small>Calendar changes need your review.</small>
+        <small>Your answer helps prepare the changes.</small>
         <button
           className="text-button"
           disabled={busy}

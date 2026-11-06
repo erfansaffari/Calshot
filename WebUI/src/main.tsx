@@ -4,6 +4,8 @@ import App from "./App";
 import NotchApp from "./NotchApp";
 import "./styles.css";
 import "./notch.css";
+import "./glass.css";
+import "./ambient.css";
 import { CalendarPresentationProvider } from "./calendarPresentation";
 class ErrorBoundary extends Component<
   { children: ReactNode },

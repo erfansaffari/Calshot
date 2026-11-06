@@ -159,7 +159,7 @@ export function CalendarPage({
     return { start: days[0], end, days };
   }, [rangeKey]);
   const visibleSources = [...state.calendars, ...friendCalendars(state)];
-  const sharingAccess = JSON.stringify(state.sharing?.shares.map(s => [s.id, s.permission, s.status, s.calendars.map(c => c.id)]) || []);
+  const sharingAccess = JSON.stringify(state.sharing?.shares.map(s => [s.id, s.permission, s.status, s.calendars.map(c => [c.id, c.name, c.syncedAt, c.stale, c.error])]) || []);
   const ids = visibleSources
     .filter((c) => !hidden.has(c.id))
     .map((c) => c.id)
@@ -184,7 +184,7 @@ export function CalendarPage({
     return () => {
       current = false;
     };
-  }, [range, idsKey, refresh, sharingAccess, state.sharing?.error]);
+  }, [range, idsKey, refresh, sharingAccess, state.sharing?.error, state.calendarContentToken, state.voice?.active, state.captureID]);
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 60000);
     return () => clearInterval(timer);
@@ -193,6 +193,7 @@ export function CalendarPage({
   const loading = pending || Boolean(view?.loading);
   const matches = Boolean(
     view?.loaded &&
+    view.contentToken === state.calendarContentToken &&
     view.start &&
     new Date(view.start).getTime() === range.start.getTime() &&
     new Date(view.end!).getTime() === range.end.getTime(),
@@ -211,6 +212,8 @@ export function CalendarPage({
     ...(matches ? (view?.errors || []).filter((e) => ids.includes(e.calendarIdentifier)) : []),
     ...(state.sharing?.error ? [{ calendarIdentifier: "shared:status", calendarName: "Friend calendars", message: state.sharing.error }] : []),
   ];
+  const copyWarnings = errors.filter(e => "kind" in e && (e.kind === "stale" || e.kind === "coverage"));
+  const loadErrors = errors.filter(e => !copyWarnings.includes(e));
   const detail = events.find((e) => eventKey(e) === detailKey);
   const detailInfo = detail ? eventInfo(detail) : undefined;
   const detailCalendar = detail
@@ -494,10 +497,10 @@ export function CalendarPage({
             </button>
           </p>
         )}
-        {!!errors.length && (
+        {!!loadErrors.length && (
           <div className="calendar-load-errors" role="alert">
             <strong>Some calendars couldn’t be loaded</strong>
-            {errors.map((e) => (
+            {loadErrors.map((e) => (
               <p key={e.calendarIdentifier}>
                 {e.calendarName}: {e.message}
               </p>
@@ -508,6 +511,18 @@ export function CalendarPage({
             >
               Try again
             </button>
+          </div>
+        )}
+        {!!copyWarnings.length && (
+          <div className="notice calendar-copy-warning" role="status">
+            <div>
+              <strong>Some shared calendars need an update</strong>
+              {copyWarnings.map(e => <p key={e.calendarIdentifier}>
+                {e.calendarName}: {e.message}
+                {"syncedAt" in e && e.syncedAt && <span className="fine-print"> Last shared sync: {new Date(String(e.syncedAt)).toLocaleString()}.</span>}
+              </p>)}
+            </div>
+            <button className="text-button" onClick={() => setRefresh(n => n + 1)}>Refresh shared copy</button>
           </div>
         )}
         {matches && view?.truncated && (
@@ -787,8 +802,10 @@ export function CalendarPage({
                 <div className="calendar-empty-label" role="status">
                   {!ids.length
                     ? "Choose calendars in the sidebar to see your events."
-                    : errors.length || error
+                    : loadErrors.length || error
                       ? "Some calendars couldn’t be checked."
+                      : copyWarnings.length
+                        ? "No events in the available copies for this range. Shared copies may be out of date or incomplete."
                       : matches
                         ? `Nothing scheduled this ${mode}.`
                         : "Waiting for calendar data…"}
@@ -801,8 +818,10 @@ export function CalendarPage({
                 ? "Loading events…"
                 : error
                   ? "Couldn’t refresh calendars"
-                  : errors.length
+                  : loadErrors.length
                     ? "Some calendars unavailable"
+                    : copyWarnings.length
+                      ? "Shared copies may be out of date or incomplete"
                     : !ids.length
                       ? "No calendars selected"
                       : !matches

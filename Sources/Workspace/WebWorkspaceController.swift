@@ -112,6 +112,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         guard calendars.count + shared.count == identifiers.count else { throw CalendarToolArgumentError("A calendar changed. Refresh your calendars and try again.") }
         if !model.taskDataReady { model.loadTasks() }
         let owner = model.account.userID
+        let contentToken = model.calendarContentToken
         let storeURL = model.taskStore.url
         let taskSessionID = model.taskSessionID
         let captureID = model.currentCaptureSessionID
@@ -156,18 +157,18 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 let result = try await model.browseFriendCalendar(id: source.id, start: start, end: end)
                 guard calendarViewRequestID == id, model.account.userID == owner, model.friendAccessToken == accessToken else { return }
                 events.append(contentsOf: result.events)
-                if let warning = result.warning { errors.append(.object(["calendarIdentifier": .string(source.id), "calendarName": .string(source.share.personName + " · " + source.calendar.name), "message": .string(warning)])) }
+                if let warning = result.warning { errors.append(.object(["calendarIdentifier": .string(source.id), "calendarName": .string(source.share.personName + " · " + source.calendar.name), "message": .string(warning), "kind": result.warningKind.map(JSONValue.string) ?? .null, "syncedAt": .string(result.syncedAt)])) }
             } catch {
                 errors.append(.object(["calendarIdentifier": .string(source.id), "calendarName": .string(source.share.personName + " · " + source.calendar.name), "message": .string(error.localizedDescription)]))
             }
         }
         guard calendarViewRequestID == id, model.account.userID == owner, model.friendAccessToken == accessToken,
-              model.taskStore.url == storeURL, model.taskSessionID == taskSessionID, model.currentCaptureSessionID == captureID else { return }
+              model.calendarContentToken == contentToken, model.taskStore.url == storeURL, model.taskSessionID == taskSessionID, model.currentCaptureSessionID == captureID else { return }
         if events.count > 3000 { truncated = true }
         let visible = Array(events.prefix(3000))
         let handles = Set(visible.compactMap { $0.objectValue?["selectionHandle"]?.stringValue })
         calendarTaskSelections = selections.filter { handles.contains($0.key) }
-        calendarView = .object(["loading": .bool(false), "loaded": .bool(true), "start": .string(ISO8601DateFormatter().string(from: start)), "end": .string(ISO8601DateFormatter().string(from: end)), "events": .array(Array(events.prefix(3000))), "errors": .array(errors), "truncated": .bool(truncated)])
+        calendarView = .object(["loading": .bool(false), "loaded": .bool(true), "contentToken": .string(contentToken.uuidString), "start": .string(ISO8601DateFormatter().string(from: start)), "end": .string(ISO8601DateFormatter().string(from: end)), "events": .array(Array(events.prefix(3000))), "errors": .array(errors), "truncated": .bool(truncated)])
     }
     private func resolveCalendarTaskSelection(handle: String?, generation: String?) throws -> CalendarTaskSelection {
         guard let handle, generation == calendarViewRequestID.uuidString,
@@ -504,7 +505,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             throw CalendarToolArgumentError("Set up your AI service before confirming calendars.")
         }
         if model.voiceSession.active {
-            let safe: Set<String> = ["ready", "notchLayout", "collapseNotch", "expandNotch", "openWorkspace", "navigate", "authSignOut", "appearance", "stop", "stopVoice", "voiceTalk", "setVoiceDrawing", "voiceAISettings", "voiceMicrophoneSettings", "screenSettings", "approve", "skipApproval", "editProposal", "selectProposal", "confirmProposalYears", "compareDuplicate", "allowDuplicate", "approveTaskChange", "cancelTaskChange", "answer", "cancelQuestion", "approveMemory", "rejectMemory", "agentEnabled"]
+            let safe: Set<String> = ["ready", "notchLayout", "collapseNotch", "expandNotch", "openWorkspace", "navigate", "authSignOut", "appearance", "glassAppearance", "stop", "stopVoice", "voiceTalk", "setVoiceDrawing", "voiceAISettings", "voiceMicrophoneSettings", "screenSettings", "approve", "skipApproval", "editProposal", "selectProposal", "selectCalendar", "selectInboxTaskImport", "loadCalendarEvents", "confirmProposalYears", "compareDuplicate", "allowDuplicate", "approveTaskChange", "cancelTaskChange", "answer", "cancelQuestion", "approveMemory", "rejectMemory", "agentEnabled"]
             guard safe.contains(action) else { throw CalendarToolArgumentError("Voice mode is on — stop it first") }
         }
         switch action {
@@ -517,13 +518,11 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 guard model.account.canUseWorkspace else { throw CalendarToolArgumentError("Sign in and finish onboarding to use voice.") }
             }
             await voice.talk(pressed)
-        case "startVoice", "stopVoice", "setVoiceDrawing", "acknowledgeVoiceBilling", "voiceSettings", "voiceMicrophoneSettings", "voiceShortcut", "voiceAISettings", "voiceShortcutRecording":
+        case "startVoice", "stopVoice", "setVoiceDrawing", "acknowledgeVoiceBilling", "voiceSettings", "voiceMicrophoneSettings", "voiceAISettings":
             let voice = model.voiceSession
             var fields: Set<String> = ["action", "id", "token"]
             if action == "setVoiceDrawing" { fields.insert("drawing") }
-            if action == "voiceShortcutRecording" { fields.insert("enabled") }
             if action == "voiceSettings" { fields.formUnion(["model", "voice", "cap"]) }
-            if action == "voiceShortcut" { fields.formUnion(["keyCode", "modifiers", "label"]) }
             guard Set(body.keys).isSubset(of: fields) else { throw CalendarToolArgumentError("Invalid voice control.") }
             guard body["token"] as? String == voice.token else { throw CalendarToolArgumentError("Voice controls changed. Try again.") }
             if action == "voiceAISettings" { settingsSection = "ai"; model.openSettings() }
@@ -534,22 +533,24 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             else if action == "voiceMicrophoneSettings" { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!) }
             else {
                 guard !isNotch, model.workspaceSelection == .settings, !voice.active else { throw CalendarToolArgumentError("Stop voice and change its preferences in Settings.") }
-                if action == "voiceShortcutRecording" {
-                    guard let value = body["enabled"], CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID(), let enabled = value as? Bool else { throw CalendarToolArgumentError("Choose a recording state.") }
-                    model.setShortcutRecording(enabled)
-                    return
-                } else if action == "voiceShortcut" {
-                    guard let code = body["keyCode"] as? UInt32, code < 128, let modifiers = body["modifiers"] as? UInt32, modifiers & UInt32(0x1100) != 0, modifiers & ~UInt32(0x1F00) == 0,
-                          let label = body["label"] as? String, (1...40).contains(label.count), code != model.shortcut.keyCode || modifiers != model.shortcut.modifiers else { throw CalendarToolArgumentError("Choose a different modified shortcut.") }
-                    model.voiceShortcut = GlobalShortcut(keyCode: code, modifiers: modifiers, label: label)
-                    model.setShortcutRecording(false)
-                } else {
-                    guard let name = body["model"] as? String, (1...100).contains(name.count), name.range(of: "^[a-zA-Z0-9._-]+$", options: .regularExpression) != nil,
-                          let selectedVoice = body["voice"] as? String, ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"].contains(selectedVoice),
-                          let cap = body["cap"] as? Double, cap.isFinite, (0...10000).contains(cap) else { throw CalendarToolArgumentError("Choose a valid voice, model and monthly cap ($0–10,000).") }
-                    voice.defaults.set(name, forKey: "voice.model"); voice.defaults.set(selectedVoice, forKey: "voice.voice"); voice.defaults.set(cap, forKey: "voice.cap")
-                }
+                guard let name = body["model"] as? String, (1...100).contains(name.count), name.range(of: "^[a-zA-Z0-9._-]+$", options: .regularExpression) != nil,
+                      let selectedVoice = body["voice"] as? String, ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"].contains(selectedVoice),
+                      let cap = body["cap"] as? Double, cap.isFinite, (0...10000).contains(cap) else { throw CalendarToolArgumentError("Choose a valid voice, model and monthly cap ($0–10,000).") }
+                voice.defaults.set(name, forKey: "voice.model"); voice.defaults.set(selectedVoice, forKey: "voice.voice"); voice.defaults.set(cap, forKey: "voice.cap")
                 voice.invalidateControls()
+            }
+        case "shortcutRecording", "resetShortcut":
+            // JavaScript only starts or cancels. The key press is read and validated natively.
+            guard Set(body.keys).isSubset(of: ["action", "id", "token", "target", "enabled"]),
+                  let raw = body["target"] as? String, let target = ShortcutTarget(rawValue: raw) else { throw CalendarToolArgumentError("Choose a shortcut to change.") }
+            guard body["token"] as? String == model.voiceSession.token else { throw CalendarToolArgumentError("Shortcut controls changed. Try again.") }
+            guard !isNotch, model.workspaceSelection == .settings || (model.account.enabled && !model.account.onboarded) else { throw CalendarToolArgumentError("Change shortcuts in Settings.") }
+            if action == "resetShortcut" {
+                model.setShortcutRecording(nil)
+                model.applyShortcut(target == .capture ? .default : .voiceDefault, target: target)
+            } else {
+                guard let value = body["enabled"], CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID(), let enabled = value as? Bool else { throw CalendarToolArgumentError("Choose a recording state.") }
+                model.setShortcutRecording(enabled ? target : nil)
             }
         case "checkForUpdates":
             guard !isNotch else { throw CalendarToolArgumentError("Check for updates in Settings.") }
@@ -621,7 +622,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 Task { await model.loadCalendars(); refreshAccounts() }
             }
         case "navigate":
-            if model.isRecordingShortcut { model.setShortcutRecording(false) }
+            model.setShortcutRecording(nil)
             guard let raw = body["page"] as? String, let page = WorkspaceSection(rawValue: raw) else { return }
             if page == .settings {
                 let section = body["section"] as? String ?? "general"
@@ -822,7 +823,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         case "approve":
             try requireReview(body)
             guard (model.taskImport != nil ? model.canApproveTaskImport : model.calendarActions.canApprove) else { throw CalendarToolArgumentError("Select ready events and an available destination first.") }
-            if isNotch { onNotchCollapse?() }
+            // A first press that only rechecks the calendar saves nothing, so the review stays open.
+            if isNotch, let destination = model.selectedCalendarID, !model.calendarActions.needsDuplicateCheck(destinationID: destination) { onNotchCollapse?() }
             await model.saveEvents()
         case "skipApproval":
             try requireReview(body)
@@ -901,6 +903,19 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             guard let expanded = body["expanded"] as? Bool else { throw CalendarToolArgumentError("Choose whether to expand the sidebar.") }
             model.sidebarExpanded = expanded
             model.scheduleAccountSync()
+        case "glassAppearance":
+            guard !isNotch, model.workspaceSelection == .settings, settingsSection == "general",
+                  Set(body.keys).isSubset(of: ["action", "id", "enabled", "opacity", "blur", "contrast"]),
+                  let flag = body["enabled"], CFGetTypeID(flag as CFTypeRef) == CFBooleanGetTypeID(), let enabled = flag as? Bool else {
+                throw CalendarToolArgumentError("Change Liquid Glass in Settings → General.")
+            }
+            func number(_ key: String) throws -> Double {
+                guard let value = body[key] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite else {
+                    throw CalendarToolArgumentError("Choose a valid glass \(key) value.")
+                }
+                return value.doubleValue
+            }
+            try model.updateGlassAppearance(GlassAppearance(enabled: enabled, opacity: try number("opacity"), blur: try number("blur"), contrast: try number("contrast")))
         case "appearance":
             guard let value = body["mode"] as? String, let mode = AppAppearance(rawValue: value) else { throw CalendarToolArgumentError("Choose Light, Dark, or System appearance.") }
             model.appearanceMode = mode

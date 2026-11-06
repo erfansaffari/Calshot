@@ -42,7 +42,7 @@ extension CalshotModel {
                 guard let self else { return "" }
                 // Voice requests are spoken: the user's own transcribed words are the request text.
                 if self.voicePreparedRunID == self.activeAgentRunID, self.voicePreparedRunID != nil {
-                    return self.agentMessages.filter { $0.role == "user" }.suffix(12).compactMap(\.content).joined(separator: "\n")
+                    return self.voiceSpokenContext
                 }
                 return self.currentAgentPrompt
             },

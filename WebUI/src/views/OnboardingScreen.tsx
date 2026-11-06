@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { command } from "../bridge";
 import { InlineError, Spinner, MacCalendarConnectionHint } from "../components/ui";
+import { ShortcutControl } from "../components/ShortcutControl";
 import type { AppState } from "../types";
 
 /** Presentation steps only; native snapshots decide permission and connection readiness. */
@@ -382,14 +383,8 @@ export function OnboardingScreen({ state }: { state: AppState }) {
         )}
         {step === "shortcut" && (
           <>
-            <div className="card setup-shortcut">
-              <kbd>{state.shortcut}</kbd>
-              <button
-                className="button secondary"
-                onClick={() => void run("advancedSettings")}
-              >
-                Change shortcut
-              </button>
+            <div className="card settings-card">
+              <ShortcutControl state={state} target="capture" title="Capture shortcut" description="Select part of your screen from anywhere." />
             </div>
             <div className="card setup-card-row">
               <ScanLine />
@@ -438,7 +433,7 @@ export function OnboardingScreen({ state }: { state: AppState }) {
               </p>
             )}
             <p className="fine-print">
-              Calendar changes always need your approval. Connecting calendars
+              Choose how Calshot saves changes in Settings. Connecting calendars
               doesn’t share them with friends.
             </p>
           </>

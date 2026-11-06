@@ -197,7 +197,7 @@ export function Sidebar({
             }
             title={
               captureLabel === "Capture"
-                ? "Capture screen · " + state.shortcut
+                ? "Capture screen · " + (state.shortcuts?.capture.error ? "shortcut off, see Settings" : state.shortcut)
                 : captureLabel
             }
             disabled={state.saving || state.isCapturing}
@@ -208,7 +208,7 @@ export function Sidebar({
               <>
                 {captureLabel}{" "}
                 <small style={{ color: "inherit", opacity: 0.7 }}>
-                  {state.shortcut}
+                  {state.shortcuts?.capture.error ? "Shortcut off" : state.shortcut}
                 </small>
               </>
             )}

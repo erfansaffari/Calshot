@@ -81,4 +81,6 @@ The capture shortcut during voice displays “Voice mode is on — stop it first
 
 Explicit Stop, sign-out, account teardown and quit cancel voice executor continuations. Idle/time-limit endings preserve pending reviews and receipts. Skipping a voice calendar review removes its unfinished rows while retaining completed receipts, allowing another session. New voice sessions reject outstanding questions, capture/recognition and unfinished proposals, and clear stale OCR tasks and screen recognition. Shared-friend turns are excluded from memory and sync by the existing shared-context marker.
 
+The voice review and shortcut behavior, including spoken years and native shortcut recording, is specified in [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md).
+
 Realtime response requests coalesce while a response is in flight. Reconnect discards prior connection tool outputs without cancelling completed writes; it restores the review state and sends bounded transcript context only when present. Usage persistence is limited to changed usage every five seconds and at session end; unchanged timer snapshots do not publish.

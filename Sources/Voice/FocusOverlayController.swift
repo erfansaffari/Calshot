@@ -21,8 +21,8 @@ enum FocusInk {
     // Use the packaged shared brand token for both overlay and frame ink. Screen content
     // has its own appearance, so keep this accent stable rather than recoloring the image.
     static let color: CGColor = {
-        let value = PermissionPalette(dark: false).values["--accent"] ?? "#0760ed"
-        let rgb = UInt64(value.dropFirst(), radix: 16) ?? 0x0760ed
+        let value = PermissionPalette(dark: false).values["--accent"] ?? "#0a56d6"
+        let rgb = UInt64(value.dropFirst(), radix: 16) ?? 0x0a56d6
         return CGColor(red: CGFloat((rgb >> 16) & 255) / 255,
                        green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: 1)
     }()

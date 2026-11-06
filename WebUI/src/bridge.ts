@@ -85,6 +85,10 @@ function simulate(message: Command) {
     ["notchLayout", "collapseNotch", "openWorkspace"].includes(message.action)
   )
     return;
+  if (message.action === "glassAppearance") {
+    update({ ...state, settings: { ...state.settings, glass: { enabled: Boolean(message.enabled), opacity: Number(message.opacity), blur: Number(message.blur), contrast: Number(message.contrast) } } });
+    return;
+  }
   if (message.action === "navigate")
     update({
       ...state,

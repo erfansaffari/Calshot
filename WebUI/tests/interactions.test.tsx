@@ -84,3 +84,13 @@ it('confirms missing years using the current native review token without approvi
  view.rerender(<Review state={state}/>);
  expect(screen.queryByRole('button',{name:'Confirm year'})).toBeNull();
 });
+
+it('identifies each calendar route in a mixed-source move review',()=>{
+ const state=structuredClone(preview);
+ state.proposals[0].sourceCalendarName='School'; state.proposals[0].targetCalendarName='Personal';
+ state.proposals[1].sourceCalendarName='Work'; state.proposals[1].targetCalendarName='Family';
+ const view=render(<Review state={state}/>);
+ expect(screen.getByText('School → Personal')).toBeTruthy();
+ expect(screen.getByText('Work → Family')).toBeTruthy();
+ expect(view.container.querySelector('.transfer-path')).toBeNull();
+});

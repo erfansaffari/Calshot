@@ -89,6 +89,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
     private(set) var networkCache: [String: CachedCalendarRange] = [:]
     /// Short enough that changes made outside Calshot appear quickly; writes and new runs clear it at once.
     static let networkCacheLifetime: TimeInterval = 90
+    private var writeInFlight = false
     private static let writeTools: Set<String> = ["create_events", "update_event", "delete_event", "move_events"]
     func invalidateCalendarCache() { networkCache = [:]; cacheGeneration = UUID(); prefetchTask = nil }
     private var cacheGeneration = UUID()
@@ -262,6 +263,13 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
     func execute(name: String, arguments: JSONValue, sessionID: UUID) async -> String {
         // A write, including one approved in review while this call waits, makes cached reads stale.
         guard Self.writeTools.contains(name) else { return await perform(name: name, arguments: arguments, sessionID: sessionID) }
+        // Voice tool calls run concurrently. A second write must not replace the rows or scope of an open review.
+        while writeInFlight, approvalContinuation == nil, self.sessionID == sessionID { try? await Task.sleep(for: .milliseconds(20)) }
+        if approvalContinuation != nil {
+            return JSONValue.object(["error": .string("A review is already open and was not changed. Nothing was saved. Ask the user to finish that review in the notch; a spoken year is applied to it automatically."), "reviewOpen": .bool(true)]).jsonString()
+        }
+        writeInFlight = true
+        defer { writeInFlight = false }
         invalidateCalendarCache()
         let result = await perform(name: name, arguments: arguments, sessionID: sessionID)
         invalidateCalendarCache()

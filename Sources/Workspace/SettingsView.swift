@@ -14,7 +14,6 @@ struct SettingsView: View {
     @State private var chatGPTSignInTask: Task<Void, Never>?
     @State private var selectedChatGPTModel = ""
     @State private var isLoadingChatGPTModels = false
-    @State private var isRecordingShortcut = false
     @State private var selectedRecord: MemoryCaptureRecord?
     @State private var showingDeleteAll = false
 
@@ -76,6 +75,11 @@ struct SettingsView: View {
                     Picker("Appearance", selection: $model.appearanceMode) {
                         ForEach(AppAppearance.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
                     }.pickerStyle(.segmented)
+                    Toggle("Liquid Glass appearance", isOn: Binding(get: { model.glassAppearance.enabled }, set: { enabled in
+                        var value = model.glassAppearance; value.enabled = enabled; try? model.updateGlassAppearance(value)
+                    }))
+                    Text("Adjust opacity, surface blur and contrast in the workspace’s Settings → General.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 settingsGroup("CAPTURE") {
                     HStack(spacing: 16) {
@@ -89,14 +93,14 @@ struct SettingsView: View {
                         settingLabel("Global shortcut", detail: "Select a region, then press Return. Press Escape to cancel.")
                         Spacer(minLength: 12)
                         HStack(spacing: 8) {
-                            ShortcutRecorder(shortcut: model.shortcut, isRecording: $isRecordingShortcut, model: model) { model.updateShortcut($0) }
+                            ShortcutRecorder(shortcut: model.shortcut, isRecording: model.shortcutRecordingTarget == .capture) { model.setShortcutRecording($0 ? .capture : nil) }
                                 .frame(width: 150, height: 30)
-                            Button("Reset") { model.updateShortcut(.default) }
+                            Button("Reset") { model.applyShortcut(.default, target: .capture) }
                                 .buttonStyle(GlassActionButtonStyle())
                                 .disabled(model.shortcut == .default || model.isRecordingShortcut)
                         }
                     }
-                    if let error = model.voiceSession.error { Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+                    if let error = model.shortcutError(.capture) { Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                     settingsDivider
                     settingsValueRow("Registration", value: model.isRecordingShortcut ? "Listening…" : model.shortcutRegistrationStatus == noErr ? "Active" : "Unavailable",
                                      color: model.isRecordingShortcut ? .accentColor : model.shortcutRegistrationStatus == noErr ? .green : .orange)
@@ -583,30 +587,19 @@ private struct MemoryRecordDetail: View {
 
 private struct ShortcutRecorder: NSViewRepresentable {
     let shortcut: GlobalShortcut
-    @Binding var isRecording: Bool
-    let model: CalshotModel
-    let onChange: (GlobalShortcut) -> Void
+    let isRecording: Bool
+    let onRecordingChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> ShortcutRecorderControl {
         let view = ShortcutRecorderControl()
-        view.shortcut = shortcut
-        view.isRecording = isRecording
-        view.onRecordingChange = { recording in
-            isRecording = recording
-            model.setShortcutRecording(recording)
-        }
-        view.onChange = onChange
+        updateNSView(view, context: context)
         return view
     }
 
     func updateNSView(_ nsView: ShortcutRecorderControl, context: Context) {
         nsView.shortcut = shortcut
         nsView.isRecording = isRecording
-        nsView.onRecordingChange = { recording in
-            isRecording = recording
-            model.setShortcutRecording(recording)
-        }
-        nsView.onChange = onChange
+        nsView.onRecordingChange = onRecordingChange
     }
 }
 
@@ -614,7 +607,6 @@ private final class ShortcutRecorderControl: NSView {
     var shortcut = GlobalShortcut.default { didSet { needsDisplay = true } }
     var isRecording = false { didSet { needsDisplay = true } }
     var onRecordingChange: ((Bool) -> Void)?
-    var onChange: ((GlobalShortcut) -> Void)?
 
     override var acceptsFirstResponder: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: 150, height: 30) }
@@ -638,14 +630,6 @@ private final class ShortcutRecorderControl: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        if isRecording { onRecordingChange?(false) }
-        else { window?.makeFirstResponder(self); onRecordingChange?(true) }
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { onRecordingChange?(false); return }
-        guard let shortcut = GlobalShortcut.from(event) else { NSSound.beep(); return }
-        onChange?(shortcut)
-        onRecordingChange?(false)
+        onRecordingChange?(!isRecording)
     }
 }

@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import Carbon.HIToolbox
 import WebKit
 import Auth
 @testable import Calshot
@@ -194,8 +195,8 @@ final class WebWorkspaceTests: XCTestCase {
     }
     func testPermissionPaletteUsesPackagedSharedTokens() {
         let light = PermissionPalette(dark: false), dark = PermissionPalette(dark: true)
-        XCTAssertEqual(light.values["--primary"], "#0760ed")
-        XCTAssertEqual(dark.values["--primary"], "#1262db")
+        XCTAssertEqual(light.values["--primary"], "#2563ff")
+        XCTAssertEqual(dark.values["--primary"], "#2563ff")
         XCTAssertNotEqual(light.values["--surface-solid"], dark.values["--surface-solid"])
     }
     func testSelectedEventTaskLinkUsesNativeReadOnlySnapshotAndDurableReceipt() async throws {
@@ -413,11 +414,11 @@ final class WebWorkspaceTests: XCTestCase {
         let snapshot = WebWorkspaceState.make(model, imageURL: nil, notice: nil, accounts: [], googleReady: false)
         XCTAssertEqual(snapshot.objectValue?["voice"]?.objectValue?["state"]?.stringValue, "idle")
     }
-    private func wiredVoice(_ model: CalshotModel) -> (VoiceSessionController, PreviewVoiceClient) {
+    private func wiredVoice(_ model: CalshotModel, audio: PreviewVoiceAudio? = nil) -> (VoiceSessionController, PreviewVoiceClient) {
         let defaults = UserDefaults(suiteName: "VoiceWiring." + UUID().uuidString)!
         defaults.set(2, forKey: "voice.acknowledgementVersion")
         let client = PreviewVoiceClient()
-        let raw = VoiceSessionController(client: client, audio: PreviewVoiceAudio(), overlay: PreviewVoiceOverlay(), frames: PreviewVoiceFrames(), defaults: defaults, permission: { true }, screenPermission: { false })
+        let raw = VoiceSessionController(client: client, audio: audio ?? PreviewVoiceAudio(), overlay: PreviewVoiceOverlay(), frames: PreviewVoiceFrames(), defaults: defaults, permission: { true }, screenPermission: { false })
         let session = model.makeVoiceSession(using: raw); model.voiceSession = session
         session.eligible = { true }; session.hasKey = { true }; model.openAIAnalysisEnabled = true
         return (session, client)
@@ -492,12 +493,325 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertEqual(record.agentTranscript?.last, turn)
         voice.stop()
     }
-    func testVoiceShortcutCollisionRegistrationFailureAndNotchMemoryValidation() async throws {
+    // MARK: Shortcuts. A fake registrar and suite-backed defaults keep the Mac's real shortcuts and settings out of these tests.
+    private func shortcutFixture() -> (CalshotModel, FakeHotKeys, UserDefaults) {
+        let model = fixture(agentClient: VoiceFixtureTextClient()), hotKeys = FakeHotKeys()
+        let defaults = UserDefaults(suiteName: "ShortcutTests." + UUID().uuidString)!
+        model.hotKeys = hotKeys; model.shortcutDefaults = defaults; model.systemReservesShortcut = { _ in false }
+        return (model, hotKeys, defaults)
+    }
+    private func keyPress(_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags, repeating: Bool = false) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil, characters: "x", charactersIgnoringModifiers: "x", isARepeat: repeating, keyCode: keyCode)!
+    }
+    private func shortcutsSnapshot(_ model: CalshotModel) -> [String: JSONValue] {
+        WebWorkspaceState.make(model, imageURL: nil, notice: nil, accounts: [], googleReady: false).objectValue?["shortcuts"]?.objectValue ?? [:]
+    }
+    private func modifierChange(_ flags: NSEvent.ModifierFlags) -> NSEvent {
+        NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0)!
+    }
+    func testModifiersAloneCanBeTheVoiceShortcutAndSurviveARestart() async throws {
+        let (model, hotKeys, defaults) = shortcutFixture(); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
+        try await WebWorkspaceController(model: model).handle("shortcutRecording", ["token": voice.token, "target": "voice", "enabled": true])
+        // A single modifier on the way to a chord, then the chord, then release.
+        model.handleShortcutModifiers(modifierChange([.control]))
+        XCTAssertEqual(model.shortcutRecordingTarget, .voice)
+        model.handleShortcutModifiers(modifierChange([.control, .option]))
+        XCTAssertEqual(model.shortcutRecordingTarget, .voice, "Still holding, so a key could still follow")
+        model.handleShortcutModifiers(modifierChange([.control]))
+        XCTAssertNil(model.shortcutRecordingTarget)
+        XCTAssertEqual(model.voiceShortcut.label, "⌃⌥"); XCTAssertTrue(model.voiceShortcut.isModifierOnly)
+        XCTAssertEqual(hotKeys.voice, model.voiceShortcut)
+        let loaded = GlobalShortcut.load(key: GlobalShortcut.voiceDefaultsKey, fallback: .voiceDefault, from: defaults)
+        XCTAssertEqual(loaded.label, "⌃⌥"); XCTAssertTrue(loaded.isModifierOnly)
+    }
+    func testChordFollowedByAKeyIsAnOrdinaryShortcutAndOneModifierIsNotAChoice() async throws {
+        let (model, _, _) = shortcutFixture(); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
+        try await WebWorkspaceController(model: model).handle("shortcutRecording", ["token": voice.token, "target": "voice", "enabled": true])
+        model.handleShortcutModifiers(modifierChange([.control])); model.handleShortcutModifiers(modifierChange([]))
+        XCTAssertEqual(model.shortcutRecordingTarget, .voice, "One modifier alone keeps listening")
+        model.handleShortcutModifiers(modifierChange([.control])); model.handleShortcutModifiers(modifierChange([.control, .option]))
+        XCTAssertTrue(model.handleShortcutRecording(keyPress(UInt16(kVK_F9), [.control, .option])))
+        XCTAssertEqual(model.voiceShortcut.label, "⌃⌥F9")
+    }
+    func testCaptureNeedsARealKeyAndExplainsWhy() async throws {
+        let (model, _, _) = shortcutFixture(); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
+        try await WebWorkspaceController(model: model).handle("shortcutRecording", ["token": voice.token, "target": "capture", "enabled": true])
+        model.handleShortcutModifiers(modifierChange([.control, .option])); model.handleShortcutModifiers(modifierChange([.control]))
+        XCTAssertEqual(model.shortcutRecordingTarget, .capture); XCTAssertEqual(model.shortcut, .default)
+        XCTAssertTrue(model.shortcutError(.capture)?.contains("needs a key") == true)
+    }
+    func testHeldModifiersPressOnlyAfterAPauseAndLeaveCombinationsToOtherApps() {
+        let chord = UInt32(controlKey | optionKey), start = Date()
+        var hold = ModifierHoldDetector(modifiers: chord)
+        XCTAssertNil(hold.update(modifiers: chord, otherKeyDown: false, now: start))
+        XCTAssertNil(hold.update(modifiers: chord, otherKeyDown: false, now: start + 0.1))
+        XCTAssertEqual(hold.update(modifiers: chord, otherKeyDown: false, now: start + 0.2), true)
+        XCTAssertNil(hold.update(modifiers: chord, otherKeyDown: false, now: start + 1))
+        XCTAssertEqual(hold.update(modifiers: UInt32(controlKey), otherKeyDown: false, now: start + 2), false)
+        var combo = ModifierHoldDetector(modifiers: chord)
+        _ = combo.update(modifiers: chord, otherKeyDown: false, now: start)
+        XCTAssertNil(combo.update(modifiers: chord, otherKeyDown: true, now: start + 0.1))
+        XCTAssertNil(combo.update(modifiers: chord, otherKeyDown: false, now: start + 1), "⌃⌥← belongs to another app, even after the arrow is released")
+        XCTAssertNil(combo.update(modifiers: 0, otherKeyDown: false, now: start + 2))
+        _ = combo.update(modifiers: chord, otherKeyDown: false, now: start + 3)
+        XCTAssertEqual(combo.update(modifiers: chord, otherKeyDown: false, now: start + 3.2), true, "A fresh hold works again")
+    }
+    func testRecordingAShortcutRegistersSavesAndShowsItAndSurvivesARestart() async throws {
+        let (model, hotKeys, defaults) = shortcutFixture(); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
+        let bridge = WebWorkspaceController(model: model)
+        try await bridge.handle("shortcutRecording", ["token": voice.token, "target": "voice", "enabled": true])
+        XCTAssertEqual(model.shortcutRecordingTarget, .voice)
+        XCTAssertEqual(shortcutsSnapshot(model)["recording"], .string("voice"))
+        XCTAssertEqual(hotKeys.unregisteredCapture, 1); XCTAssertEqual(hotKeys.unregisteredVoice, 1)
+        // Layout-independent key: the label comes from native code, never from JavaScript.
+        XCTAssertTrue(model.handleShortcutRecording(keyPress(UInt16(kVK_F9), [.control, .option])))
+        XCTAssertNil(model.shortcutRecordingTarget)
+        XCTAssertEqual(model.voiceShortcut.label, "⌃⌥F9")
+        XCTAssertEqual(model.voiceShortcut.modifiers, UInt32(controlKey | optionKey))
+        XCTAssertEqual(hotKeys.voice?.label, "⌃⌥F9", "macOS holds the new voice shortcut after listening ends")
+        XCTAssertEqual(hotKeys.capture, model.shortcut, "Capture comes back unchanged")
+        XCTAssertEqual(model.voiceShortcutRegistrationStatus, noErr)
+        let snapshot = shortcutsSnapshot(model)["voice"]?.objectValue
+        XCTAssertEqual(snapshot?["label"], .string("⌃⌥F9")); XCTAssertEqual(snapshot?["isDefault"], .bool(false)); XCTAssertEqual(snapshot?["error"], .null)
+        XCTAssertEqual(voice.snapshot.objectValue?["shortcut"], .string("⌃⌥F9"))
+        // Restart: the saved value decodes to the same keys, and modifiers/key pass native validation.
+        let restored = GlobalShortcut.load(key: GlobalShortcut.voiceDefaultsKey, fallback: .voiceDefault, from: defaults)
+        XCTAssertEqual(restored, model.voiceShortcut); XCTAssertNil(restored.problem)
+        XCTAssertEqual(GlobalShortcut.load(key: GlobalShortcut.captureDefaultsKey, fallback: .default, from: defaults), .default, "Only the recorded shortcut is saved")
+    }
+    func testHidingTheAppOrLeavingTheRecordingWindowRestoresBothShortcuts() async {
+        let (model, hotKeys, _) = shortcutFixture()
+        for notification in [NSApplication.didHideNotification, NSWindow.didResignKeyNotification] {
+            model.setShortcutRecording(.capture)
+            XCTAssertEqual(model.shortcutRecordingTarget, .capture)
+            NotificationCenter.default.post(name: notification, object: nil)
+            for _ in 0..<10 where model.isRecordingShortcut { await Task.yield() }
+            XCTAssertNil(model.shortcutRecordingTarget)
+            XCTAssertEqual(hotKeys.capture, model.shortcut)
+            XCTAssertEqual(hotKeys.voice, model.voiceShortcut)
+        }
+    }
+    func testAnOldSavedLabelIsRebuiltFromItsKeysOnLaunch() throws {
+        let defaults = UserDefaults(suiteName: "ShortcutTests." + UUID().uuidString)!
+        let saved = GlobalShortcut(keyCode: UInt32(kVK_F9), modifiers: UInt32(controlKey | optionKey), label: "⌃⌥√")
+        defaults.set(try JSONEncoder().encode(saved), forKey: GlobalShortcut.voiceDefaultsKey)
+        XCTAssertEqual(GlobalShortcut.load(key: GlobalShortcut.voiceDefaultsKey, fallback: .voiceDefault, from: defaults).label, "⌃⌥F9")
+    }
+    func testCaptureShortcutChangesInTheWorkspaceAndCanBeReset() async throws {
+        let (model, hotKeys, defaults) = shortcutFixture(); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
+        let bridge = WebWorkspaceController(model: model)
+        try await bridge.handle("shortcutRecording", ["token": voice.token, "target": "capture", "enabled": true])
+        model.handleShortcutRecording(keyPress(UInt16(kVK_F8), [.command, .shift]))
+        XCTAssertEqual(model.shortcut.label, "⇧⌘F8"); XCTAssertEqual(hotKeys.capture?.label, "⇧⌘F8")
+        XCTAssertEqual(GlobalShortcut.load(key: GlobalShortcut.captureDefaultsKey, fallback: .default, from: defaults).label, "⇧⌘F8")
+        try await bridge.handle("resetShortcut", ["token": voice.token, "target": "capture"])
+        XCTAssertEqual(model.shortcut, .default); XCTAssertEqual(hotKeys.capture, .default)
+        do { try await bridge.handle("resetShortcut", ["token": "stale", "target": "capture"]); XCTFail("Stale token accepted") } catch {}
+        model.workspaceSelection = .chat
+        do { try await bridge.handle("shortcutRecording", ["token": voice.token, "target": "capture", "enabled": true]); XCTFail("Recording outside Settings") } catch {}
+        do { try await WebWorkspaceController(model: model, isNotch: true).handle("shortcutRecording", ["token": voice.token, "target": "capture", "enabled": true]); XCTFail("Recording in the notch") } catch {}
+    }
+    func testAShortcutMacOSRejectsIsNeverShownOrSavedAndTheReasonStaysVisible() {
+        let (model, hotKeys, defaults) = shortcutFixture(); _ = wiredVoice(model)
+        model.registerShortcut(); XCTAssertNil(model.shortcutError(.voice))
+        let previous = model.voiceShortcut
+        model.setShortcutRecording(.voice)
+        hotKeys.voiceStatus = OSStatus(eventHotKeyExistsErr)
+        model.handleShortcutRecording(keyPress(UInt16(kVK_F7), [.control]))
+        XCTAssertEqual(model.voiceShortcut, previous, "The old shortcut stays")
+        XCTAssertNil(defaults.data(forKey: GlobalShortcut.voiceDefaultsKey))
+        XCTAssertEqual(model.shortcutRecordingTarget, .voice, "Still listening, so another key can be tried")
+        let error = try? XCTUnwrap(model.shortcutError(.voice))
+        XCTAssertTrue(error?.contains("⌃F7") == true); XCTAssertTrue(error?.contains("Still using \(previous.label)") == true)
+        hotKeys.voiceStatus = noErr
+        XCTAssertTrue(model.handleShortcutRecording(keyPress(53, [])), "Escape cancels")
+        XCTAssertNil(model.shortcutRecordingTarget); XCTAssertEqual(hotKeys.voice, previous, "The old shortcut is live again")
+        XCTAssertEqual(model.voiceShortcut, previous)
+        // A saved shortcut another app later takes reports itself, and is not hidden by a later success on the other one.
+        hotKeys.voiceStatus = OSStatus(eventHotKeyExistsErr); model.registerShortcut()
+        XCTAssertTrue(model.shortcutError(.voice)?.contains(String(eventHotKeyExistsErr)) == true)
+        XCTAssertNil(model.shortcutError(.capture))
+    }
+    func testShortcutRulesAndCollisionsMatchWhatNativeRegistrationAccepts() {
+        let (model, hotKeys, _) = shortcutFixture(); _ = wiredVoice(model)
+        let calls = hotKeys.registrations
+        func combo(_ key: Int, _ modifiers: Int) -> GlobalShortcut { GlobalShortcut(keyCode: UInt32(key), modifiers: UInt32(modifiers), label: "fixture") }
+        var rejected: [(GlobalShortcut, ShortcutTarget, String)] = []
+        rejected.append((combo(kVK_ANSI_X, shiftKey), .capture, "Include"))
+        rejected.append((combo(kVK_ANSI_X, optionKey), .voice, "Include"))
+        rejected.append((combo(kVK_ANSI_C, cmdKey), .capture, "other apps"))
+        rejected.append((combo(kVK_Return, controlKey), .voice, "letter"))
+        rejected.append((combo(kVK_LeftArrow, controlKey), .voice, "letter"))
+        rejected.append((model.voiceShortcut, .capture, "voice shortcut"))
+        rejected.append((model.shortcut, .voice, "capture shortcut"))
+        rejected.append((.quickMenu, .capture, "Quick Menu"))
+        for (candidate, target, reason) in rejected {
+            XCTAssertFalse(model.applyShortcut(candidate, target: target), candidate.label)
+            XCTAssertTrue(model.shortcutError(target)?.contains(reason) == true, "\(candidate.label): \(model.shortcutError(target) ?? "none")")
+        }
+        model.systemReservesShortcut = { $0.keyCode == UInt32(kVK_F6) }
+        XCTAssertFalse(model.applyShortcut(GlobalShortcut(keyCode: UInt32(kVK_F6), modifiers: UInt32(controlKey), label: "⌃F6"), target: .voice))
+        XCTAssertTrue(model.shortcutError(.voice)?.contains("macOS uses") == true)
+        XCTAssertEqual(hotKeys.registrations, calls, "A rule failure never reaches macOS")
+        XCTAssertTrue(GlobalShortcut.default.problem == nil && GlobalShortcut.voiceDefault.problem == nil, "Both defaults are valid")
+    }
+    func testKeyRepeatDoesNotRecordAndListeningEndsWithCaptureAndVoice() async {
+        let (model, hotKeys, _) = shortcutFixture(); let (voice, _) = wiredVoice(model)
+        model.setShortcutRecording(.capture)
+        XCTAssertTrue(model.handleShortcutRecording(keyPress(UInt16(kVK_F5), [.control], repeating: true)))
+        XCTAssertEqual(model.shortcutRecordingTarget, .capture); XCTAssertEqual(model.shortcut, .default)
+        XCTAssertFalse(model.handleShortcutRecording(NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 1)!))
+        await voice.toggle()
+        XCTAssertNil(model.shortcutRecordingTarget, "Starting voice restores the global shortcuts")
+        XCTAssertEqual(hotKeys.voice, model.voiceShortcut); voice.stop()
+    }
+    func testCarbonReportsADuplicateRegistrationThatTheModelTreatsAsAConflict() {
+        // Real Carbon, with an unused combination: this is the status applyShortcut turns into a visible conflict.
+        let controller = HotKeyController.shared
+        let rare = GlobalShortcut(keyCode: UInt32(kVK_F19), modifiers: UInt32(cmdKey | controlKey | optionKey | shiftKey), label: "test")
+        defer { controller.unregister(); controller.unregisterVoice() }
+        XCTAssertEqual(controller.register(rare), noErr)
+        XCTAssertEqual(controller.registerVoice(rare), OSStatus(eventHotKeyExistsErr))
+    }
+
+    // MARK: Spoken events and the review they open.
+    private func spokenEvent(_ date: String, end: String? = "16:00", evidence: String = "") -> String {
+        JSONValue.object(["events": .array([.object(["title": .string("Fictional dentist"), "date": .string(date), "startTime": .string("15:00"), "endTime": end.map(JSONValue.string) ?? .null,
+            "allDay": .bool(false), "timeZone": .string("America/Toronto"), "location": .null, "url": .null, "notes": .null, "evidence": .string(evidence), "yearInferred": .bool(true), "dateAmbiguous": .bool(false)])])]).jsonString()
+    }
+    private func waitForReview(_ model: CalshotModel) async {
+        for _ in 0..<400 { if model.agentIsWaitingForApproval { return }; try? await Task.sleep(for: .milliseconds(5)) }
+    }
+    private func year(_ proposal: CalendarActionProposal?) -> Int? {
+        guard let proposal, let start = proposal.draft.startDate else { return nil }
+        return CalendarDraftValidation.calendar(for: proposal.draft).component(.year, from: start)
+    }
+    /// A session with audio committed: the model replies, and only later does the transcript of that audio arrive.
+    private func speakAndRelease(_ model: CalshotModel, transcriptWait: Duration = .seconds(3)) async -> VoiceSessionController {
+        let audio = PreviewVoiceAudio(); let (voice, _) = wiredVoice(model, audio: audio)
+        voice.releaseTail = .zero; voice.tapThreshold = 0; voice.transcriptWait = transcriptWait
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        await voice.talk(true); audio.onInput?(Data(count: 9600)); await voice.talk(false)
+        return voice
+    }
+    func testASpokenMonthAndDayGetsItsYearEvenWhenTheToolCallBeatsTheTranscript() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
+        let voice = await speakAndRelease(model)
+        // The model guessed last year and marked it inferred. Native waits for the words, then settles the date.
+        voice.handle(.functionCall(callID: "early", name: "create_events", argumentsJSON: spokenEvent("2019-11-12")))
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertTrue(model.calendarActions.proposals.isEmpty, "Nothing is proposed before the user's words arrive")
+        voice.handle(.userTranscript(itemID: "turn", text: "add the dentist November twelfth from 3 to 4", final: true))
+        await waitForReview(model)
+        let row = try XCTUnwrap(model.calendarActions.proposals.first)
+        XCTAssertFalse(row.draft.ambiguities.contains(.missingYear))
+        let now = Date(), calendar = CalendarDraftValidation.calendar(for: row.draft)
+        let expected = CalendarToolDraftMapper.nextOccurrence(month: 11, day: 12, from: now, calendar: calendar)
+        XCTAssertEqual(year(row), expected.map { calendar.component(.year, from: $0) })
+        voice.stop()
+    }
+    func testASpokenDateWithoutItsTranscriptOpensTheYearReviewInsteadOfGuessing() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
+        let voice = await speakAndRelease(model, transcriptWait: .milliseconds(50))
+        voice.handle(.functionCall(callID: "late", name: "create_events", argumentsJSON: spokenEvent("2027-11-12")))
+        await waitForReview(model)
+        XCTAssertTrue(model.calendarActions.proposals.first?.draft.ambiguities.contains(.missingYear) == true)
+        voice.stop()
+    }
+    func testAScreenOnlyDateKeepsItsYearReviewInVoice() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        voice.handle(.userTranscript(itemID: "turn", text: "add this to my calendar", final: true))
+        voice.handle(.functionCall(callID: "screen", name: "create_events", argumentsJSON: spokenEvent("2027-11-12", evidence: "Dentist Nov 12 3 PM")))
+        await waitForReview(model)
+        XCTAssertTrue(model.calendarActions.proposals.first?.draft.ambiguities.contains(.missingYear) == true)
+        XCTAssertNil(model.calendarActions.proposals.first?.receipt); voice.stop()
+    }
+    func testOlderChatTurnsNeverSettleAYearForThisVoiceSession() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
+        // An earlier typed turn in the shared chat named the same date. The current spoken request didn't.
+        let main = try XCTUnwrap(model.mainChatID())
+        _ = try model.memoryStore.updateAgentContext(for: main, transcript: [AgentTurn(role: "user", content: "Dentist Nov 12")])
+        let (voice, _) = wiredVoice(model)
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        XCTAssertEqual(model.agentMessages.first?.content, "Dentist Nov 12")
+        XCTAssertTrue(model.voiceSpokenContext.isEmpty)
+        voice.handle(.functionCall(callID: "old", name: "create_events", argumentsJSON: spokenEvent("2027-11-12")))
+        await waitForReview(model)
+        XCTAssertTrue(model.calendarActions.proposals.first?.draft.ambiguities.contains(.missingYear) == true); voice.stop()
+    }
+    func testVoiceReviewYearConfirmationUsesTheFreshTokenKeepsOtherIssuesAndNeverSaves() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
+        let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true), workspace = WebWorkspaceController(model: model, loadsResources: false)
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: spokenEvent("2027-11-12", end: nil, evidence: "Dentist Nov 12 3 PM")))
+        await waitForReview(model)
+        XCTAssertEqual(voice.state, .waitingForReview)
+        let stale = WebWorkspaceState.approvalToken(model)
+        // The destination control works during voice instead of failing with "Voice mode is on".
+        try await notch.handle("selectCalendar", ["calendarID": try XCTUnwrap(model.selectedCalendarID)])
+        // A native refresh replaces the token the page was holding.
+        model.calendarActions.update(model.calendarActions.proposals[0].id) { $0.draft.notes = "Fictional refresh" }
+        XCTAssertNotEqual(WebWorkspaceState.approvalToken(model), stale)
+        do { try await notch.handle("confirmProposalYears", ["token": stale, "year": 2028]); XCTFail("Stale token accepted") } catch {}
+        XCTAssertTrue(model.calendarActions.proposals[0].draft.ambiguities.contains(.missingYear))
+        try await notch.handle("confirmProposalYears", ["token": WebWorkspaceState.approvalToken(model), "year": 2028])
+        let row = model.calendarActions.proposals[0]
+        XCTAssertEqual(year(row), 2028); XCTAssertFalse(row.draft.ambiguities.contains(.missingYear))
+        XCTAssertTrue(row.draft.ambiguities.contains(.missingEndTime), "Other unresolved details stay")
+        XCTAssertFalse(row.isSelected, "Still unresolved, so it can't be selected")
+        XCTAssertNil(row.receipt); XCTAssertFalse(row.isFinished); XCTAssertTrue(model.agentIsWaitingForApproval, "Confirming never approves")
+        XCTAssertEqual(voice.state, .waitingForReview); XCTAssertTrue(voice.active)
+        // The full workspace reaches the same native review.
+        try await workspace.handle("skipApproval", ["token": WebWorkspaceState.approvalToken(model)])
+        XCTAssertFalse(model.agentIsWaitingForApproval); voice.stop()
+    }
+    func testResolvingAVoiceRowsYearSelectsItButApprovalStillTakesTheCommand() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, client) = wiredVoice(model)
+        let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: spokenEvent("2027-11-12", evidence: "Dentist Nov 12 3 PM")))
+        await waitForReview(model)
+        XCTAssertFalse(model.calendarActions.canApprove)
+        try await notch.handle("confirmProposalYears", ["token": WebWorkspaceState.approvalToken(model), "year": 2028])
+        XCTAssertTrue(model.calendarActions.proposals[0].isSelected)
+        XCTAssertNil(model.calendarActions.proposals[0].receipt); XCTAssertTrue(client.results.isEmpty); XCTAssertTrue(model.agentIsWaitingForApproval)
+        voice.stop()
+    }
+    func testASpokenYearFillsTheOpenReviewAndASecondProposalCannotReplaceIt() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, client) = wiredVoice(model)
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        voice.handle(.functionCall(callID: "first", name: "create_events", argumentsJSON: spokenEvent("2027-11-12", evidence: "Dentist Nov 12 3 PM")))
+        await waitForReview(model)
+        let id = try XCTUnwrap(model.calendarActions.proposals.first?.id)
+        // The model re-proposes after hearing the year. The open review keeps its rows, scope and token path.
+        voice.handle(.functionCall(callID: "second", name: "create_events", argumentsJSON: spokenEvent("2028-11-12", evidence: "Dentist Nov 12 3 PM")))
+        for _ in 0..<2000 where client.results.isEmpty { await Task.yield() }
+        XCTAssertTrue(client.results.first?.contains("reviewOpen") == true)
+        XCTAssertEqual(model.calendarActions.proposals.map(\.id), [id]); XCTAssertTrue(model.calendarActions.isInApprovalScope(id))
+        voice.handle(.userTranscript(itemID: "a", text: "not sure about 2026 or 2028", final: true))
+        XCTAssertTrue(model.calendarActions.proposals[0].draft.ambiguities.contains(.missingYear), "Competing years settle nothing")
+        voice.handle(.userTranscript(itemID: "b", text: "it's 2028", final: true))
+        XCTAssertEqual(year(model.calendarActions.proposals.first), 2028)
+        XCTAssertNil(model.calendarActions.proposals[0].receipt); XCTAssertTrue(model.agentIsWaitingForApproval, "A spoken year never approves")
+        voice.stop()
+    }
+    func testAQuickTapOfTheVoiceKeyLeavesAnOpenReviewInPlace() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
+        voice.releaseTail = .zero; voice.tapThreshold = 0.35
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: spokenEvent("2027-11-12", evidence: "Dentist Nov 12 3 PM")))
+        await waitForReview(model)
+        await voice.talk(true); await voice.talk(false)
+        XCTAssertFalse(voice.active); XCTAssertTrue(model.agentIsWaitingForApproval); XCTAssertEqual(model.calendarActions.proposals.count, 1)
+        try await WebWorkspaceController(model: model, loadsResources: false, isNotch: true).handle("confirmProposalYears", ["token": WebWorkspaceState.approvalToken(model), "year": 2028])
+        XCTAssertEqual(year(model.calendarActions.proposals.first), 2028)
+        model.skipAgentApproval()
+    }
+    func testNotchMemoryValidation() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
-        let bridge = WebWorkspaceController(model: model), notch = WebWorkspaceController(model: model, isNotch: true)
-        do { try await bridge.handle("voiceShortcut", ["token": voice.token, "keyCode": model.shortcut.keyCode, "modifiers": model.shortcut.modifiers, "label": model.shortcut.label]); XCTFail("Collision accepted") } catch {}
-        let old = model.shortcut; model.updateShortcut(model.voiceShortcut); XCTAssertEqual(model.shortcut, old)
-        model.reportVoiceShortcutRegistration(-9876); XCTAssertTrue(voice.error?.contains("-9876") == true)
+        let notch = WebWorkspaceController(model: model, isNotch: true)
+        _ = voice
         let suggestion = try model.suggestPersonalMemory(kind: .preference, text: "Fictional preference")
         let body: [String: Any] = ["token": model.personalMemory.token, "memoryID": suggestion.id.uuidString, "expectedVersion": suggestion.version.uuidString]
         try await notch.handle("approveMemory", body)
@@ -517,15 +831,13 @@ final class WebWorkspaceTests: XCTestCase {
     func testVoiceBridgeValidationAndExclusiveActions() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
         let bridge = WebWorkspaceController(model: model)
-        for (action, extra) in [("setVoiceDrawing", ["drawing": "true"]), ("voiceShortcutRecording", ["enabled": "true"]), ("stopVoice", ["unknown": "value"])] {
-            var body: [String: Any] = extra; body["token"] = voice.token
+        let invalid: [(String, [String: Any])] = [("setVoiceDrawing", ["drawing": "true"]), ("shortcutRecording", ["enabled": "true", "target": "voice"]), ("shortcutRecording", ["enabled": true, "target": "notch"]), ("shortcutRecording", ["enabled": true]), ("stopVoice", ["unknown": "value"])]
+        for (action, extra) in invalid {
+            var body = extra; body["token"] = voice.token
             do { try await bridge.handle(action, body); XCTFail("Accepted invalid control") } catch {}
         }
-        for modifiers in [512, 2048] {
-            do { try await bridge.handle("voiceShortcut", ["token": voice.token, "keyCode": 9, "modifiers": modifiers, "label": "invalid"]); XCTFail("Accepted weak shortcut") } catch {}
-        }
         await voice.toggle()
-        for action in ["newTask", "retryAgent", "capture", "voiceSettings", "voiceShortcut"] {
+        for action in ["newTask", "retryAgent", "capture", "voiceSettings", "shortcutRecording", "resetShortcut"] {
             do { try await bridge.handle(action, ["token": voice.token]); XCTFail("Accepted busy action") } catch { XCTAssertTrue(error.localizedDescription.contains("Voice mode")) }
         }
         let record = try model.memoryStore.recordCommand("Fictional history")
@@ -689,6 +1001,37 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.selectedCalendarID, destination)
         XCTAssertEqual(WebWorkspaceState.approvalToken(model), token)
     }
+    func testCalendarCanReadWhileVoiceIsActiveAndReflectsItsConfirmedWrites() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
+        let (voice, _) = wiredVoice(model); await voice.toggle(); voice.handle(.sessionUpdated)
+        defer { voice.stop() }
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        let draft = row().draft
+        let request: [String: Any] = ["start": ISO8601DateFormatter().string(from: draft.startDate!.addingTimeInterval(-86400)),
+                                    "end": ISO8601DateFormatter().string(from: draft.endDate!.addingTimeInterval(86400)), "calendarIDs": ["demo"]]
+        try await bridge.handle("loadCalendarEvents", request)
+        XCTAssertEqual(bridge.calendarView.objectValue?["loaded"], .bool(true))
+        XCTAssertEqual(bridge.calendarView.objectValue?["events"]?.arrayValue?.count, 0)
+        let before = model.calendarContentToken
+        let result = try await model.directCalendarWriter.apply(CalendarActionProposal(draft: draft), destinationID: "demo", calendarName: "Demo")
+        XCTAssertNotNil(result.receipt)
+        XCTAssertNotEqual(model.calendarContentToken, before)
+        try await bridge.handle("loadCalendarEvents", request)
+        XCTAssertEqual(bridge.calendarView.objectValue?["events"]?.arrayValue?.count, 1)
+        XCTAssertEqual(bridge.calendarView.objectValue?["contentToken"], .string(model.calendarContentToken.uuidString))
+        XCTAssertTrue(voice.active, "Browsing must not stop voice or write again")
+    }
+    func testReviewedCalendarWritesAlsoInvalidateTheBrowser() async throws {
+        let model = fixture(); await model.loadCalendars()
+        let record = try model.memoryStore.recordCommand("Fictional reviewed event")
+        model.currentMemoryRecordID = record.id
+        let before = model.calendarContentToken
+        model.calendarActions.replace(with: [row()])
+        await model.calendarActions.checkDuplicates(destinationID: "demo")
+        await model.calendarActions.execute(destinationID: "demo", calendarName: "Demo")
+        XCTAssertNotNil(model.calendarActions.proposals.first?.receipt)
+        XCTAssertNotEqual(model.calendarContentToken, before)
+    }
     func testCalendarBrowserValidatesRangesAndUnknownCalendars() async throws {
         let model = fixture(); await model.loadCalendars()
         let bridge = WebWorkspaceController(model: model, loadsResources: false)
@@ -788,6 +1131,20 @@ final class WebWorkspaceTests: XCTestCase {
         try store.applyAccountSync(cloud)
         XCTAssertEqual(store.listRecords().first?.agentTranscript?.count, 3, "Unchanged local journals must remain intact")
     }
+    func testAccountSyncFailuresDistinguishCompatibilityConflictAndAuthorization() throws {
+        func failure(_ status: Int, _ message: String) throws -> String {
+            CalshotAccountService.accountSyncFailure(status: status, data: try JSONSerialization.data(withJSONObject: ["message": message]))
+        }
+        let rejected = try failure(400, "Invalid history metadata. Images remain local.")
+        XCTAssertTrue(rejected.contains("data format"))
+        XCTAssertFalse(rejected.contains("another device"))
+        XCTAssertTrue(try failure(400, "Account changed on another device. Sync again; local changes are kept.").contains("merge"))
+        XCTAssertTrue(try failure(401, "private response").contains("Sign in again"))
+        XCTAssertTrue(try failure(503, "private response").contains("temporarily unavailable"))
+        let unknown = try failure(400, "private response with sensitive details")
+        XCTAssertTrue(unknown.contains("HTTP 400"))
+        XCTAssertFalse(unknown.contains("sensitive"))
+    }
     func testAccountSyncInterruptedWritesCannotRecoverAgainstAnotherDevicesCalendar() throws {
         let store = MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         let record = try store.recordCommand("Fictional move")
@@ -846,6 +1203,52 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertEqual(Set(result.history.values.compactMap { $0.agentTranscript?.first?.content }), Set(["Local edit", "Remote edit"]))
     }
 
+    private func incomingSharingFixture(_ model: CalshotModel) -> CalendarShare {
+        let user = mirrorUser(model)
+        let calendar = FriendCalendar(id: UUID(), name: "Fictional birthdays", syncedAt: "2026-10-20T00:00:00Z", stale: true)
+        let share = CalendarShare(id: UUID(), ownerID: UUID(), recipientID: user, outgoing: false, personName: "Riley Example", email: "riley@example.invalid", permission: "titles", status: "accepted", expiresAt: "2027-01-01T00:00:00Z", calendars: [calendar])
+        model.calendarSharing = CalendarSharingState(shares: [share]); model.sharingLoaded = true
+        return share
+    }
+    func testFriendFreshnessChangesInvalidateVisibleCalendarCopies() {
+        let model = fixture(); _ = incomingSharingFixture(model)
+        let before = model.friendAccessToken
+        model.sharingBusy = true
+        XCTAssertEqual(model.friendAccessToken, before, "Polling itself must not cause a refresh loop")
+        model.calendarSharing.shares[0].calendars[0].syncedAt = "2026-11-06T00:00:00Z"
+        XCTAssertNotEqual(model.friendAccessToken, before)
+        let synced = model.friendAccessToken
+        model.calendarSharing.shares[0].calendars[0].stale = false
+        XCTAssertNotEqual(model.friendAccessToken, synced)
+    }
+    func testStaleSharedCopiesKeepTheirEventsAndCarryAWarningInsteadOfALoadFailure() async throws {
+        let model = fixture(); let share = incomingSharingFixture(model)
+        let start = Date(timeIntervalSince1970: 1794000000), end = start.addingTimeInterval(86400)
+        model.sharingRPC = { name, _, _ in
+            XCTAssertEqual(name, "read_shared_calendar")
+            return .object(["permission": .string("titles"), "stale": .bool(true), "complete": .bool(true), "syncedAt": .string(share.calendars[0].syncedAt), "events": .array([
+                .object(["key": .string("fictional-event"), "title": .string("Fictional birthday"), "start": .string(ISO8601DateFormatter().string(from: start)), "end": .string(ISO8601DateFormatter().string(from: end)), "allDay": .bool(true)])])])
+        }
+        let result = try await model.browseFriendCalendar(id: model.friendBrowserSources[0].id, start: start, end: end)
+        XCTAssertEqual(result.events.count, 1)
+        XCTAssertEqual(result.warningKind, "stale")
+        XCTAssertEqual(result.syncedAt, share.calendars[0].syncedAt)
+        XCTAssertTrue(result.warning?.contains("last shared copy") == true)
+    }
+    func testIncomingSharingMetadataRefreshesDuringATaskWithoutPublishing() async {
+        let model = fixture(); var share = incomingSharingFixture(model)
+        share.calendars[0].stale = false; share.calendars[0].syncedAt = "2026-11-06T00:00:00Z"
+        model.agentIsRunning = true
+        var calls: [String] = []
+        model.sharingRPC = { name, _, _ in
+            calls.append(name)
+            return WebWorkspaceState.encoded(CalendarSharingState(shares: [share]))
+        }
+        await model.syncSharedCalendars()
+        XCTAssertEqual(calls, ["read_calendar_sharing"])
+        XCTAssertEqual(model.calendarSharing.shares[0].calendars[0].syncedAt, share.calendars[0].syncedAt)
+        XCTAssertFalse(model.sharingBusy)
+    }
     func testSharingPublicationMinimizesFieldsForEachAccessLevel() async throws {
         for permission in ["busy", "titles", "details"] {
             let now = Date()
@@ -1183,6 +1586,39 @@ final class WebWorkspaceTests: XCTestCase {
         do { try await bridge.handle("appearance", ["mode": "unknown"]); XCTFail("Invalid mode must be rejected") }
         catch { XCTAssertTrue(error.localizedDescription.contains("Light")) }
         XCTAssertEqual(model.appearanceMode, .system)
+    }
+    func testGlassAppearancePersistsAndInvalidValuesNeverOverwriteTheSavedChoice() throws {
+        let defaults = UserDefaults(suiteName: "GlassAppearanceTests." + UUID().uuidString)!
+        XCTAssertEqual(GlassAppearance.load(from: defaults), .standard)
+        let value = GlassAppearance(enabled: true, opacity: 0.8, blur: 18, contrast: 0.75)
+        try value.save(to: defaults)
+        XCTAssertEqual(GlassAppearance.load(from: defaults), value)
+        var invalid = value; invalid.opacity = .nan
+        XCTAssertThrowsError(try invalid.save(to: defaults))
+        XCTAssertEqual(GlassAppearance.load(from: defaults), value)
+        defaults.set(Data("invalid fixture".utf8), forKey: GlassAppearance.defaultsKey)
+        XCTAssertEqual(GlassAppearance.load(from: defaults), .standard)
+        XCTAssertEqual(defaults.data(forKey: GlassAppearance.defaultsKey), Data("invalid fixture".utf8))
+    }
+    func testGlassAppearanceBridgeIsSettingsScopedAndRejectsMalformedInputs() async throws {
+        let model = fixture()
+        let controls = WebWorkspaceController(model: model, loadsResources: false)
+        let body: [String: Any] = ["enabled": true, "opacity": 0.6, "blur": 32.0, "contrast": 0.8]
+        do { try await controls.handle("glassAppearance", body); XCTFail("Accepted outside Settings") } catch {}
+        model.workspaceSelection = .settings
+        try await controls.handle("glassAppearance", body)
+        let expected = GlassAppearance(enabled: true, opacity: 0.6, blur: 32, contrast: 0.8)
+        XCTAssertEqual(model.glassAppearance, expected)
+        let snapshot = WebWorkspaceState.make(model, imageURL: nil, notice: nil, accounts: [], googleReady: false)
+        XCTAssertEqual(snapshot.objectValue?["settings"]?.objectValue?["glass"]?.objectValue?["blur"], .number(32))
+        let malformed: [(String, Any)] = [("opacity", 0.1), ("blur", 41), ("contrast", true), ("enabled", "true"), ("opacity", Double.infinity), ("unexpected", true)]
+        for (key, bad) in malformed {
+            var invalid = body; invalid[key] = bad
+            do { try await controls.handle("glassAppearance", invalid); XCTFail("Accepted malformed glass preference: \(key)") } catch {}
+            XCTAssertEqual(model.glassAppearance, expected)
+        }
+        let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
+        do { try await notch.handle("glassAppearance", body); XCTFail("Notch cannot change saved appearance") } catch {}
     }
     func testNotchReflectsWorkingApprovalFailureAndReceiptCompletion() {
         let model = fixture()
@@ -2045,4 +2481,14 @@ private struct VoiceFixtureTextClient: CalendarAgentModelClient {
               tools: [JSONValue], onText: @escaping @MainActor (String) -> Void) async throws -> AgentModelResponse {
         throw CancellationError()
     }
+}
+
+final class FakeHotKeys: HotKeyRegistering {
+    var capture: GlobalShortcut?, voice: GlobalShortcut?
+    var captureStatus: OSStatus = noErr, voiceStatus: OSStatus = noErr
+    var unregisteredCapture = 0, unregisteredVoice = 0, registrations = 0
+    func register(_ shortcut: GlobalShortcut) -> OSStatus { registrations += 1; capture = captureStatus == noErr ? shortcut : nil; return captureStatus }
+    func registerVoice(_ shortcut: GlobalShortcut) -> OSStatus { registrations += 1; voice = voiceStatus == noErr ? shortcut : nil; return voiceStatus }
+    func unregister() { unregisteredCapture += 1; capture = nil }
+    func unregisterVoice() { unregisteredVoice += 1; voice = nil }
 }

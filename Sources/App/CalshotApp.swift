@@ -158,6 +158,12 @@ final class CalshotModel: ObservableObject {
             appearanceMode.apply()
         }
     }
+    @Published private(set) var glassAppearance = GlassAppearance.load(from: .standard)
+    func updateGlassAppearance(_ value: GlassAppearance) throws {
+        guard value.isValid else { throw CalendarToolArgumentError("Choose opacity from 35–100%, blur from 0–40, and contrast from 0–100%.") }
+        if persistsAISelection { try value.save(to: .standard) }
+        glassAppearance = value
+    }
     @Published var sidebarExpanded = UserDefaults.standard.object(forKey: "sidebarExpanded") as? Bool ?? true {
         didSet { if persistsAISelection { UserDefaults.standard.set(sidebarExpanded, forKey: "sidebarExpanded") } }
     }
@@ -203,15 +209,14 @@ final class CalshotModel: ObservableObject {
     @Published var agentCalendarNotice: String?
     @Published var agentPermissionBusy = false
     @Published var agentCommand = ""
-    var voiceShortcut: GlobalShortcut = {
-        guard let data = UserDefaults.standard.data(forKey: "voice.shortcut"), let value = try? JSONDecoder().decode(GlobalShortcut.self, from: data) else { return .voiceDefault }; return value
-    }() {
-        didSet { if let data = try? JSONEncoder().encode(voiceShortcut) { UserDefaults.standard.set(data, forKey: "voice.shortcut") }; registerShortcut() }
-    }
+    /// Set only after macOS accepts the shortcut, by applyShortcut. A rejected choice never reaches the label or saved value.
+    @Published private(set) var voiceShortcut: GlobalShortcut = GlobalShortcut.load(key: GlobalShortcut.voiceDefaultsKey, fallback: .voiceDefault, from: .standard)
     var voiceRunID: UUID?
     /// Text recognized in the latest voice frame; cleared when a voice session starts.
     var voiceScreenText = ""
     var voicePreparedRunID: UUID?
+    /// Index of this voice session's first turn in the one ongoing chat.
+    var voiceFirstTurn = 0
     lazy var voiceSession = makeVoiceSession()
     var mainChatCache: (key: String, id: UUID)?
     /// The one-time Autonomy default. Off for isolated fixtures (no AI connection), which opt in explicitly.
@@ -231,9 +236,14 @@ final class CalshotModel: ObservableObject {
     let agentClient: (any CalendarAgentModelClient)?
     let calendarActions: CalendarActionCoordinator
     /// Changes the user confirms in Calendar or Tasks. Separate from the agent's review session.
-    private(set) lazy var directCalendarWriter = DirectCalendarWriter(service: calendarService) { [weak self] in
-        (self?.memoryStore.locationURL ?? FileManager.default.temporaryDirectory).appendingPathComponent("calendar-direct-journal.json")
-    }
+    @Published private(set) var calendarContentToken = UUID()
+    private(set) lazy var directCalendarWriter: DirectCalendarWriter = {
+        let writer = DirectCalendarWriter(service: calendarService) { [weak self] in
+            (self?.memoryStore.locationURL ?? FileManager.default.temporaryDirectory).appendingPathComponent("calendar-direct-journal.json")
+        }
+        writer.onCalendarChange = { [weak self] in self?.calendarContentToken = UUID() }
+        return writer
+    }()
     /// Result of confirming an interrupted direct change. Shown on Calendar and Tasks until dismissed.
     @Published var directWriteNotice: String?
     @Published var isCapturing = false
@@ -304,16 +314,20 @@ final class CalshotModel: ObservableObject {
         didSet { UserDefaults.standard.set(openAIAnalysisEnabled, forKey: "openAIAnalysisEnabled"); if !openAIAnalysisEnabled { voiceSession.stop() } }
     }
     @Published var analyzedWithOpenAI = false
-    @Published var shortcut: GlobalShortcut = CalshotModel.loadShortcut() {
-        didSet {
-            if let data = try? JSONEncoder().encode(shortcut) {
-                UserDefaults.standard.set(data, forKey: "globalShortcut")
-            }
-            if !isRecordingShortcut { registerShortcut() }
-        }
-    }
-    @Published var shortcutRegistrationStatus: OSStatus = -1
-    @Published var isRecordingShortcut = false
+    @Published private(set) var shortcut: GlobalShortcut = GlobalShortcut.load(key: GlobalShortcut.captureDefaultsKey, fallback: .default, from: .standard)
+    @Published private(set) var shortcutRegistrationStatus: OSStatus = -1
+    @Published private(set) var voiceShortcutRegistrationStatus: OSStatus = -1
+    @Published private(set) var shortcutRecordingTarget: ShortcutTarget?
+    /// The last rejected choice per shortcut. Stays visible until another choice or a reset.
+    @Published private(set) var shortcutAttemptErrors: [ShortcutTarget: String] = [:]
+    var isRecordingShortcut: Bool { shortcutRecordingTarget != nil }
+    var hotKeys: any HotKeyRegistering = HotKeyController.shared
+    var shortcutDefaults: UserDefaults = .standard
+    var systemReservesShortcut: (GlobalShortcut) -> Bool = GlobalShortcut.isReservedBySystem
+    private var shortcutRecordingMonitor: Any?
+    private var shortcutRecordingPeak: NSEvent.ModifierFlags = []
+    private var shortcutRecordingKeyUsed = false
+    private var shortcutRecordingEndObservers: [NSObjectProtocol] = []
     @Published var memoryRecords: [MemoryCaptureRecord] = []
     @Published var memoryRecordToOpen: UUID?
     @Published var memoryLocationMessage: String?
@@ -385,6 +399,7 @@ final class CalshotModel: ObservableObject {
         self.memoryStore = memoryStore
         self.accountMemoryRoot = memoryStore
         calendarActions = CalendarActionCoordinator(service: calendarService)
+        calendarActions.onCalendarChange = { [weak self] in self?.calendarContentToken = UUID() }
         calendarActions.persist = { [weak self] items in
             // The main chat keeps its saved-change history; other records keep replace semantics.
             guard let self, let id = self.currentMemoryRecordID,
@@ -480,31 +495,102 @@ final class CalshotModel: ObservableObject {
         openPanel()
     }
 
-    func registerShortcut() {
-        shortcutRegistrationStatus = HotKeyController.shared.register(shortcut)
+    func registerShortcut() { registerCaptureShortcut(); registerVoiceShortcut() }
+
+    private func registerCaptureShortcut() { shortcutRegistrationStatus = hotKeys.register(shortcut) }
+
+    private func registerVoiceShortcut() {
         HotKeyController.shared.onVoicePress = { [weak self] pressed in Task { @MainActor in await self?.voiceSession.talk(pressed) } }
-        let voiceStatus = HotKeyController.shared.registerVoice(voiceShortcut)
-        reportVoiceShortcutRegistration(voiceStatus)
+        voiceShortcutRegistrationStatus = hotKeys.registerVoice(voiceShortcut)
     }
 
-    func reportVoiceShortcutRegistration(_ status: OSStatus) {
-        if status != noErr { voiceSession.showNotice("Voice shortcut is unavailable (\(status)). Choose another shortcut in Settings.") }
+    /// What the control shows beside this shortcut: a saved shortcut macOS won't run, or the last rejected choice.
+    func shortcutError(_ target: ShortcutTarget) -> String? {
+        let status = target == .capture ? shortcutRegistrationStatus : voiceShortcutRegistrationStatus
+        // -1 means not registered yet; recording unregisters on purpose and keeps the last real status.
+        if status != noErr && status != -1 {
+            let label = target == .capture ? shortcut.label : voiceShortcut.label
+            return "\(label) isn’t working because another app or macOS is using it (error \(status)). Choose another \(target.name) shortcut."
+        }
+        return shortcutAttemptErrors[target]
     }
 
-    func setShortcutRecording(_ recording: Bool) {
-        guard isRecordingShortcut != recording else { return }
-        isRecordingShortcut = recording
-        if recording {
-            HotKeyController.shared.unregister()
-            HotKeyController.shared.unregisterVoice()
+    func setShortcutRecording(_ target: ShortcutTarget?) {
+        guard shortcutRecordingTarget != target else { return }
+        let wasRecording = shortcutRecordingTarget != nil
+        shortcutRecordingTarget = target
+        if let target {
+            shortcutAttemptErrors[target] = nil
+            guard !wasRecording else { return }
+            // The current shortcuts must be pressable as choices while listening.
+            hotKeys.unregister(); hotKeys.unregisterVoice()
+            shortcutRecordingPeak = []; shortcutRecordingKeyUsed = false
+            shortcutRecordingMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+                guard let self, event.window?.styleMask.contains(.nonactivatingPanel) != true else { return event }
+                if event.type == .flagsChanged { self.handleShortcutModifiers(event); return event }
+                return self.handleShortcutRecording(event) ? nil : event
+            }
+            // Listening never outlives the window, otherwise both shortcuts would stay off.
+            shortcutRecordingEndObservers = [NSApplication.didResignActiveNotification, NSApplication.didHideNotification, NSWindow.didResignKeyNotification].map { notification in
+                NotificationCenter.default.addObserver(forName: notification, object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor in self?.setShortcutRecording(nil) }
+                }
+            }
         } else {
+            if let shortcutRecordingMonitor { NSEvent.removeMonitor(shortcutRecordingMonitor) }
+            shortcutRecordingEndObservers.forEach { NotificationCenter.default.removeObserver($0) }
+            shortcutRecordingEndObservers = []
+            shortcutRecordingMonitor = nil
             registerShortcut()
         }
     }
 
-    func updateShortcut(_ newShortcut: GlobalShortcut) {
-        guard newShortcut.keyCode != voiceShortcut.keyCode || newShortcut.modifiers != voiceShortcut.modifiers else { voiceSession.showNotice("Capture and voice need different shortcuts."); return }
-        shortcut = newShortcut
+    /// Returns true when the key belongs to the recorder. Escape cancels; a rejected choice keeps listening with its reason visible.
+    @discardableResult func handleShortcutRecording(_ event: NSEvent) -> Bool {
+        guard let target = shortcutRecordingTarget, event.type == .keyDown else { return false }
+        guard !event.isARepeat else { return true }
+        shortcutRecordingKeyUsed = true
+        if event.keyCode == 53, event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
+            setShortcutRecording(nil); return true
+        }
+        if applyShortcut(GlobalShortcut.candidate(from: event), target: target) { setShortcutRecording(nil) }
+        return true
+    }
+
+    /// Modifiers pressed and released with no other key are a modifier-only choice, like ⌃⌥. It is read at the first release.
+    func handleShortcutModifiers(_ event: NSEvent) {
+        guard let target = shortcutRecordingTarget else { return }
+        let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        defer { if flags.isEmpty { shortcutRecordingPeak = []; shortcutRecordingKeyUsed = false } }
+        if shortcutRecordingPeak.isSuperset(of: flags), shortcutRecordingPeak != flags {
+            let peak = shortcutRecordingPeak
+            shortcutRecordingPeak = flags
+            guard !shortcutRecordingKeyUsed, peak.rawValue.nonzeroBitCount >= 2 else { return }
+            shortcutRecordingKeyUsed = true
+            if applyShortcut(.modifierOnly(peak), target: target) { setShortcutRecording(nil) }
+        } else {
+            shortcutRecordingPeak.formUnion(flags)
+        }
+    }
+
+    /// The single path that changes a shortcut. macOS must accept it before the label or saved value changes.
+    @discardableResult func applyShortcut(_ candidate: GlobalShortcut, target: ShortcutTarget) -> Bool {
+        let current = target == .capture ? shortcut : voiceShortcut, other = target == .capture ? voiceShortcut : shortcut
+        func reject(_ reason: String) -> Bool { shortcutAttemptErrors[target] = reason + " Still using \(current.label)."; return false }
+        if candidate.isModifierOnly && target == .capture { return reject("The capture shortcut needs a key too, like ⌃⌥C. Modifier keys alone work for voice.") }
+        if let problem = candidate.problem { return reject(problem) }
+        if candidate.sameKeys(as: other) { return reject("\(candidate.label) is your \(target == .capture ? "voice" : "capture") shortcut.") }
+        if candidate.sameKeys(as: .quickMenu) { return reject("\(candidate.label) opens Calshot’s Quick Menu.") }
+        if systemReservesShortcut(candidate) { return reject("macOS uses \(candidate.label) for a system shortcut.") }
+        let status = target == .capture ? hotKeys.register(candidate) : hotKeys.registerVoice(candidate)
+        guard status == noErr else {
+            if !isRecordingShortcut { if target == .capture { registerCaptureShortcut() } else { registerVoiceShortcut() } }
+            return reject("Another app is using \(candidate.label) (error \(status)).")
+        }
+        shortcutAttemptErrors[target] = nil
+        if let data = try? JSONEncoder().encode(candidate) { shortcutDefaults.set(data, forKey: target == .capture ? GlobalShortcut.captureDefaultsKey : GlobalShortcut.voiceDefaultsKey) }
+        if target == .capture { shortcut = candidate; shortcutRegistrationStatus = noErr } else { voiceShortcut = candidate; voiceShortcutRegistrationStatus = noErr }
+        return true
     }
 
     func testOpenAIConnection(using draftKey: String? = nil) async throws -> String {
@@ -637,12 +723,6 @@ final class CalshotModel: ObservableObject {
         openPanel()
     }
 
-    private static func loadShortcut() -> GlobalShortcut {
-        guard let data = UserDefaults.standard.data(forKey: "globalShortcut"),
-              let shortcut = try? JSONDecoder().decode(GlobalShortcut.self, from: data) else { return .default }
-        return shortcut
-    }
-
     func capture(quick: Bool = false, appendToBatch: Bool = false, visibleScreen: Bool = false, askAfterCapture: Bool = false) async {
         guard !softwareUpdates.installing else { return }
         guard account.canUseWorkspace else { openPanel(); return }
@@ -747,13 +827,15 @@ final class CalshotModel: ObservableObject {
     private func suspendShortcutForSelection() {
         guard !shortcutSuspendedForSelection else { return }
         shortcutSuspendedForSelection = true
-        HotKeyController.shared.unregister()
+        setShortcutRecording(nil)
+        hotKeys.unregister()
     }
 
     func resumeShortcutAfterSelection() {
         guard shortcutSuspendedForSelection else { return }
         shortcutSuspendedForSelection = false
-        if !isRecordingShortcut { registerShortcut() }
+        // Only capture was suspended. Re-registering voice here could lose the release of a held key.
+        if !isRecordingShortcut { registerCaptureShortcut() }
     }
 
     private func analyze(_ cgImage: CGImage, sessionID: UUID) async {
@@ -1059,7 +1141,7 @@ struct MenuBarView: View {
                 dismiss()
                 Task { await model.capture() }
             } label: {
-                    HStack { Image(systemName: "camera.viewfinder"); Text("New Capture"); Spacer(); Text(model.shortcut.label).font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.65)) }
+                    HStack { Image(systemName: "camera.viewfinder"); Text("New Capture"); Spacer(); Text(model.shortcutError(.capture) == nil ? model.shortcut.label : "Shortcut off").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.65)) }
                     .padding(.horizontal, 12).padding(.vertical, 11).contentShape(Rectangle())
             }.buttonStyle(.plain).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 11)).foregroundStyle(.white)
             Button {

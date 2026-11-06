@@ -155,6 +155,7 @@ export interface CalendarEvent {
   isRecurring?: boolean | null;
 }
 export interface CalendarViewState {
+  contentToken?: string;
   loading: boolean;
   loaded: boolean;
   start?: string;
@@ -164,6 +165,8 @@ export interface CalendarViewState {
     calendarIdentifier: string;
     calendarName: string;
     message: string;
+    kind?: "stale" | "coverage" | "error";
+    syncedAt?: string;
   }[];
   truncated?: boolean;
 }
@@ -209,16 +212,26 @@ export interface AgentPermissionsState {
   calendar?: { families: { id: string; label: string; detail: string; enabled: boolean; expired: boolean; alwaysAsks: boolean }[];
     calendarIDs: string[]; expiresAt?: string | null; notice?: string | null };
 }
+export interface ShortcutStatus { label: string; isDefault: boolean; error?: string | null }
 export interface VoiceState {
   token: string; state: string; active: boolean; inputLevel: number; caption: string; userTranscript: string; drawing: boolean;
   usage: { seconds: number; estimatedCost: number }; error?: string; needsKey: boolean; needsAcknowledgement: boolean; talking?: boolean; shortcut?: string; outputLevel?: number;
   permissions: { microphone: boolean; screen: boolean }; model: string; voice: string; monthlyCap: number;
 }
+export interface GlassAppearance {
+  enabled: boolean;
+  opacity: number;
+  blur: number;
+  contrast: number;
+}
 export interface AppState {
+  displayAccessibility?: { reducedTransparency: boolean; increasedContrast: boolean };
   /** Native presentation only; omitted in the full workspace and browser fixtures. */
   notchExpanded?: boolean;
   voice?: VoiceState;
   voiceShortcut?: string;
+  /** Native shortcut status. Labels change only after macOS accepts the shortcut. */
+  shortcuts?: { recording: "capture" | "voice" | null; capture: ShortcutStatus; voice: ShortcutStatus };
   taskReview?: TaskReview;
   taskOutcome?: TaskOutcome;
   agentPermissions?: AgentPermissionsState;
@@ -258,6 +271,7 @@ export interface AppState {
   };
   settingsSection?: "general" | "calendars" | "friends" | "ai" | "voice" | "privacy";
   calendarView?: CalendarViewState;
+  calendarContentToken?: string;
   /** From the provider receipt of the last direct Calendar change. */
   calendarChange?: { operation: "create" | "update" | "delete"; title: string; calendarName: string; thisDateOnly?: boolean } | null;
   /** An interrupted Calendar or Tasks save that was confirmed, or couldn't be. */
@@ -312,6 +326,7 @@ export interface AppState {
   screenPermissionGranted?: boolean;
   settings: {
     appearance: "system" | "light" | "dark";
+    glass?: GlassAppearance;
     agentEnabled: boolean;
     apiKeySaved: boolean;
     useAPIKey: boolean;

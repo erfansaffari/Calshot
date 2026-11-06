@@ -1,0 +1,56 @@
+/* The one place color gradients are allowed: the Assistant home orb. */
+/* A glass sphere of light. It marks the Assistant home only, not any state. */
+.home-orb {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 18px;
+  overflow: hidden;
+  border-radius: 50%;
+  isolation: isolate;
+  box-shadow: 0 0 0 1.5px #ffffffd9, 0 0 44px #2563ff66, 0 0 90px #7a22ff33;
+}
+.home-orb::before {
+  content: "";
+  position: absolute;
+  inset: -22%;
+  background: conic-gradient(from 210deg at 54% 58%, #1238ff, #16b8ff, #c9f4ff, #8fa2ff, #7a22ff, #1238ff);
+  filter: blur(7px);
+}
+.home-orb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 30% 24%, #ffffffe6, #ffffff00 34%),
+    radial-gradient(circle at 70% 88%, #ffffff66, #ffffff00 38%),
+    radial-gradient(circle at 50% 50%, #ffffff00 58%, #ffffffa6 100%);
+}
+.suggestions svg { flex: none; }
+.suggestion-blue { color: #5aa2ff; }
+.suggestion-cyan { color: #39d0ee; }
+.suggestion-violet { color: #b08cff; }
+:root[data-appearance="light"] .suggestion-cyan { color: #0a7f9c; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-appearance="dark"]) .suggestion-cyan { color: #0a7f9c; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .home-orb::before { animation: orb-turn 24s linear infinite; }
+  .home > * { animation: rise-in 460ms var(--motion-ease) both; }
+  .home > :nth-child(2) { animation-delay: 50ms; }
+  .home > :nth-child(3) { animation-delay: 90ms; }
+  .home > :nth-child(n + 4) { animation-delay: 130ms; }
+  .message { animation: rise-in 260ms var(--motion-ease) both; }
+  .modal { animation: materialize 220ms var(--motion-ease) both; }
+  .nav-item svg, .nav-item span, .suggestions button, .capture-tile, .button {
+    transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 100ms ease-out;
+  }
+  /* Feedback on press, not on release. */
+  :is(.button, .suggestions button, .capture-tile):active:not(:disabled) { transform: scale(.97); }
+  .nav-item:active svg { transform: scale(.92); }
+}
+@keyframes orb-turn { to { rotate: 360deg; } }
+@keyframes rise-in { from { opacity: 0; translate: 0 8px; } }
+@keyframes materialize { from { opacity: 0; scale: .98; } }

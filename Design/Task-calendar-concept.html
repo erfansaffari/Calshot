@@ -1,0 +1,184 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Calshot tasks and deadlines — concept</title><style>.product {
+  font-family:
+    Inter,
+    Geist,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  font-synthesis: none;
+  --text: #272a30;
+  --muted: #737982;
+  --accent: #0760ed;
+  --accent-hover: #004fd0;
+  --accent-soft: #dce9ff;
+  --surface: rgba(255, 255, 255, 0.82);
+  --line: rgba(43, 58, 80, 0.11);
+  --danger: #a73832;
+  --danger-soft: #fff1ef;
+  --warning: #8a5916;
+  --warning-soft: #fff6e5;
+  --success: #28714b;
+  --success-soft: #ecf7ee;
+  --radius: 14px;
+  --radius-sm: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --shadow: 0 8px 28px rgba(42, 60, 90, 0.07);
+  --focus: 0 0 0 3px rgba(7, 96, 237, 0.25);
+}
+
+.product {
+  color-scheme: light;
+  --canvas: #f2f6fb;
+  --primary: #0760ed;
+  --workspace-background:
+    radial-gradient(ellipse at 95% 2%, #f7e7f5a3, transparent 55%),
+    radial-gradient(ellipse at 10% 0%, #d8eaffbd, transparent 65%),
+    radial-gradient(ellipse at 70% 100%, #d9f0eaa1, transparent 60%), #f7f9fc;
+  --sidebar-surface: #f3f7ff80;
+  --panel-border: #ffffffb0;
+  --nav-active: #cfe0fc;
+  --nav-active-text: #175ac1;
+  --nav-hover: #dce8f783;
+  --surface-solid: #fff;
+  --surface-subtle: #ffffff99;
+  --surface-raised: #fafcfe;
+  --surface-inset: #eef3fa;
+  --composer-fade: #edf4f5aa;
+  --badge-background: #eaf0f5;
+  --input-border: #b7c3d2;
+  --backdrop: #23344b45;
+  --primary-shadow: #003b8a26;
+  --soft-shadow: #23344a08;
+  --overlay-shadow: #20345040;
+}
+.product[data-appearance="dark"] {
+  color-scheme: dark;
+  --text: #e7edf6;
+  --muted: #a5b2c5;
+  --accent: #8ab9ff;
+  --accent-hover: #2672e3;
+  --accent-soft: #253b5b;
+  --primary: #1262db;
+  --canvas: #151b26;
+  --workspace-background:
+    radial-gradient(ellipse at 95% 2%, #34253e8c, transparent 55%),
+    radial-gradient(ellipse at 10% 0%, #2034519c, transparent 65%),
+    radial-gradient(ellipse at 70% 100%, #1c38344d, transparent 60%), #171d28;
+  --sidebar-surface: #1c2737b3;
+  --panel-border: #a6bddb20;
+  --line: #a6bddb29;
+  --nav-active: #2a4166;
+  --nav-active-text: #bbd6ff;
+  --nav-hover: #7395c51c;
+  --surface: #242e3ce8;
+  --surface-solid: #202a38;
+  --surface-subtle: #2835459c;
+  --surface-raised: #242e3c;
+  --surface-inset: #1c2635;
+  --composer-fade: #15242bb3;
+  --badge-background: #334258;
+  --input-border: #52627a;
+  --backdrop: #00000080;
+  --primary-shadow: #00000040;
+  --soft-shadow: #0000001a;
+  --overlay-shadow: #00000073;
+  --danger: #ffafa8;
+  --danger-soft: #452c30;
+  --warning: #f4ca88;
+  --warning-soft: #3c3223;
+  --success: #9bdbb6;
+  --success-soft: #253e32;
+  --shadow: 0 8px 28px #00000026;
+  --focus: 0 0 0 3px #77adff59;
+}
+@media (prefers-color-scheme: dark) {
+  .product:not([data-appearance="light"]):not([data-appearance="dark"]) {
+    color-scheme: dark;
+    --text: #e7edf6;
+    --muted: #a5b2c5;
+    --accent: #8ab9ff;
+    --accent-hover: #2672e3;
+    --accent-soft: #253b5b;
+    --primary: #1262db;
+    --canvas: #151b26;
+    --workspace-background:
+      radial-gradient(ellipse at 95% 2%, #34253e8c, transparent 55%),
+      radial-gradient(ellipse at 10% 0%, #2034519c, transparent 65%),
+      radial-gradient(ellipse at 70% 100%, #1c38344d, transparent 60%), #171d28;
+    --sidebar-surface: #1c2737b3;
+    --panel-border: #a6bddb20;
+    --line: #a6bddb29;
+    --nav-active: #2a4166;
+    --nav-active-text: #bbd6ff;
+    --nav-hover: #7395c51c;
+    --surface: #242e3ce8;
+    --surface-solid: #202a38;
+    --surface-subtle: #2835459c;
+    --surface-raised: #242e3c;
+    --surface-inset: #1c2635;
+    --composer-fade: #15242bb3;
+    --badge-background: #334258;
+    --input-border: #52627a;
+    --backdrop: #00000080;
+    --primary-shadow: #00000040;
+    --soft-shadow: #0000001a;
+    --overlay-shadow: #00000073;
+    --danger: #ffafa8;
+    --danger-soft: #452c30;
+    --warning: #f4ca88;
+    --warning-soft: #3c3223;
+    --success: #9bdbb6;
+    --success-soft: #253e32;
+    --shadow: 0 8px 28px #00000026;
+    --focus: 0 0 0 3px #77adff59;
+  }
+}
+</style></head><body><div class="product">
+  <header class="bar"><strong><span class="brand-icon">C<span>•</span></span> Calshot</strong><span style="display:flex;align-items:center;gap:8px"><span class="concept-tag">First-release concept</span><button id="appearance" aria-label="Switch concept to dark appearance" style="font-size:9px">Dark</button></span></header>
+  <div class="intro"><h1>Your tasks, with room to work.</h1><p>Deadlines live above your schedule. Meetings keep their time slots.</p></div>
+  <div class="workspace">
+    <section class="tasks" aria-label="Tasks"><div class="section-head"><h2>Tasks <span id="count"></span></h2><span class="sort">↕ Manual order</span></div>
+      <form id="add"><input id="new-title" aria-label="New task title" placeholder="Add a task…" maxlength="120" required><button type="submit" aria-label="Add task">+</button></form>
+      <p class="hint">Drag to reorder, or use the arrow buttons.</p><div id="task-list"></div>
+      <div class="task-note"><strong>One task, one linked deadline.</strong><p>Dated tasks publish to your connected calendar after review. Undated tasks stay in Inbox.</p></div>
+    </section>
+    <section class="calendar" aria-label="Calendar"><div class="section-head"><h2>November 2026</h2><span class="sort">Week</span></div>
+      <div class="week-head"><span></span><b>Wed <em>4</em></b><b>Thu <em>5</em></b><b>Fri <em>6</em></b></div>
+      <div class="deadline-band"><div class="day-label">Deadlines<br><button id="expand" aria-expanded="false" aria-controls="day-chips">Expand</button></div><div id="day-chips"></div></div>
+      <div class="schedule"><div class="hours"><span>10 AM</span><span>11 AM</span><span>12 PM</span><span>1 PM</span><span>2 PM</span></div><div class="day"><div class="meeting blue" style="top:0"><b>Lecture</b><small>10–11 AM</small></div></div><div class="day"><div class="meeting green" style="top:54px"><b>Lab</b><small>11 AM–12 PM</small></div></div><div class="day"></div></div>
+      <p class="calendar-note">Deadline entries are free all day. Their exact due time stays visible.</p>
+    </section>
+  </div>
+  <section class="detail" aria-label="Selected task details"><div><span class="overline">TASK DETAILS</span><h2 id="detail-title">Essay</h2><p id="detail-date"></p></div><label>Due time <input id="due-time" type="time" aria-label="Task due time"></label><label>Mac reminder <select id="reminder" aria-label="Task reminder"><option value="none">None</option><option value="day">1 day before</option><option value="hour">1 hour before</option></select></label></section>
+  <div class="explanation"><div><b>Now</b><span>Add, reorder, complete, set deadlines and reminders.</span></div><div><b>Next phase</b><span>Suggest work sessions around your calendar, for approval.</span></div></div>
+  <p id="status" class="status" role="status" aria-live="polite">Try adding, completing or reordering a task. Expand Friday’s deadlines.</p>
+  <p class="prototype-note">Interactive design proposal · fictional data · changes stay in this preview. No tasks, notifications or calendar entries are saved.</p>
+</div>
+<style>
+*{box-sizing:border-box}body{margin:0;background:transparent;font-family:var(--font-sans,system-ui);color:var(--foreground)}
+.product{padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--workspace-background);color:var(--text);font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px;line-height:1.5}
+.product button,.product input,.product select{font:inherit;color:inherit}.product button{cursor:pointer;border:1px solid var(--line);border-radius:6px;background:var(--surface-solid);padding:4px 7px}.product button:hover{background:var(--nav-hover)}.product button:disabled{opacity:.3;cursor:default}.product :focus-visible{outline:2px solid var(--accent);outline-offset:2px}.product p{margin:0}.bar{display:flex;align-items:center;justify-content:space-between;gap:12px}.bar strong{display:flex;align-items:center;gap:8px;font-size:15px}.brand-icon{display:inline-flex;justify-content:center;align-items:center;background:var(--text);color:var(--surface-solid);border-radius:7px;width:25px;height:25px;font-size:19px;line-height:1}.brand-icon span{color:var(--accent);font-size:14px}.concept-tag{font-size:10px;padding:3px 8px;border:1px solid var(--line);border-radius:20px;color:var(--muted)}.intro{margin:20px 0}.intro h1{font-size:22px;letter-spacing:-.6px;line-height:1.2;margin:0 0 6px}.intro p,.hint,.calendar-note{color:var(--muted);font-size:11px}.workspace{display:grid;grid-template-columns:220px minmax(0,1fr);gap:16px}.tasks,.calendar{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px}.section-head{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:12px}.section-head h2,.detail h2{font-size:13px;margin:0;font-weight:650}.section-head h2 span{font-size:10px;padding:2px 5px;border-radius:6px;background:var(--badge-background);margin-left:5px;color:var(--muted)}.sort{font-size:9px;white-space:nowrap;color:var(--muted)}#add{display:flex;gap:5px;margin-bottom:8px}#add input{width:100%;min-width:0;background:var(--surface-solid);border:1px solid var(--input-border);border-radius:6px;padding:7px 8px}#add button{background:var(--primary);color:#fff;border-color:transparent;font-size:18px;line-height:1;padding-inline:9px}.hint{font-size:9px;margin-bottom:9px!important}.task-row{display:grid;grid-template-columns:14px 15px minmax(0,1fr);gap:6px;align-items:start;border-bottom:1px solid var(--line);padding:10px 0}.task-row.selected .task-title{color:var(--accent)}.handle{color:var(--muted);font-size:14px;cursor:grab;user-select:none}.task-row input[type=checkbox]{accent-color:var(--primary);width:13px;height:13px;margin:3px 0 0}.task-title{display:block!important;text-align:left;border:0!important;padding:0!important;background:none!important;font-weight:600!important;line-height:1.4;overflow-wrap:anywhere}.task-row.done .task-title{text-decoration:line-through;color:var(--muted)}.task-meta{font-size:10px;color:var(--muted);display:block;margin-top:4px}.task-foot{display:flex;align-items:center;justify-content:space-between;margin-top:6px}.task-actions{display:flex;gap:3px}.task-actions button{font-size:9px;padding:0 5px}.estimate{font-size:9px;color:var(--muted)}.task-note{padding-top:12px;font-size:10px}.task-note strong{font-weight:600}.task-note p{margin-top:4px;color:var(--muted)}.week-head{display:grid;grid-template-columns:44px repeat(3,minmax(0,1fr));border-bottom:1px solid var(--line);padding-bottom:7px}.week-head b{text-align:center;font-size:9px;color:var(--muted);font-weight:500}.week-head em{display:block;font-style:normal;font-size:17px;color:var(--text);font-weight:650}.deadline-band{display:grid;grid-template-columns:44px minmax(0,1fr);padding:7px 0;border-bottom:1px solid var(--line);gap:0;min-height:72px}.day-label{font-size:8px;color:var(--muted);padding-top:3px}.day-label button{font-size:8px;padding:1px 3px;margin-top:5px}.day-label button:focus-visible{outline-offset:1px}#day-chips{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));max-height:145px;overflow:auto}.chip-day{padding:0 3px;border-left:1px solid var(--line);min-width:0}.chip{width:100%;border:0!important;border-radius:4px!important;font-size:9px!important;text-align:left;line-height:1.4;padding:4px!important;margin-bottom:4px;background:var(--accent-soft)!important;white-space:normal;overflow-wrap:anywhere}.chip small{display:block;font-size:8px;color:var(--muted)}.chip.done{opacity:.55;text-decoration:line-through}.chip.reference{background:var(--success-soft)!important}.more{font-size:9px!important;padding:1px 3px!important;border:0!important;color:var(--accent)!important;background:none!important}.schedule{display:grid;grid-template-columns:44px repeat(3,minmax(0,1fr));height:260px}.hours{display:flex;flex-direction:column;justify-content:space-between;font-size:8px;color:var(--muted);padding:3px 3px 0 0}.day{position:relative;border-left:1px solid var(--line);background:repeating-linear-gradient(to bottom,transparent 0px,transparent 51px,var(--line) 51px,var(--line) 52px)}.meeting{position:absolute;left:3px;right:3px;padding:7px 5px;height:50px;border-radius:5px;overflow:hidden;line-height:1.3;border-left:2px solid var(--accent)}.meeting b,.meeting small{display:block;font-size:9px}.meeting small{font-size:8px;margin-top:3px}.meeting.blue{background:var(--accent-soft)}.meeting.green{background:var(--success-soft);border-color:var(--success)}.calendar-note{font-size:9px;margin-top:10px!important}.detail{display:grid;grid-template-columns:minmax(0,1fr) 110px 135px;gap:12px;padding:16px;margin-top:16px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}.overline{font-size:8px;letter-spacing:1px;color:var(--muted)}.detail h2{font-size:15px;margin-top:3px}.detail p{font-size:10px;color:var(--muted);margin-top:4px}.detail label{font-size:10px;color:var(--muted);display:flex;flex-direction:column;gap:6px;justify-content:center}.detail input,.detail select{width:100%;border-radius:6px;padding:6px;border:1px solid var(--input-border);background:var(--surface-solid);min-width:0}.explanation{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;font-size:10px}.explanation div{display:flex;flex-direction:column;gap:3px}.explanation b{font-weight:600}.explanation span,.prototype-note{color:var(--muted)}.status{font-size:10px;color:var(--accent);margin-top:14px!important}.prototype-note{font-size:9px;margin-top:8px!important}.dragging{opacity:.45}@media(max-width:600px){.workspace{grid-template-columns:1fr}.tasks{order:2}.calendar{order:1}.task-row{grid-template-columns:14px 15px minmax(0,1fr)}.detail{grid-template-columns:1fr 1fr}.detail>div{grid-column:1/-1}.explanation{grid-template-columns:1fr;gap:8px}.intro h1{font-size:20px}.calendar,.tasks,.detail{padding:16px}}
+</style>
+<script>
+let tasks=[{id:'essay',title:'Essay',due:'Fri, Nov 6',day:2,time:'17:00',effort:'2 hours',reminder:'day',done:false},{id:'reading',title:'Reading response',due:'Wed, Nov 4',day:0,time:'',effort:'30 min',reminder:'none',done:false},{id:'studio',title:'Studio project',due:'Fri, Nov 13',day:-1,time:'',effort:'3 hours',reminder:'none',done:false}];let selected='essay',expanded=false,serial=0,dragged=null;
+const $=id=>document.getElementById(id);const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const timeLabel=t=>{if(!t)return 'Date only';let[h,m]=t.split(':').map(Number);return (h%12||12)+(m?':'+String(m).padStart(2,'0'):'')+' '+(h>=12?'PM':'AM')};
+function status(s){$('status').textContent=s}
+function render(focus){$('count').textContent=tasks.filter(t=>!t.done).length;$('task-list').innerHTML=tasks.map((t,i)=>`<div class="task-row ${t.id===selected?'selected':''} ${t.done?'done':''}" data-id="${t.id}" draggable="true"><span class="handle" aria-hidden="true">⠿</span><input type="checkbox" id="check-${t.id}" data-check="${t.id}" ${t.done?'checked':''} aria-label="Complete ${esc(t.title)}"><div><button class="task-title" data-select="${t.id}" id="select-${t.id}">${esc(t.title)}</button><span class="task-meta">${t.due?esc(t.due)+(t.time?' · '+timeLabel(t.time):' · Date only'):'Inbox · No deadline'}</span><div class="task-foot"><span class="estimate">${esc(t.effort||'No estimate')}</span><span class="task-actions"><button id="up-${t.id}" data-move="-1" data-task="${t.id}" aria-label="Move ${esc(t.title)} up" ${i===0?'disabled':''}>↑</button><button id="down-${t.id}" data-move="1" data-task="${t.id}" aria-label="Move ${esc(t.title)} down" ${i===tasks.length-1?'disabled':''}>↓</button></span></div></div></div>`).join('');
+let days=[[],[],[]];tasks.filter(t=>t.day>=0).forEach(t=>days[t.day].push({task:t.id,title:t.title,subtitle:t.done?'Completed':t.time?'Due '+timeLabel(t.time):'Due · Date only',done:t.done}));['Team notes','Registration closes','Portfolio check','Research outline'].forEach(title=>days[2].push({title,subtitle:'All day',reference:true}));$('day-chips').innerHTML=days.map(day=>`<div class="chip-day">${(expanded?day:day.slice(0,2)).map(t=>`<button class="chip ${t.reference?'reference':''} ${t.done?'done':''}" ${t.task?'data-select="'+t.task+'"':'data-reference="true"'}>${esc(t.title)}<small>${esc(t.subtitle)}</small></button>`).join('')}${!expanded&&day.length>2?`<button class="more" data-expand="true">+${day.length-2} more</button>`:''}</div>`).join('');$('expand').textContent=expanded?'Collapse':'Expand';$('expand').setAttribute('aria-expanded',String(expanded));const t=tasks.find(t=>t.id===selected);$('detail-title').textContent=t.title;$('detail-date').textContent=t.due?t.due+' · School calendar · '+(t.done?'Completed':'Deadline entry marked free'):'Inbox · Add a deadline to publish to School calendar';$('due-time').value=t.time;$('due-time').disabled=!t.due;$('reminder').value=t.reminder;$('reminder').disabled=!t.due;if(focus)$(focus)?.focus()}
+function move(id,delta){const i=tasks.findIndex(t=>t.id===id),j=i+delta;if(j<0||j>=tasks.length)return;const[t]=tasks.splice(i,1);tasks.splice(j,0,t);render((delta<0?'up-':'down-')+id);if($(delta<0?'up-'+id:'down-'+id)?.disabled)$('select-'+id)?.focus();status(t.title+' moved to position '+(j+1)+'. Deadline unchanged.')}
+$('task-list').addEventListener('change',e=>{const id=e.target.dataset.check;if(!id)return;let t=tasks.find(t=>t.id===id);t.done=e.target.checked;render('check-'+id);status(t.done?t.title+' completed in this preview. Its historical calendar entry remains.':t.title+' reopened in this preview.')});
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.id==='appearance'){const product=document.querySelector('.product');const dark=product.dataset.appearance!=='dark';product.dataset.appearance=dark?'dark':'light';b.textContent=dark?'Light':'Dark';b.setAttribute('aria-label','Switch concept to '+(dark?'light':'dark')+' appearance');}if(b.dataset.select){selected=b.dataset.select;render();status('Editing '+tasks.find(t=>t.id===selected).title+'.')}if(b.dataset.move)move(b.dataset.task,Number(b.dataset.move));if(b.id==='expand'||b.dataset.expand){expanded=!expanded;render('expand');status(expanded?'All deadline entries expanded. The time grid stays separate.':'Deadline entries collapsed.')}if(b.dataset.reference)status('Example provider all-day event; calendar edits would use review.')});
+$('add').addEventListener('submit',e=>{e.preventDefault();const input=$('new-title');const title=input.value.trim();if(!title)return;tasks.push({id:'new'+(++serial),title,due:'',day:-1,time:'',effort:'',reminder:'none',done:false});input.value='';render();input.focus();status('Added '+title+' to the preview Inbox. No deadline or calendar time was invented.')});
+$('due-time').addEventListener('change',e=>{const t=tasks.find(t=>t.id===selected);t.time=e.target.value;render('due-time');status('Preview deadline: '+(t.time?timeLabel(t.time):'date only')+'. Calendar publishing would require review.')});$('reminder').addEventListener('change',e=>{const t=tasks.find(t=>t.id===selected);t.reminder=e.target.value;status('Preview reminder changed. No notification scheduled.')});
+$('task-list').addEventListener('dragstart',e=>{dragged=e.target.closest('.task-row')?.dataset.id;e.dataTransfer.setData('text/plain',dragged||'');e.dataTransfer.effectAllowed='move'});$('task-list').addEventListener('dragover',e=>e.preventDefault());$('task-list').addEventListener('drop',e=>{e.preventDefault();const target=e.target.closest('.task-row')?.dataset.id;if(!target||!dragged||target===dragged)return;const i=tasks.findIndex(t=>t.id===dragged),j=tasks.findIndex(t=>t.id===target);move(dragged,j-i);dragged=null});render();console.assert(tasks.length===3,'Three fictional tasks should be present');console.assert(document.querySelectorAll('.meeting').length===2,'Only timed meetings occupy the schedule');const original=tasks.map(t=>({...t}));move('essay',1);console.assert(tasks[1].id==='essay'&&tasks[1].time==='17:00','Reorder preserves deadline');const check=$('check-essay');check.checked=true;check.dispatchEvent(new Event('change',{bubbles:true}));console.assert(tasks.find(t=>t.id==='essay').done,'Checkbox completes task');$('due-time').value='16:30';$('due-time').dispatchEvent(new Event('change',{bubbles:true}));console.assert(tasks.find(t=>t.id==='essay').time==='16:30','Exact due-time edit retained');$('expand').click();console.assert($('expand').getAttribute('aria-expanded')==='true','All-day expansion is accessible');$('new-title').value='Example inbox task';$('add').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));console.assert(tasks.length===4&&tasks[3].day===-1,'Undated tasks stay in Inbox');tasks=original;selected='essay';expanded=false;serial=0;render();status('Try adding, completing or reordering a task. Expand Friday’s deadlines.');console.log('Concept checks passed: reorder, completion, exact due time, overflow expansion and undated task creation. Fictional state reset.');
+</script>
+</body></html>

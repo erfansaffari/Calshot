@@ -198,10 +198,27 @@ final class CalshotAccountService: ObservableObject {
                 let message = safeMessages[payload?["message"] as? String ?? ""] ?? (statusCode == 401 || statusCode == 403 ? "Your Calshot session couldn’t authorize calendar sync. Sign in again and retry." : "Calendar sync couldn’t reach your account. Check your connection and retry.")
                 throw CalendarToolArgumentError(message)
             }
-            throw CalendarToolArgumentError("Account sync couldn’t finish. Your local data is kept. Check your connection and sync again; another device may have updated your account.")
+            throw CalendarToolArgumentError(Self.accountSyncFailure(status: statusCode, data: data))
         }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(T.self, from: data.isEmpty && returnsVoid ? Data("null".utf8) : data)
+    }
+    /// Only known server messages influence user-facing guidance; never expose raw response data.
+    static func accountSyncFailure(status: Int?, data: Data) -> String {
+        let message = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["message"] as? String
+        let kept = " Your local data is kept."
+        if status == 401 || status == 403 { return "Your Calshot session couldn’t authorize account sync. Sign in again and retry." + kept }
+        switch message {
+        case "Account changed on another device. Sync again; local changes are kept.":
+            return "Your account changed during sync. Sync again to merge the latest changes." + kept
+        case "Invalid history metadata. Images remain local.", "Invalid account sync document.", "Invalid account preferences.", "Invalid device.", "Invalid connection metadata.":
+            return "The sync server rejected this app’s data format. Account sync needs a compatibility fix; retrying your connection won’t resolve it." + kept
+        case "Account sync limit reached. Your local history is kept.":
+            return "Your account exceeds the cloud sync limit." + kept
+        default:
+            if let status, status >= 500 { return "The account sync service is temporarily unavailable. Try syncing again later." + kept }
+            return "Account sync was rejected by the server" + (status.map { " (HTTP \($0))" } ?? "") + ". Try again; if it continues, report this error." + kept
+        }
     }
     func verify(code: String) async throws {
         guard let client, !busy, !email.isEmpty, code.count >= 6, code.count <= 12, code.allSatisfy(\.isNumber) else { throw CalendarToolArgumentError("Enter the confirmation code from your email.") }

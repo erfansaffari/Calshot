@@ -718,3 +718,16 @@ it("discards the selected-event draft when its native view changes", async () =>
   rendered.rerender(content({ ...loaded, calendarView: { ...loaded.calendarView, events: [{ ...loaded.calendarView.events[0], selectionHandle: "new-handle", selectionGeneration: "new-generation" }] } }));
   await waitFor(() => expect(input.value).toBe(""));
 });
+
+it("reloads a visible calendar after a native write without refreshing on unchanged snapshots", async () => {
+  const state = { ...structuredClone(preview), calendarContentToken: "before-write" };
+  const view = render(<CalendarPresentationProvider><CalendarPage onCommand={command} state={state} /></CalendarPresentationProvider>);
+  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: "loadCalendarEvents" })));
+  vi.mocked(command).mockClear();
+  view.rerender(<CalendarPresentationProvider><CalendarPage onCommand={command} state={{ ...state, calendarContentToken: "after-write" }} /></CalendarPresentationProvider>);
+  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: "loadCalendarEvents" })));
+  // A normal snapshot with the same content token must not create a refresh loop.
+  vi.mocked(command).mockClear();
+  view.rerender(<CalendarPresentationProvider><CalendarPage onCommand={command} state={{ ...state, calendarContentToken: "after-write", agentStatus: "Speaking" }} /></CalendarPresentationProvider>);
+  expect(command).not.toHaveBeenCalled();
+});

@@ -1,0 +1,226 @@
+/* One material for WKWebView and the browser fallback. The Mac window supplies the real
+   system glass; these tokens make every web surface part of it. Black (or silver in light
+   appearance) is the material, and blue is the accent. See Design/DESIGN_SYSTEM.md. */
+:root {
+  --glass-opacity: .35;
+  --glass-blur: 24px;
+  --glass-contrast: .5;
+  --glass-rgb: 246 246 248;
+  --glass-lift: 255 255 255;
+  --glass-edge: 0 0 0;
+  --glass-shade: 0 0 0;
+  --glass-a-subtle: .34;
+  --glass-a-surface: .7;
+  --glass-a-raised: .86;
+  --glass-a-control: .6;
+  --glass-a-inset: .045;
+  --glass-a-sheen: .3;
+  --glass-a-rim: .6;
+  /* Dark text needs more silver behind it than white text needs black. */
+  --glass-a-window: .3;
+}
+:root[data-appearance="dark"] {
+  --glass-rgb: 3 4 12;
+  --glass-lift: 222 230 255;
+  --glass-edge: 200 210 255;
+  --glass-a-subtle: .045;
+  --glass-a-surface: .07;
+  --glass-a-raised: .13;
+  --glass-a-control: .09;
+  --glass-a-inset: .26;
+  --glass-a-sheen: .1;
+  --glass-a-rim: .16;
+  --glass-a-window: 0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-appearance="light"]):not([data-appearance="dark"]) {
+    --glass-rgb: 3 4 12;
+    --glass-lift: 222 230 255;
+    --glass-edge: 200 210 255;
+    --glass-a-subtle: .045;
+    --glass-a-surface: .07;
+    --glass-a-raised: .13;
+    --glass-a-control: .09;
+    --glass-a-inset: .26;
+    --glass-a-sheen: .1;
+    --glass-a-rim: .16;
+    --glass-a-window: 0;
+  }
+}
+/* Components keep using the shared surface tokens, so they all become glass here.
+   The selector must outrank the appearance blocks in tokens.css, or dark keeps its solids. */
+html:root:root[data-glass="on"] {
+  --workspace-background: transparent;
+  --sidebar-surface: transparent;
+  --composer-fade: transparent;
+  --surface-subtle: rgb(var(--glass-lift) / var(--glass-a-subtle));
+  --surface: rgb(var(--glass-lift) / var(--glass-a-surface));
+  --surface-raised: rgb(var(--glass-lift) / var(--glass-a-raised));
+  --surface-inset: rgb(var(--glass-shade) / var(--glass-a-inset));
+  --surface-overlay: rgb(var(--glass-rgb) / .9);
+  --glass-fill: rgb(var(--glass-lift) / calc(var(--glass-a-control) * (.6 + var(--glass-opacity) * .6)));
+  --glass-border: rgb(var(--glass-edge) / calc(.07 + var(--glass-contrast) * .12));
+  --glass-sheen: linear-gradient(165deg, rgb(255 255 255 / var(--glass-a-sheen)), rgb(255 255 255 / 0) 55%);
+  --glass-shadow: inset 0 1px 0 rgb(255 255 255 / var(--glass-a-rim)), 0 2px 10px rgb(var(--glass-shade) / .14);
+}
+/* This tint is all that sits between the content and the system glass, so the windows
+   behind Calshot stay visible. Nothing decorative may be painted here. */
+html[data-glass="on"] body { background: rgb(var(--glass-rgb) / calc(var(--glass-opacity) + var(--glass-a-window))); }
+html[data-glass="on"] .app { isolation: isolate; }
+/* Content surfaces share the material but no blur: reading rows stay light to draw. */
+html[data-glass="on"] :is(.card, .home-tasks, .task-list, .account-panel, .account-hero) {
+  border-color: var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+html[data-glass="on"] :is(.composer, .source-panel, .modal, .settings-tabs, .notch-details, .calendar-toolbar, .calendar-event-popover) {
+  background: var(--glass-sheen), var(--glass-fill);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(120%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(120%);
+}
+/* The menu has no panel of its own: it is the bare window glass. The workspace is the one
+   framed surface, only slightly darker so its text holds over bright windows behind it. */
+html[data-glass="on"] .sidebar { background: transparent; border: 0; box-shadow: none; }
+html[data-glass="on"] .workspace {
+  margin: 8px 8px 8px 0;
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  background: rgb(var(--glass-rgb) / calc(.1 + var(--glass-contrast) * .2));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / var(--glass-a-rim));
+}
+html[data-glass="on"] .calendar-workspace { padding: 0; gap: 0; }
+html[data-glass="on"] .calendar-workspace .sidebar { margin: 0; }
+html[data-glass="on"] .brand svg { color: var(--text); }
+/* Navigation reads as text with a glass disc around the current icon. */
+html[data-glass="on"] .nav-item { gap: 6px; padding: 1px 4px; min-height: 30px; font-weight: 500; }
+html[data-glass="on"] .nav-item svg { box-sizing: content-box; flex: none; padding: 6px; border-radius: 50%; }
+html[data-glass="on"] .nav-item:hover:not(.active) { background: transparent; }
+html[data-glass="on"] .nav-item:hover:not(.active) svg { background: var(--nav-hover); }
+html[data-glass="on"] .nav-item.active { background: transparent; color: var(--text); font-weight: 600; }
+html[data-glass="on"] .nav-item.active svg {
+  background: var(--glass-sheen), var(--surface-raised);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / var(--glass-a-rim)), inset 0 0 0 1px var(--glass-border), 0 3px 10px rgb(var(--glass-shade) / .35);
+}
+html[data-glass="on"] .sidebar-collapsed .nav-item { padding: 2px 0; }
+/* Capture is always available, so it stays quiet in the menu instead of being a blue bar. */
+html[data-glass="on"] .sidebar .button.primary {
+  min-height: var(--control-height);
+  padding-block: 4px;
+  background: var(--glass-sheen), var(--glass-fill);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  color: var(--text);
+}
+html[data-glass="on"] .sidebar .button.primary:hover:not(:disabled) { background: var(--glass-sheen), var(--surface-raised); }
+html[data-glass="on"] .sidebar .button.primary svg { color: var(--accent); }
+html[data-glass="on"] :is(.settings-tabs button.active, .tasks-filters button[aria-pressed="true"]) {
+  background: var(--nav-active);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / var(--glass-a-rim));
+  color: var(--nav-active-text);
+}
+/* A conversation of light type on the panel: centered, airy, chips instead of tiles. */
+html[data-glass="on"] .home { text-align: center; max-width: 620px; }
+html[data-glass="on"] .home h2 { max-width: none; font-size: var(--type-display); font-weight: 300; line-height: 1.2; letter-spacing: -.02em; }
+html[data-glass="on"] .home h2 b { font-weight: 600; }
+html[data-glass="on"] .home h2 span { display: block; color: var(--muted); }
+html[data-glass="on"] :is(.capture-tile, .home-tasks, .recent-strip) { text-align: left; }
+html[data-glass="on"] .suggestions { justify-content: center; }
+html[data-glass="on"] .suggestions button { font-size: var(--type-body); display: inline-flex; align-items: center; gap: 7px; border-radius: 999px; min-height: var(--control-height); padding: 5px 12px; }
+/* Sent messages are glass, set apart by alignment instead of a color block. */
+html[data-glass="on"] .message.user {
+  background: var(--glass-sheen), var(--surface-raised);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  border-radius: 18px 18px 6px 18px;
+}
+html[data-glass="on"] .composer { border-radius: 20px; padding: 8px; }
+html[data-glass="on"] .composer-area { background: transparent; }
+html[data-glass="on"] .composer:focus-within { box-shadow: var(--focus), var(--glass-shadow); }
+html[data-glass="on"] .composer textarea { background: transparent; }
+html[data-glass="on"] .calendar-toolbar { border-radius: 16px; margin: 0 0 8px; padding: 8px 10px; gap: 8px; }
+html[data-glass="on"] :is(.calendar-ask, .calendar-segment, .tasks-filters) { background: var(--surface-inset); border: 1px solid var(--glass-border); }
+html[data-glass="on"] .calendar-ask input { background: transparent; border: 0; box-shadow: none; }
+html[data-glass="on"] :is(.button.secondary, .select-wrap select, .capture-tile, .suggestions button, .shortcut-key) {
+  background: var(--glass-sheen), var(--glass-fill);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+html[data-glass="on"] .button { border-radius: 999px; }
+html[data-glass="on"] :is(.button.primary, .composer > .primary, .calendar-new) {
+  background: linear-gradient(180deg, #ffffff24, #ffffff00 60%), var(--primary);
+  border: 1px solid #00000026;
+  box-shadow: inset 0 1px 0 #ffffff59, 0 2px 8px var(--primary-shadow);
+  color: #fff;
+}
+html[data-glass="on"] :is(.button.primary, .composer > .primary):hover:not(:disabled) { background-color: var(--accent-hover); }
+html[data-glass="on"] .composer > .primary { border-radius: 50%; }
+html[data-glass="on"] :is(.button.secondary, .capture-tile, .suggestions button):hover:not(:disabled) {
+  background: var(--glass-sheen), var(--surface-raised);
+  border-color: var(--input-border);
+}
+html[data-glass="on"] .select-wrap select { border-radius: 12px; border-color: var(--input-border); }
+html[data-glass="on"] select option { background: var(--surface-solid); color: var(--text); }
+html[data-glass="on"] :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea):not(.composer textarea):not(.calendar-ask input):not(.notch-input input) {
+  background: var(--surface-inset);
+  border-color: var(--input-border);
+}
+html[data-glass="on"] .calendar-segment button[aria-pressed="true"] { background: var(--glass-sheen), var(--surface-raised); box-shadow: var(--glass-shadow); }
+html[data-glass="on"] :is(.choice, .history-item.selected) { background: var(--surface); border-color: var(--glass-border); }
+html[data-glass="on"] .choice:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+html[data-glass="on"] .check span { border-radius: 4px; box-shadow: inset 0 1px 0 rgb(255 255 255 / var(--glass-a-rim)); }
+html[data-glass="on"] .switch { box-shadow: inset 0 1px 3px rgb(var(--glass-shade) / .2); }
+html[data-glass="on"] .switch i { box-shadow: inset 0 1px 0 #ffffffb3, 0 2px 5px #00000038; }
+html[data-glass="on"] :is(input[type="checkbox"], input[type="radio"]) { accent-color: var(--primary); }
+html[data-glass="on"] .app input[type="radio"] { width: 20px; height: 20px; }
+/* Anything that floats over other content needs a near-opaque layer to stay readable. */
+html[data-glass="on"] :is(.modal, .calendar-event-popover) { border-radius: 20px; background: var(--glass-sheen), var(--surface-overlay); }
+html[data-glass="on"] .source-panel { border-radius: 20px; }
+/* The camera bezel remains black. Only its controls and expanded task layer use glass. */
+html[data-glass="on"][data-surface="notch"] body { background: #000; }
+html[data-glass="on"] .notch-bar { --glass-rgb: 28 28 30; --glass-border: #ffffff30; }
+html[data-glass="on"] .notch-bar .secondary { color: #f5f5f7; background: var(--glass-sheen), #242426; }
+html[data-glass="on"] .notch-bar .secondary:hover:not(:disabled) { background: var(--glass-sheen), #363638; color: #fff; }
+html[data-glass="on"] .notch-bar .icon-button { border-radius: 50%; }
+html[data-glass="on"] .notch-input input { background: #1f1f21; border: 1px solid #ffffff24; box-shadow: inset 0 1px 0 #ffffff14; }
+html[data-glass="on"] .notch-details { background: var(--glass-sheen), rgb(var(--glass-rgb) / .92); }
+html[data-glass="on"] :is(.notch-details .review-footer, [data-surface="notch"] .event-form footer) { background: var(--surface-overlay); }
+/* Settings: draft material is confined to this sample until Apply. */
+.glass-settings { margin-bottom: 24px; }
+.glass-adjustments { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; padding: 18px 0; }
+.glass-slider { min-width: 0; }
+.glass-slider > span { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: var(--type-caption); }
+.glass-slider output { color: var(--muted); font-variant-numeric: tabular-nums; }
+.glass-slider input[type="range"] { width: 100%; display: block; min-height: 28px; padding: 0; margin: 4px 0 0; accent-color: var(--primary); cursor: pointer; }
+.glass-slider input:disabled { cursor: default; opacity: .5; }
+.glass-sample { position: relative; overflow: hidden; border-radius: 16px; padding: 24px; margin-bottom: 14px; isolation: isolate; border: 1px solid var(--line); }
+.glass-sample-backdrop { position: absolute; inset: 0; z-index: -1; background: radial-gradient(ellipse at 14% 5%, #1238ff, transparent 55%), radial-gradient(ellipse at 90% 85%, #7a22ff, transparent 50%), #03040c; }
+.glass-sample-surface { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--input-border); border-radius: 16px; background: var(--surface-solid); color: var(--text); box-shadow: var(--shadow); }
+.glass-sample.is-enabled .glass-sample-surface { background: var(--glass-sheen), rgb(var(--glass-rgb) / max(.78, var(--sample-opacity))); backdrop-filter: blur(var(--sample-blur)); -webkit-backdrop-filter: blur(var(--sample-blur)); border-color: rgb(var(--glass-edge) / calc(.07 + var(--sample-contrast) * .24)); box-shadow: inset 0 1px 0 rgb(255 255 255 / var(--glass-a-rim)), var(--shadow); }
+.glass-sample-surface > svg { flex: none; color: var(--accent); }
+.glass-sample-surface > div { flex: 1; min-width: 0; }
+.glass-sample-surface p { font-size: var(--type-caption); color: var(--muted); margin-top: 2px; }
+.glass-sample-chip { font-size: var(--type-micro); padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); }
+.glass-settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-top: 12px; }
+.glass-settings-actions > .text-button { display: inline-flex; align-items: center; gap: 5px; }
+.glass-settings-actions > span { flex: 1; min-width: 100px; color: var(--muted); font-size: var(--type-caption); }
+.glass-accessibility-note { font-size: var(--type-caption); padding: 10px 12px; margin-top: 10px; background: var(--surface-inset); border-radius: 8px; }
+@container workspace (max-width: 680px) { .glass-adjustments { grid-template-columns: 1fr; gap: 10px; } }
+@media (max-width: 760px) { .glass-adjustments { grid-template-columns: 1fr; gap: 10px; } .glass-sample { padding: 16px; } .glass-sample-chip { display: none; } }
+/* macOS accessibility wins over saved preferences, including in WKWebView. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  html:root:root:root[data-glass="on"] { --glass-opacity: 1 !important; --glass-fill: var(--surface-solid); --glass-sheen: linear-gradient(transparent, transparent); --glass-blur: 0px !important; --workspace-background: var(--canvas); --sidebar-surface: var(--canvas); --surface: var(--surface-solid); --surface-raised: var(--surface-solid); --surface-subtle: var(--surface-solid); --surface-overlay: var(--surface-solid); --surface-inset: var(--canvas); --glass-border: var(--input-border); --glass-shadow: none; }
+  html[data-glass="on"] :is(.sidebar, .composer, .source-panel, .modal, .settings-tabs, .notch-details, .calendar-toolbar, .calendar-event-popover, .glass-sample-surface) { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background: var(--surface-solid) !important; }
+}
+html:root:root:root[data-glass="on"]:is([data-reduced-transparency="true"], [data-increased-contrast="true"]) { --glass-opacity: 1 !important; --glass-fill: var(--surface-solid); --glass-sheen: linear-gradient(transparent, transparent); --glass-blur: 0px !important; --workspace-background: var(--canvas); --sidebar-surface: var(--canvas); --surface: var(--surface-solid); --surface-raised: var(--surface-solid); --surface-subtle: var(--surface-solid); --surface-overlay: var(--surface-solid); --surface-inset: var(--canvas); --glass-border: var(--input-border); --glass-shadow: none; }
+html:is([data-reduced-transparency="true"], [data-increased-contrast="true"]) :is(.sidebar, .composer, .source-panel, .modal, .settings-tabs, .notch-details, .calendar-toolbar, .calendar-event-popover, .glass-sample-surface) { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background: var(--surface-solid) !important; }
+
+/* A browser has no desktop material behind its window; this is the preview backdrop. */
+html[data-glass="on"] body:has(.preview-label) { background: #3a3f4d; }
+/* The calendar grid keeps its own tint when the window is very clear. */
+html[data-glass="on"] .calendar-board { background: rgb(var(--glass-rgb) / calc(.12 + var(--glass-contrast) * .16)); border-radius: 16px; }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  html[data-glass="on"] .calendar-board { background: var(--surface-solid); }
+  .glass-sample.is-enabled .glass-sample-surface { background: var(--surface-solid); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+html:is([data-reduced-transparency="true"], [data-increased-contrast="true"]) .calendar-board { background: var(--surface-solid); }

@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import CryptoKit
 import CoreGraphics
 
@@ -27,7 +28,13 @@ enum WebWorkspaceState {
         state["personalMemory"] = .object(["loaded": .bool(personal.error == nil), "error": personal.error.map(JSONValue.string) ?? .null,
             "items": encoded(personal.items.filter { $0.status == .active }), "pending": encoded(personal.items.filter { $0.status == .pendingApproval }), "token": .string(personal.token)])
         state["voice"] = model.voiceSession.snapshot
+        state["calendarContentToken"] = .string(model.calendarContentToken.uuidString)
         state["voiceShortcut"] = .string(model.voiceShortcut.label)
+        func shortcutState(_ target: ShortcutTarget, _ value: GlobalShortcut, fallback: GlobalShortcut) -> JSONValue {
+            .object(["label": .string(value.label), "isDefault": .bool(value.sameKeys(as: fallback)), "error": model.shortcutError(target).map(JSONValue.string) ?? .null])
+        }
+        state["shortcuts"] = .object(["recording": model.shortcutRecordingTarget.map { .string($0.rawValue) } ?? .null,
+            "capture": shortcutState(.capture, model.shortcut, fallback: .default), "voice": shortcutState(.voice, model.voiceShortcut, fallback: .voiceDefault)])
         state["softwareUpdate"] = model.softwareUpdates.snapshot
         // Device-local task-only review/outcome and Settings permissions. None of this is account-synced.
         let taskReview = model.agentTaskReviewSnapshot()
@@ -105,7 +112,7 @@ enum WebWorkspaceState {
         flag("screenPermissionNeeded", model.screenCapturePermissionNeeded)
         flag("screenPermissionGranted", CGPreflightScreenCaptureAccess())
         var settings: [String: JSONValue] = [
-            "appearance": .string(model.appearanceMode.rawValue), "agentEnabled": .bool(model.openAIAnalysisEnabled), "apiKeySaved": .bool(model.hasOpenAIAPIKey),
+            "appearance": .string(model.appearanceMode.rawValue), "glass": encoded(model.glassAppearance), "agentEnabled": .bool(model.openAIAnalysisEnabled), "apiKeySaved": .bool(model.hasOpenAIAPIKey),
             "useAPIKey": .bool(model.agentUseAPIKey), "chatGPTPlan": .bool(model.chatGPTAccount?.canUsePlan == true), "chatGPTConnecting": .bool(model.chatGPTIsConnecting),
             "model": .string(model.agentUseAPIKey || model.chatGPTAccount == nil ? OpenAIEventAnalyzer.modelName : model.chatGPTAccount?.model ?? ""),
             "models": .array(model.chatGPTModels.map { .object(["id": .string($0.slug), "name": .string($0.displayName)]) }),
@@ -113,6 +120,9 @@ enum WebWorkspaceState {
         if let email = model.chatGPTAccount?.email { settings["chatGPTEmail"] = .string(email) }
         if let error = model.chatGPTConnectionError { settings["chatGPTError"] = .string(error) }
         state["settings"] = .object(settings)
+        state["displayAccessibility"] = .object([
+            "reducedTransparency": .bool(NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency),
+            "increasedContrast": .bool(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)])
         state["auth"] = model.account.snapshot
         if model.account.userID != nil {
             state["accountSync"] = .object([

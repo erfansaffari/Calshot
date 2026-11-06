@@ -174,3 +174,26 @@ it("does not present a sharing outage as an empty calendar", () => {
   expect(screen.getByRole("heading", { name: "Friend calendars couldn’t be verified" })).toBeTruthy();
   expect(screen.queryByText(/Nothing scheduled this/)).toBeNull();
 });
+
+it("keeps older shared events visible with a sync warning and reloads when a new copy arrives", async () => {
+  const share = { ...grant, status: "accepted", calendars: [{ ...grant.calendars[0], stale: true }] };
+  const initial = state([share]); initial.calendars = [];
+  const command = vi.fn().mockResolvedValue(undefined);
+  const view = render(<CalendarPresentationProvider><CalendarPage state={initial} onCommand={command} /></CalendarPresentationProvider>);
+  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: "loadCalendarEvents" })));
+  const request = command.mock.calls.find(([c]) => c.action === "loadCalendarEvents")![0];
+  const source = friendCalendars(initial)[0];
+  const eventStart = new Date(String(request.start)); eventStart.setDate(eventStart.getDate() + 1); eventStart.setHours(10);
+  const loaded = { ...initial, calendarView: { loaded: true, loading: false, start: String(request.start), end: String(request.end),
+    events: [{ eventIdentifier: "shared:fictional", calendarIdentifier: source.id, title: "Fictional shared birthday", start: eventStart.toISOString(), end: new Date(eventStart.getTime() + 3600000).toISOString(), isAllDay: false, calendarName: source.title, sourceName: "Riley Example" }],
+    errors: [{ calendarIdentifier: source.id, calendarName: "Riley Example · Birthdays", message: "Showing the last shared copy. Recent changes may be missing.", kind: "stale" as const, syncedAt: share.calendars[0].syncedAt }] } };
+  view.rerender(<CalendarPresentationProvider><CalendarPage state={loaded} onCommand={command} /></CalendarPresentationProvider>);
+  expect(await screen.findByRole("button", { name: /Fictional shared birthday/ })).toBeTruthy();
+  expect(screen.getByText("Some shared calendars need an update")).toBeTruthy();
+  expect(screen.queryByText("Some calendars couldn’t be loaded")).toBeNull();
+  expect(screen.queryByText("Calendars up to date")).toBeNull();
+  command.mockClear();
+  const fresh = { ...loaded, sharing: { ...loaded.sharing!, shares: [{ ...share, calendars: [{ ...share.calendars[0], syncedAt: "2026-11-06T00:00:00Z", stale: false }] }] } };
+  view.rerender(<CalendarPresentationProvider><CalendarPage state={fresh} onCommand={command} /></CalendarPresentationProvider>);
+  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: "loadCalendarEvents" })));
+});

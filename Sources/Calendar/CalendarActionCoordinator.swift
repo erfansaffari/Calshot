@@ -9,6 +9,8 @@ final class CalendarActionCoordinator: ObservableObject {
     @Published private(set) var stopRequested = false
     @Published var message: String?
     var onExecutionFinished: (([CalendarActionProposal]) -> Void)?
+    /// Invalidate read-only calendar views after an execution, including partial outcomes.
+    var onCalendarChange: (() -> Void)?
     @Published var approvalScope: Set<UUID>?
     var persist: (([CalendarActionProposal]) throws -> Void)?
     private let service: any CalendarDestinationService
@@ -62,7 +64,7 @@ final class CalendarActionCoordinator: ObservableObject {
     func edit(_ id: UUID, change: (inout EventDraft) -> Void) {
         checkedDestinationID = nil
         update(id) { item in
-            let old = item.draft
+            let old = item.draft, wasUnresolved = !item.issues.isEmpty
             change(&item.draft)
             if item.operation == .update {
                 var fields = Set(item.draft.changedFieldNames ?? [])
@@ -80,6 +82,8 @@ final class CalendarActionCoordinator: ObservableObject {
             item.allowDuplicate = false
             item.error = nil
             item.state = .pending
+            // An unresolved row could never be checked. Fixing it makes it ready; approving still takes a click.
+            if wasUnresolved, item.operation != .delete, item.canAdd { item.isSelected = true }
         }
     }
 
@@ -145,6 +149,7 @@ final class CalendarActionCoordinator: ObservableObject {
             proposals[index].draft.ambiguities.removeAll { $0 == .missingYear }
             proposals[index].duplicateIdentifiers = []
             proposals[index].allowDuplicate = false
+            if proposals[index].canAdd { proposals[index].isSelected = true }
         }
         isCheckingDuplicates = false
         revision = UUID(); checkedDestinationID = nil
@@ -253,7 +258,7 @@ final class CalendarActionCoordinator: ObservableObject {
         isExecuting = true
         stopRequested = false
         message = nil
-        defer { isExecuting = false; onExecutionFinished?(proposals) }
+        defer { isExecuting = false; onCalendarChange?(); onExecutionFinished?(proposals) }
         for item in snapshot {
             if stopRequested { break }
             guard let index = proposals.firstIndex(where: { $0.id == item.id }) else { break }
@@ -466,6 +471,7 @@ final class DirectCalendarWriter {
     private let service: any CalendarDestinationService
     private let journalURL: () -> URL
     private(set) var isWriting = false
+    var onCalendarChange: (() -> Void)?
 
     init(service: any CalendarDestinationService, journalURL: @escaping () -> URL) {
         self.service = service; self.journalURL = journalURL
@@ -482,6 +488,7 @@ final class DirectCalendarWriter {
         row.isSelected = true
         let coordinator = CalendarActionCoordinator(service: service)
         coordinator.persist = { rows in try Self.writeJournal(rows, to: url) }
+        coordinator.onCalendarChange = onCalendarChange
         coordinator.replace(with: [row])
         await coordinator.checkDuplicates(destinationID: destinationID)
         if let message = coordinator.message { throw WriteError.failed(message) }

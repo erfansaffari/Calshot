@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -36,10 +36,14 @@ export function Review({ state }: { state: AppState }) {
     [busy, setBusy] = useState(false),
     [compare, setCompare] = useState<string>();
   const [year, setYear] = useState("");
+  const [yearError, setYearError] = useState("");
+  const list = useRef<HTMLDivElement>(null);
   const rows = state.proposals.filter((p) => p.inScope && !p.isFinished),
     finished = state.proposals.filter((p) => p.isFinished);
   const selected = rows.filter((p) => p.isSelected),
     move = rows.length > 0 && rows.every((p) => p.operation === "move");
+  const sameRoute = move && rows.every(p => p.sourceCalendarName === rows[0].sourceCalendarName && p.targetCalendarName === rows[0].targetCalendarName);
+
   const retryOnly =
     selected.length > 0 && selected.every((item) => item.state === "failed");
   const failedCount = rows.filter((item) => item.state === "failed").length;
@@ -47,6 +51,9 @@ export function Review({ state }: { state: AppState }) {
     (c) => !c.isReadOnly && !c.unavailable,
   );
   const destination = calendars.find((c) => c.id === state.selectedCalendarID);
+  const missingYear = rows.some(p => p.operation !== "delete" && p.draft.ambiguities.includes("missingYear"));
+  const yearValid = /^\d{4}$/.test(year) && Number(year) >= 1900 && Number(year) <= 2200;
+  const blockedReason = state.saving ? "Saving the selected changes…" : state.checking ? "Checking your calendar for duplicates…" : !destination && selected.length > 0 ? "Choose a writable destination calendar to continue." : !state.canApprove ? (missingYear ? "Confirm the year above, or edit the event." : "Select ready changes. Items with missing details need editing first.") : "";
   const kinds = [
     ["create", "Add"],
     ["update", "Change"],
@@ -74,6 +81,21 @@ export function Review({ state }: { state: AppState }) {
       setBusy(false);
     }
   };
+  const confirmYear = async () => {
+    if (!yearValid || busy || state.saving || state.checking) return;
+    setYearError(""); setBusy(true);
+    try {
+      // Sent with the token of the latest native snapshot. A stale one is rejected and the typed year stays.
+      await command({ action: "confirmProposalYears", token: state.approvalToken, year: Number(year) });
+      setYear("");
+      // The field is about to go away; keep keyboard focus inside this review, not on the page.
+      list.current?.focus();
+    } catch (e) {
+      setYearError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   if (!rows.length && !finished.length && !taskImport) return null;
   return (
     <>
@@ -85,9 +107,9 @@ export function Review({ state }: { state: AppState }) {
                 {taskImport
                   ? "Review imported tasks"
                   : failedCount
-                    ? failedCount + " events didn't save"
+                    ? failedCount + (failedCount === 1 ? " event didn't save" : " events didn't save")
                     : move
-                      ? "Move " + rows.length + " events"
+                      ? "Move " + rows.length + (rows.length === 1 ? " event" : " events")
                       : rows.length +
                         " calendar " +
                         (rows.length === 1 ? "action" : "actions")}
@@ -122,22 +144,18 @@ export function Review({ state }: { state: AppState }) {
               </Select>
             )}
           </header>
-          {rows.some(p => p.operation !== "delete" && p.draft.ambiguities.includes("missingYear")) && (
-            <form className="review-year" onSubmit={e => {
-              e.preventDefault();
-              if (/^\d{4}$/.test(year) && Number(year) >= 1900 && Number(year) <= 2200) {
-                void run("confirmProposalYears", { year: Number(year) });
-              }
-            }}>
+          {missingYear && (
+            <form className="review-year" onSubmit={e => { e.preventDefault(); void confirmYear(); }}>
               <label>Confirm missing years
-                <input aria-label="Year for unconfirmed events" type="number" inputMode="numeric" placeholder="YYYY"
+                <input aria-label="Year for unconfirmed events" aria-describedby={yearError ? "review-year-error" : undefined} type="number" inputMode="numeric" placeholder="YYYY"
                   min="1900" max="2200" step="1" value={year} disabled={busy || state.saving}
-                  onChange={e => setYear(e.target.value)} />
+                  onChange={e => { setYear(e.target.value); setYearError(""); }} />
               </label>
-              <button className="button secondary" disabled={busy || state.saving || !/^\d{4}$/.test(year) || Number(year) < 1900 || Number(year) > 2200}>Confirm year</button>
+              <button className="button secondary" disabled={busy || state.saving || state.checking || !yearValid}>Confirm year</button>
+              {yearError && <div id="review-year-error" className="review-year-error"><InlineError message={yearError} /></div>}
             </form>
           )}
-          {move && (
+          {sameRoute && (
             <div className="transfer-path">
               <div>
                 <strong>
@@ -163,7 +181,7 @@ export function Review({ state }: { state: AppState }) {
               with a retry action.
             </p>
           )}
-          <div className="review-list">
+          <div ref={list} className="review-list" role="region" aria-label="Proposed changes" tabIndex={0}>
             {inboxTasks.map((task) => (
               <div className="proposal" key={task.id}>
                 <CheckBox
@@ -220,6 +238,13 @@ export function Review({ state }: { state: AppState }) {
                   )}
                   <h3>{item.draft.title || "Untitled event"}</h3>
                   <div className="event-time">{eventWhen(item)}</div>
+                  {(item.operation === "move" || item.operation === "update") && (
+                    <p className="event-time">
+                      {item.operation === "move"
+                        ? `${item.sourceCalendarName || "Source calendar"} → ${item.targetCalendarName || destination?.title || "Destination to confirm"}`
+                        : `In ${item.targetCalendarName || item.sourceCalendarName || destination?.title || "Calendar to confirm"}`}
+                    </p>
+                  )}
                   {item.operation === "move" && (
                     <p className="event-time">
                       {item.moveCopyReceipt
@@ -239,17 +264,7 @@ export function Review({ state }: { state: AppState }) {
                         <small>Current</small>
                         {item.before.title}
                         <br />
-                        {formatDate(
-                          item.before.startDate,
-                          item.before.timeZoneIdentifier,
-                        )}{" "}
-                        ·{" "}
-                        {timeRange(
-                          item.before.startDate,
-                          item.before.endDate,
-                          item.before.timeZoneIdentifier,
-                          item.before.isAllDay,
-                        )}
+                        {eventWhen({ ...item, draft: item.before })}
                       </div>
                       <div>
                         <small>Proposed</small>
@@ -398,6 +413,7 @@ export function Review({ state }: { state: AppState }) {
             </button>
             <button
               className="button primary"
+              aria-describedby={blockedReason ? "review-blocked-reason" : undefined}
               disabled={
                 !state.canApprove ||
                 (!destination && selected.length > 0) ||
@@ -426,6 +442,7 @@ export function Review({ state }: { state: AppState }) {
                         ? " to " + destination.title
                         : "")}
             </button>
+            {blockedReason && <p id="review-blocked-reason" className="review-blocked">{blockedReason}</p>}
           </footer>
         </section>
       )}

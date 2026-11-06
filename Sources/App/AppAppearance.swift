@@ -19,3 +19,24 @@ enum AppAppearance: String, CaseIterable {
         }
     }
 }
+
+/// Device-local material preferences. These never change permissions or billing routes.
+struct GlassAppearance: Codable, Equatable {
+    static let defaultsKey = "glassAppearance.v1"
+    static let standard = GlassAppearance()
+    var enabled = true
+    var opacity = 0.35
+    var blur = 24.0
+    var contrast = 0.5
+    var isValid: Bool {
+        opacity.isFinite && (0.35...1).contains(opacity) && blur.isFinite && (0...40).contains(blur) && contrast.isFinite && (0...1).contains(contrast)
+    }
+    static func load(from defaults: UserDefaults) -> GlassAppearance {
+        guard let data = defaults.data(forKey: defaultsKey), let value = try? JSONDecoder().decode(Self.self, from: data), value.isValid else { return .standard }
+        return value
+    }
+    func save(to defaults: UserDefaults) throws {
+        guard isValid else { throw CalendarToolArgumentError("Choose valid glass opacity, blur and contrast values.") }
+        defaults.set(try JSONEncoder().encode(self), forKey: Self.defaultsKey)
+    }
+}
