@@ -60,7 +60,21 @@ enum VoicePCM {
 @MainActor
 final class VoiceAudioEngine: ObservableObject {
     enum MicrophonePermission: Equatable { case authorized, denied, restricted, notDetermined }
-    enum AudioError: Error, Equatable { case permission(MicrophonePermission), noInputDevice, conversion, graph }
+    enum AudioError: Error, Equatable, LocalizedError {
+        case permission(MicrophonePermission), noInputDevice, noOutputDevice, conversion, graph
+        var errorDescription: String? {
+            switch self {
+            case .permission(.restricted): return "Microphone access is restricted on this Mac. Check with the person managing its privacy settings."
+            case .permission: return "Allow Microphone for Calshot in System Settings → Privacy & Security → Microphone, then start voice again."
+            case .noInputDevice: return "macOS hasn’t provided a usable microphone. Select the built-in microphone in System Settings → Sound → Input, then retry voice."
+            case .noOutputDevice: return "macOS hasn’t provided usable speakers or headphones. Select an output in System Settings → Sound → Output, then retry voice."
+            case .conversion: return "Calshot couldn’t read the microphone’s audio format. Check Sound → Input, try another microphone if available, then retry voice."
+            case .graph: return "Calshot couldn’t start this Mac’s audio devices. Check Sound → Input and Output, close apps using them exclusively, then retry voice."
+            }
+        }
+        var recovery: String { if case .permission = self { return "permission" }; return "devices" }
+        var canRetryStartup: Bool { if case .permission = self { return false }; return true }
+    }
     @Published private(set) var isRunning = false
     @Published private(set) var isPlaying = false
     @Published private(set) var inputLevel: Float = 0
@@ -77,6 +91,9 @@ final class VoiceAudioEngine: ObservableObject {
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private var observer: NSObjectProtocol?
+    private var hasInputTap = false
+    private var rebuildTask: Task<Void, Never>?
+    private var recoveryGeneration = UUID()
     private var generation = UUID()
     private var playbackGeneration = UUID()
     private var queuedFrames: Int64 = 0
@@ -108,17 +125,21 @@ final class VoiceAudioEngine: ObservableObject {
             teardownGraph(); wantedRunning = true
             do { try buildGraph(voiceProcessing: false); failure = nil } catch {
                 audioLog.error("Audio start failed: \(Self.describe(error), privacy: .public)")
-                stop(); let typed = error as? AudioError ?? .graph; failure = typed; throw typed
+                teardownGraph(); wantedRunning = false
+                let typed = error as? AudioError ?? .graph; failure = typed; throw typed
             }
         }
     }
     func stop() {
+        recoveryGeneration = UUID(); rebuildTask?.cancel(); rebuildTask = nil
         wantedRunning = false; generation = UUID()
         teardownGraph()
     }
     private func teardownGraph() {
         if let observer { NotificationCenter.default.removeObserver(observer) }; observer = nil
-        _ = flush(); engine?.inputNode.removeTap(onBus: 0); engine?.stop()
+        _ = flush()
+        if hasInputTap { engine?.inputNode.removeTap(onBus: 0) }; hasInputTap = false
+        engine?.stop(); echoCancellation = false
         engine = nil; player = nil; isRunning = false; inputLevel = 0
     }
     private static func describe(_ error: Error) -> String {
@@ -127,15 +148,24 @@ final class VoiceAudioEngine: ObservableObject {
     }
     private func buildGraph(voiceProcessing: Bool) throws {
         let graph = AVAudioEngine(), node = AVAudioPlayerNode()
+        engine = graph; player = node
         let input = graph.inputNode
         guard input.inputFormat(forBus: 0).sampleRate > 0, input.inputFormat(forBus: 0).channelCount > 0 else { throw AudioError.noInputDevice }
         // Some devices do not support voice processing; capture remains available there.
         echoCancellation = false
-        if voiceProcessing { try? input.setVoiceProcessingEnabled(true); echoCancellation = input.isVoiceProcessingEnabled }
-        let source = input.outputFormat(forBus: 0)
-        guard source.sampleRate > 0, source.channelCount > 0,
+        if voiceProcessing { try input.setVoiceProcessingEnabled(true); echoCancellation = input.isVoiceProcessingEnabled }
+        // Re-read both formats after enabling voice processing: it can reconfigure the I/O unit.
+        let hardware = input.inputFormat(forBus: 0), source = input.outputFormat(forBus: 0)
+        guard hardware.sampleRate.isFinite, hardware.sampleRate > 0, hardware.channelCount > 0 else { throw AudioError.noInputDevice }
+        let output = graph.outputNode.outputFormat(forBus: 0)
+        guard output.sampleRate.isFinite, output.sampleRate > 0, output.channelCount > 0 else { throw AudioError.noOutputDevice }
+        audioLog.info("Audio formats: input \(hardware.sampleRate, privacy: .public) Hz/\(hardware.channelCount, privacy: .public) channels; tap \(source.sampleRate, privacy: .public) Hz/\(source.channelCount, privacy: .public) channels; output \(output.sampleRate, privacy: .public) Hz/\(output.channelCount, privacy: .public) channels")
+        guard source.sampleRate.isFinite, source.sampleRate > 0, source.channelCount > 0,
               let mono = AVAudioFormat(standardFormatWithSampleRate: VoicePCM.sampleRate, channels: 1),
               let converter = AVAudioConverter(from: source, to: mono) else { throw AudioError.conversion }
+        // Multi-channel inputs (mic arrays, aggregate or call devices) can carry the voice on any channel;
+        // mixing all of them avoids sending a silent first channel.
+        converter.downmix = true
         graph.attach(node); graph.connect(node, to: graph.mainMixerNode, format: mono)
         let id = UUID(); generation = id
         // Tap state belongs exclusively to the serial input callback, never to the main actor.
@@ -150,19 +180,31 @@ final class VoiceAudioEngine: ObservableObject {
                 for chunk in result.chunks { self.onInput?(chunk) }
             }
         }
-        engine = graph; player = node
+        hasInputTap = true
         observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: graph, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.rebuild() }
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == id else { return }
+                self.rebuild()
+            }
         }
         graph.prepare(); try graph.start(); isRunning = true
     }
     private func rebuild() {
         guard wantedRunning else { return }
         let played = flush(); onPlaybackInterrupted?(played)
-        stop()
-        do { try start() } catch {
-            let typed = error as? AudioError ?? .graph
-            failure = typed; onError?(typed)
+        generation = UUID(); teardownGraph()
+        rebuildTask?.cancel()
+        let id = UUID(); recoveryGeneration = id
+        rebuildTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await VoiceAudioStartup.start(attempt: { try self.start() }, shouldContinue: { self.recoveryGeneration == id })
+            } catch is CancellationError { }
+            catch {
+                guard self.recoveryGeneration == id else { return }
+                let typed = error as? AudioError ?? .graph
+                self.failure = typed; self.onError?(typed)
+            }
         }
     }
     /// itemID must be the server's audio item ID. It scopes flush's played-duration result.

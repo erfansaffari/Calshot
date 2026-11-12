@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { AppState, Command } from "./types";
-import { preview } from "./preview";
+import { learningSample, preview } from "./preview";
 const native = Boolean(window.webkit?.messageHandlers.calshot);
 const previewEnabled =
   !native && new URLSearchParams(window.location.search).get("preview") === "1";
@@ -16,7 +16,9 @@ let state: AppState = !previewEnabled
       accounts: [],
       memory: [],
     }
-  : preview;
+  : new URLSearchParams(window.location.search).get("sample") === "learning"
+    ? ({ ...preview, ...learningSample } as AppState)
+    : preview;
 const listeners = new Set<() => void>();
 const requests = new Map<
   string,
@@ -79,6 +81,21 @@ export function notify(message: Command) {
 }
 if (native) notify({ action: "ready" });
 function simulate(message: Command) {
+  if (message.action === "inspectAIContext") {
+    update({ ...state, aiContextInspection: { capturedAt: new Date().toISOString(), sections: [
+      { title: "Saved memories", detail: "Fictional preview only.", text: "[preference] Keep fictional study sessions in the morning." },
+      { title: "Retained conversation", detail: "Bounded excerpts; shared-friend content excluded.", text: "You: Plan a fictional Aurora study session.\nAssistant: Which day works?" },
+      { title: "Voice calendar snapshot", detail: "No AI service is contacted.", text: "No active voice snapshot." },
+      { title: "Screen text", detail: "Captured evidence, not a live screen.", text: "No screen text available." }
+    ] } }); return;
+  }
+  if (message.action === "undoChange" && state.recentChanges) {
+    const items = state.recentChanges.items.map((c) => c.id === message.changeID ? { ...c, undone: true, canUndo: false } : c);
+    update({ ...state, recentChanges: { ...state.recentChanges, items } });
+    return;
+  }
+  if (message.action === "closeAIContext") { update({ ...state, aiContextInspection: null }); return; }
+
   if (["refreshSharing", "syncSharing"].includes(message.action)) return;
   if (["requestCalendarShare", "respondCalendarRequest", "manageCalendarShare", "withdrawSharingCalendar"].includes(message.action)) throw new Error("Design preview only. No request was sent and no sharing access changed.");
   if (
@@ -101,7 +118,7 @@ function simulate(message: Command) {
     const rangeStart = new Date(String(message.start));
     const today = new Date();
     const day = today >= rangeStart && today < new Date(String(message.end)) ? today : new Date(rangeStart);
-    day.setDate(day.getDate() - day.getDay() + 1);
+    if (rangeStart.toDateString() !== today.toDateString()) day.setDate(day.getDate() - day.getDay() + 1);
     day.setHours(10, 0, 0, 0);
     const end = new Date(day);
     end.setHours(11, 0, 0, 0);
@@ -115,6 +132,7 @@ function simulate(message: Command) {
     update({
       ...state,
       calendarView: {
+        contentToken: state.calendarContentToken,
         loaded: true,
         loading: false,
         start: String(message.start),

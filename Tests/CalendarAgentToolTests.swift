@@ -50,6 +50,52 @@ private actor ToolCalendarService: CalendarDestinationService {
 
 @MainActor
 final class CalendarAgentToolTests: XCTestCase {
+    func testConversationLookupFindsOlderPlansAndQuestionAnswersWithoutToolOrFriendContent() throws {
+        var turns = [AgentTurn(role: "user", content: "Fictional Aurora plan: study on Monday"),
+            AgentTurn(role: "assistant", content: "Which room?"),
+            AgentTurn(role: "tool", toolName: "ask_user", result: #"{"answer":"Use the fictional observatory"}"#)]
+        var shared = AgentTurn(role: "assistant", content: "Aurora private friend data"); shared.sharedCalendarContext = true
+        turns.append(shared)
+        turns.append(AgentTurn(role: "tool", toolName: "search_events", result: "Aurora executable-looking private tool data"))
+        turns += (0..<90).map { AgentTurn(role: "user", content: "Unrelated fictional topic \($0)") }
+        let found = ConversationContextBuilder.build(turns, query: "Aurora", limit: 4).jsonString()
+        XCTAssertTrue(found.contains("study on Monday")); XCTAssertTrue(found.contains("Which room?")); XCTAssertTrue(found.contains("observatory"))
+        XCTAssertFalse(found.contains("private friend")); XCTAssertFalse(found.contains("private tool"))
+        let answers = ConversationContextBuilder.build(turns, query: "observatory").jsonString()
+        XCTAssertTrue(answers.contains("Use the fictional observatory")); XCTAssertFalse(answers.contains("ask_user"))
+        XCTAssertEqual(ConversationContextBuilder.build(turns, query: "nonexistentkeyword").objectValue?["turns"]?.arrayValue?.count, 0)
+    }
+    func testConversationLookupClipsAroundAnOlderMatchAndKeepsRecentIntentBesideLargeTools() {
+        let long = String(repeating: "fictional filler ", count: 600) + "Zephyr meeting in the library"
+        let turns = [AgentTurn(role: "user", content: long)] + (0..<75).map { _ in
+            AgentTurn(role: "tool", toolName: "get_agenda", result: String(repeating: "tool payload ", count: 1000))
+        } + [AgentTurn(role: "user", content: "Actually use Tuesday")]
+        let match = ConversationContextBuilder.build(turns, query: "Zephyr", budget: 4000)
+        XCTAssertTrue(match.jsonString().contains("Zephyr meeting")); XCTAssertEqual(match.objectValue?["truncated"]?.boolValue, true)
+        XCTAssertLessThan(match.jsonString().count, 4000)
+        let recent = ConversationContextBuilder.build(turns, budget: 4000).jsonString()
+        XCTAssertTrue(recent.contains("Actually use Tuesday")); XCTAssertFalse(recent.contains("tool payload"))
+    }
+    func testConversationToolIsReadOnlyValidatedAndRunScoped() async throws {
+        let service = ToolCalendarService(); let tools = executor(service, CalendarActionCoordinator(service: service))
+        XCTAssertFalse(tools.availableToolNames.contains("get_conversation_context"))
+        var queries: [String?] = []
+        tools.conversationContext = { query, limit, _ in
+            queries.append(query); return .object(["limit": .number(Double(limit)), "turns": .array([])])
+        }
+        let run = UUID(); tools.activate(sessionID: run)
+        XCTAssertTrue(tools.availableToolNames.contains("get_conversation_context"))
+        let value = try decode(await tools.execute(name: "get_conversation_context", arguments: .object(["query": .string("Aurora"), "limit": .number(12)]), sessionID: run))
+        XCTAssertEqual(value["limit"] as? Int, 12); XCTAssertEqual(queries.count, 1)
+        for fields: [String: JSONValue] in [["limit": .number(0)], ["limit": .number(41)], ["limit": .number(1.5)], ["limit": .string("20")], ["query": .string(String(repeating: "x", count: 501))], ["write": .bool(true)]] {
+            let result = try decode(await tools.execute(name: "get_conversation_context", arguments: .object(fields), sessionID: run))
+            XCTAssertNotNil(result["error"])
+        }
+        tools.activate(sessionID: UUID())
+        _ = await tools.execute(name: "get_conversation_context", arguments: .object([:]), sessionID: run)
+        XCTAssertEqual(queries.count, 1)
+        let writes = await service.providerWriteCount(); XCTAssertEqual(writes, 0)
+    }
     func testSearchMatchesEveryWordInAnyOrderAcrossTitleNotesAndLocation() {
         let title = "Blockchain Innovation Challenge Kick-off"
         XCTAssertTrue(CalendarSearchMatch.matches("Blockchain Challenge", title: title, notes: nil))
@@ -551,7 +597,7 @@ final class CalendarAgentToolTests: XCTestCase {
                 XCTAssertEqual(coordinator.proposals.last?.targetDestinationID, "school")
                 XCTAssertNil(coordinator.proposals.last?.receipt)
             }
-            let session = UUID(); tools.activate(sessionID: session); tools.clarifyByReview = voice
+            let session = UUID(); tools.activate(sessionID: session); tools.voiceMode = voice
             tools.applyCalendarGrant = { _, _, _, rows in
                 grantChecks += 1
                 return .split(saved: [], review: rows.map { ($0.proposal, "No matching grant") }, failed: [])
@@ -571,30 +617,36 @@ final class CalendarAgentToolTests: XCTestCase {
         }
     }
 
-    func testUnresolvedVoiceTargetsReviewWithoutInvokingCalendarGrants() async throws {
+    func testUnresolvedVoiceTargetsAreAskedAloudAndProceedOnlyAfterTheUserSpeaks() async throws {
         for tool in ["update_event", "delete_event"] {
             let service = ToolCalendarService(events: [snapshot("a", title: "Halloween Party"), snapshot("b", title: "Halloween Party")])
             let coordinator = CalendarActionCoordinator(service: service)
-            var reviews = 0
-            let tools = decliningReviewExecutor(service, coordinator) {
-                reviews += 1
-                XCTAssertEqual(coordinator.proposals.last?.targetEventIdentifier, "a")
-                XCTAssertEqual(coordinator.proposals.last?.before?.title, "Halloween Party")
-                XCTAssertNil(coordinator.proposals.last?.receipt)
-                if tool == "delete_event" { XCTAssertEqual(coordinator.proposals.last?.isSelected, false) }
+            var reviews = 0, grants = 0, turns = 0
+            let tools = decliningReviewExecutor(service, coordinator) { reviews += 1 }
+            tools.applyCalendarGrant = { _, _, _, rows in
+                grants += 1
+                XCTAssertEqual(rows.first?.proposal.targetEventIdentifier, "a")
+                return .split(saved: [], review: [], failed: rows.map { ($0.proposal, "Fixture stops before writing") })
             }
-            tools.applyCalendarGrant = { _, _, _, _ in XCTFail("An unresolved target cannot use a saved grant"); return .blocked("Not authorized") }
-            let session = UUID(); tools.activate(sessionID: session); tools.clarifyByReview = true
+            let session = UUID(); tools.activate(sessionID: session); tools.voiceMode = true; tools.spokenTurns = { turns }
             _ = await tools.execute(name: "search_events", arguments: .object(["query": .string("Halloween")]), sessionID: session)
             let fields: JSONValue = .object(["eventIdentifier": .string("a"), tool == "update_event" ? "title" : "reason": .string("Halloween Party night")])
-            let result = try decode(await tools.execute(name: tool, arguments: fields, sessionID: session))
-            XCTAssertEqual(reviews, 1)
-            XCTAssertEqual(result["skipped"] as? Bool, true)
+            let asked = try decode(await tools.execute(name: tool, arguments: fields, sessionID: session))
+            XCTAssertEqual(asked["needsChoice"] as? Bool, true)
+            XCTAssertEqual((asked["matches"] as? [Any])?.count, 2)
+            // Calling again without the user answering is still a question, never a write or a review.
+            let repeated = try decode(await tools.execute(name: tool, arguments: fields, sessionID: session))
+            XCTAssertEqual(repeated["needsChoice"] as? Bool, true)
+            XCTAssertEqual(grants, 0); XCTAssertEqual(reviews, 0)
+            turns = 1 // the user answered aloud
+            _ = await tools.execute(name: tool, arguments: fields, sessionID: session)
+            XCTAssertEqual(grants, 1, "After a spoken answer the chosen event reaches normal native authorization")
+            XCTAssertEqual(reviews, 0)
             let writes = await service.providerWriteCount(); XCTAssertEqual(writes, 0)
         }
     }
 
-    func testPartialAndTruncatedSearchesCannotResolveVoiceTargets() async throws {
+    func testPartialAndTruncatedSearchesAskAloudInVoice() async throws {
         for partial in [false, true] {
             let party = snapshot("party", title: "Halloween Party")
             let service = ToolCalendarService(events: [party, snapshot("class", title: "Lecture")])
@@ -604,14 +656,14 @@ final class CalendarAgentToolTests: XCTestCase {
                 [.init(id: "school", title: "School", provider: .apple, isReadOnly: false),
                  .init(id: "other", title: "Other", provider: .google, isReadOnly: false)]
             }) { reviews += 1 }
-            tools.applyCalendarGrant = { _, _, _, _ in XCTFail("Incomplete coverage cannot clear ambiguity"); return .blocked("Not authorized") }
-            let session = UUID(); tools.activate(sessionID: session); tools.clarifyByReview = true
+            tools.applyCalendarGrant = { _, _, _, _ in XCTFail("Incomplete coverage cannot clear ambiguity without the user"); return .blocked("Not authorized") }
+            let session = UUID(); tools.activate(sessionID: session); tools.voiceMode = true
             _ = await tools.execute(name: "search_events", arguments: .object([:]), sessionID: session)
             await service.configureSearch(events: partial ? [party] : Array(repeating: party, count: CalendarSearchMatch.resultLimit), failures: partial ? ["eventkit:other"] : [])
-            let search = try decode(await tools.execute(name: "search_events", arguments: .object(["query": .string("Halloween")]), sessionID: session))
-            XCTAssertEqual(search[partial ? "partial" : "truncated"] as? Bool, true)
-            _ = await tools.execute(name: "update_event", arguments: .object(["eventIdentifier": .string("party"), "title": .string("New title")]), sessionID: session)
-            XCTAssertEqual(reviews, 1)
+            _ = await tools.execute(name: "search_events", arguments: .object(["query": .string("Halloween")]), sessionID: session)
+            let result = try decode(await tools.execute(name: "update_event", arguments: .object(["eventIdentifier": .string("party"), "title": .string("New title")]), sessionID: session))
+            XCTAssertEqual(result["needsChoice"] as? Bool, true)
+            XCTAssertEqual(reviews, 0)
             let writes = await service.providerWriteCount(); XCTAssertEqual(writes, 0)
         }
     }
@@ -619,9 +671,9 @@ final class CalendarAgentToolTests: XCTestCase {
     func testVoiceClarificationDoesNotLeakIntoReplacementTypedSession() async throws {
         let service = ToolCalendarService(events: [snapshot("a", title: "Party"), snapshot("b", title: "Party")])
         let tools = executor(service, CalendarActionCoordinator(service: service))
-        let old = UUID(); tools.activate(sessionID: old); tools.clarifyByReview = true
+        let old = UUID(); tools.activate(sessionID: old); tools.voiceMode = true
         let current = UUID(); tools.activate(sessionID: current)
-        XCTAssertFalse(tools.clarifyByReview)
+        XCTAssertFalse(tools.voiceMode)
         _ = await tools.execute(name: "search_events", arguments: .object([:]), sessionID: current)
         let change: JSONValue = .object(["eventIdentifier": .string("a"), "title": .string("New title")])
         let blocked = try decode(await tools.execute(name: "update_event", arguments: change, sessionID: current))

@@ -125,7 +125,16 @@ export function TasksPage({
     setEditing(task);
     setError("");
   };
-  // Opened from a deadline entry in Calendar.
+  useEffect(() => {
+    const receive = () => {
+      const id = takeRequestedTaskEditor();
+      const task = items.find(t => t.id.toLowerCase() === id);
+      if (task) open(task);
+    };
+    window.addEventListener("calshot:open-task", receive);
+    return () => window.removeEventListener("calshot:open-task", receive);
+  }, [items, tasks?.token]);
+  // Opened from a deadline entry in Calendar or the sidebar.
   useEffect(() => {
     if (!requested.current || !tasks?.loaded) return;
     const task = items.find((t) => t.id.toLowerCase() === requested.current);

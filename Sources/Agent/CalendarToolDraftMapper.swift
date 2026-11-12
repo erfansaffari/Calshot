@@ -104,7 +104,12 @@ enum CalendarToolDraftMapper {
         }
         return nil
     }
-    static func create(_ value: JSONValue, context: String, confirmedContext: String = "", now: Date = .now) throws -> EventDraft {
+    /// `spoken` is a voice request: the user is talking, not reviewing. A month/day without a stated year takes its next
+    /// occurrence even when it came from the screen, a start time without an end takes `typicalMinutes` (learned from the
+    /// user's calendar, else 60), and the model's all-day choice stands. A missing date or time is still left unresolved,
+    /// so the agent asks aloud instead of guessing.
+    static func create(_ value: JSONValue, context: String, confirmedContext: String = "", now: Date = .now,
+                       spoken: Bool = false, typicalMinutes: ((String) -> Int?)? = nil) throws -> EventDraft {
         guard let fields = value.objectValue else { throw CalendarToolArgumentError("Each event must be an object.") }
         try keys(fields, allowed: ["title", "date", "startTime", "endTime", "allDay", "timeZone", "location", "url", "notes", "evidence", "yearInferred", "dateAmbiguous"])
         guard let title = try string(fields, "title", required: true, limit: 500), !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CalendarToolArgumentError("Every event needs a title.") }
@@ -145,9 +150,15 @@ enum CalendarToolDraftMapper {
         let resolvedYear = day.map { String(calendar.component(.year, from: $0)) }
         if !yearFromUserWords, let year = resolvedYear ?? dateValue.map({ String($0.prefix(4)) }), !explicitlyConfirmsYear(String(year), in: yearContext),
            yearInferred == true || !((context + "\n" + evidence).contains(String(year)) || (spokenRelative && yearInferred == false && [clockYear, clockYear + 1].contains(Int(year) ?? 0))) {
-            issues.append(.missingYear)
+            if spoken, day != nil, (context + "\n" + evidence).contains(String(year)) || mentionsAnyYear(evidence) {
+                // Voice never asks for a year. A year shown on screen or said ("next year") stands as the model read it.
+            } else if spoken, let parsed = day,
+               let upcoming = nextOccurrence(month: calendar.component(.month, from: parsed), day: calendar.component(.day, from: parsed), from: now, calendar: calendar) {
+                // Otherwise the next time this date comes around.
+                day = upcoming
+            } else { issues.append(.missingYear) }
         }
-        let explicitAllDay = (confirmedContext + "\n" + evidence).range(of: #"(?i)\ball[- ]day\b"#, options: .regularExpression) != nil
+        let explicitAllDay = spoken || (confirmedContext + "\n" + evidence).range(of: #"(?i)\ball[- ]day\b"#, options: .regularExpression) != nil
         if startTime == nil && !(requestedAllDay == true && explicitAllDay) { issues.append(.missingTime) }
         if dateAmbiguous == true { issues.append(.ambiguousDate) }
         if !evidence.isEmpty {
@@ -160,11 +171,19 @@ enum CalendarToolDraftMapper {
         let allDay = requestedAllDay == true
         let start = day.flatMap { day in allDay ? calendar.startOfDay(for: day) : startTime.flatMap { calendar.date(byAdding: .minute, value: $0, to: day) } }
         let end: Date?
+        var defaultedEnd = false
         if allDay, let start { end = calendar.date(byAdding: .day, value: 1, to: start) }
-        else if let day, let endTime { end = calendar.date(byAdding: .minute, value: endTime, to: day) }
-        else if let start { end = start.addingTimeInterval(3600) }
+        else if let day, let endTime {
+            // "10 to 1" past midnight ends the next day.
+            let sameDay = calendar.date(byAdding: .minute, value: endTime, to: day)
+            end = spoken && startTime.map({ endTime <= $0 }) == true ? sameDay.flatMap { calendar.date(byAdding: .day, value: 1, to: $0) } : sameDay
+        }
+        else if let start {
+            let minutes = spoken ? min(12 * 60, max(5, typicalMinutes?(title) ?? 60)) : 60
+            end = start.addingTimeInterval(Double(minutes) * 60); defaultedEnd = spoken
+        }
         else { end = nil }
-        if !allDay && endTime == nil { issues.append(.missingEndTime) }
+        if !allDay && endTime == nil && !defaultedEnd { issues.append(.missingEndTime) }
         return EventDraft(title: title, startDate: start ?? (startTime == nil ? day : nil), endDate: end, isAllDay: allDay,
                           timeZoneIdentifier: zoneName ?? calendar.timeZone.identifier, location: location, url: validURL(rawURL), notes: notes,
                           sourceText: evidence, confidence: issues.isEmpty ? 0.9 : 0.5, ambiguities: issues)

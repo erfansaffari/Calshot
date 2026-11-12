@@ -214,6 +214,7 @@ export interface AgentPermissionsState {
 }
 export interface ShortcutStatus { label: string; isDefault: boolean; error?: string | null }
 export interface VoiceState {
+  audioIssue?: "permission" | "devices" | null;
   token: string; state: string; active: boolean; inputLevel: number; caption: string; userTranscript: string; drawing: boolean;
   usage: { seconds: number; estimatedCost: number }; error?: string; needsKey: boolean; needsAcknowledgement: boolean; talking?: boolean; shortcut?: string; outputLevel?: number;
   permissions: { microphone: boolean; screen: boolean }; model: string; voice: string; monthlyCap: number;
@@ -269,6 +270,7 @@ export interface AppState {
     message?: string;
     error?: string;
   };
+  aiContextInspection?: { capturedAt: string; sections: { title: string; detail: string; text: string }[] } | null;
   settingsSection?: "general" | "calendars" | "friends" | "ai" | "voice" | "privacy";
   calendarView?: CalendarViewState;
   calendarContentToken?: string;
@@ -319,6 +321,7 @@ export interface AppState {
   googleClientID: string;
   outlookClientID: string;
   personalMemory?: PersonalMemoryState;
+  recentChanges?: RecentChangesState;
   memory: MemoryRecord[];
   memoryLocation: string;
   shortcut: string;
@@ -374,18 +377,45 @@ export interface TasksState { items: CalshotTask[]; token: string; loaded: boole
 export interface PersonalMemoryItem {
   id: string;
   version: string;
-  kind: "preference" | "fact" | "person" | "routine";
+  kind: "preference" | "fact" | "person" | "routine" | "style" | "goal";
   text: string;
-  origin: "explicit" | "suggested";
+  origin: "explicit" | "suggested" | "learned";
   status: "active" | "pendingApproval";
   createdAt: string;
   updatedAt: string;
   expiresAt?: string;
+  /** Where Calshot learned it. Absent on older items, which the user stated or approved. */
+  source?: "user" | "conversation" | "behavior" | "calendar";
+  confidence?: number;
+  evidenceCount?: number;
+  lastSeenAt?: string;
 }
+/** A saved calendar change backed by a native receipt. Undo is a native reverse change. */
+export interface RecentChange {
+  id: string;
+  operation: "create" | "update" | "delete" | "move";
+  title: string;
+  calendar: string;
+  start: string | null;
+  end: string | null;
+  allDay: boolean;
+  savedAt: string | null;
+  isUndo: boolean;
+  undone: boolean;
+  canUndo: boolean;
+  undoing: boolean;
+  error: string | null;
+  fromCalendar?: string;
+  previousTitle?: string;
+  previousStart?: string | null;
+}
+export interface RecentChangesState { items: RecentChange[]; token: string }
 export interface PersonalMemoryState {
   loaded: boolean;
   error?: string | null;
   items: PersonalMemoryItem[];
   pending: PersonalMemoryItem[];
   token: string;
+  /** Account copy in Supabase. The copy on this Mac is always the one Calshot reads. */
+  sync?: { available: boolean; enabled: boolean; busy: boolean; status: string; error: string | null; serverReady: boolean };
 }

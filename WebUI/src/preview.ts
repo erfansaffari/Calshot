@@ -447,3 +447,18 @@ if (["task-review", "task-review-long", "task-review-link", "task-outcome", "tas
     rows: [{ id: "a", title: "Read chapter 1", status: "saved" }, { id: "b", title: "Read chapter 2", status: "failed", message: "Finish or skip this task’s deadline review first." }, { id: "c", title: "Read chapter 3", status: "cancelled", message: "Stopped before this change was saved." }] };
   if (scenario === "task-permissions") { preview.page = "settings"; preview.settingsSection = "privacy"; }
 }
+
+/** Sample learned memory and saved changes for the browser preview (?preview=1&sample=learning). Fictional data. */
+export const learningSample = {
+  proposals: [], waitingApproval: false, canApprove: false, taskImport: undefined, imageURL: undefined,
+  personalMemory: { loaded: true, pending: [], token: "preview-memory", items: [
+    { id: "m1", version: "v1", kind: "style", text: "Keep spoken replies short: one or two sentences, with details only when asked.", origin: "learned", status: "active", source: "behavior", confidence: 0.8, evidenceCount: 1, createdAt: "2026-11-10T18:00:00Z", updatedAt: "2026-11-10T18:00:00Z" },
+    { id: "m2", version: "v1", kind: "routine", text: "Fictional gym sessions on Tuesday and Thursday evenings", origin: "learned", status: "active", source: "conversation", confidence: 0.7, evidenceCount: 2, createdAt: "2026-11-09T18:00:00Z", updatedAt: "2026-11-10T18:00:00Z" },
+    { id: "m3", version: "v1", kind: "preference", text: "Puts course events in the Fictional School calendar", origin: "explicit", status: "active", source: "user", confidence: 0.95, evidenceCount: 1, createdAt: "2026-11-08T18:00:00Z", updatedAt: "2026-11-08T18:00:00Z" },
+  ] },
+  recentChanges: { token: "preview-changes", items: [
+    { id: "c1", operation: "create", title: "Fictional dentist", calendar: "Personal", start: new Date(Date.now() + 2 * 86400000).toISOString(), end: null, allDay: false, savedAt: new Date(Date.now() - 60000).toISOString(), isUndo: false, undone: false, canUndo: true, undoing: false, error: null },
+    { id: "c2", operation: "update", title: "Fictional study group", previousTitle: "Fictional study session", calendar: "School", start: new Date(Date.now() + 86400000).toISOString(), end: null, allDay: false, savedAt: new Date(Date.now() - 180000).toISOString(), isUndo: false, undone: false, canUndo: true, undoing: false, error: null },
+    { id: "c3", operation: "delete", title: "Fictional coffee chat", calendar: "Personal", start: new Date(Date.now() + 3 * 86400000).toISOString(), end: null, allDay: false, savedAt: new Date(Date.now() - 300000).toISOString(), isUndo: false, undone: true, canUndo: false, undoing: false, error: null },
+  ] }
+};

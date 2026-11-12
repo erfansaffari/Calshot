@@ -63,6 +63,16 @@ final class RealtimeVoiceClientTests: XCTestCase {
         XCTAssertEqual(fake.sent.filter { $0["type"] as? String == RealtimeWire.responseCreate.rawValue }.count, before)
         client.disconnect()
     }
+    func testHistoryAndCalendarDataUseLowerPriorityContextWithoutAnExtraResponse() async throws {
+        let fake = FakeRealtimeTransport(); let client = await ready(fake)
+        try await client.sendContextData("Fictional earlier plan and calendar")
+        let item = try XCTUnwrap(fake.sent.last?["item"] as? [String: Any])
+        XCTAssertEqual(item["role"] as? String, "user")
+        XCTAssertFalse(fake.sent.contains { $0["type"] as? String == "response.create" })
+        let content = try XCTUnwrap(item["content"] as? [[String: Any]])
+        XCTAssertTrue((content.first?["text"] as? String)?.contains("not a new user request or permission") == true)
+        client.disconnect()
+    }
     func testConcurrentResponsesCoalesceAndActiveResponseErrorIsNonfatal() async throws {
         let fake = FakeRealtimeTransport(), client = await ready(fake)
         try await client.requestResponse(); try await client.requestResponse(); try await client.sendText("Fictional review")
@@ -292,6 +302,18 @@ final class RealtimeVoiceClientTests: XCTestCase {
         XCTAssertEqual(VoicePCM.playedMilliseconds(renderedFrames: 48000, itemStartFrame: 0, itemFrames: 2400), 100)
         XCTAssertEqual(VoicePCM.playedMilliseconds(renderedFrames: 0, itemStartFrame: 2400, itemFrames: 24000), 0)
     }
+    /// Opt in on a developer Mac with existing permission; never prompts, records files, or contacts OpenAI.
+    func testOptInMicrophoneHardwareCapture() async throws {
+        guard ProcessInfo.processInfo.environment["CALSHOT_AUDIO_HARDWARE_CHECK"] == "1" else { throw XCTSkip("Set TEST_RUNNER_CALSHOT_AUDIO_HARDWARE_CHECK=1 to check local hardware.") }
+        guard VoiceAudioEngine.microphonePermission == .authorized else { throw XCTSkip("Microphone permission must already be authorized; this test never prompts.") }
+        let audio = VoiceAudioEngine(); var bytes = 0
+        audio.onInput = { bytes += $0.count }
+        defer { audio.stop() }
+        try await VoiceAudioStartup.start(attempt: { try audio.start() }, shouldContinue: { true })
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertTrue(audio.isRunning); XCTAssertGreaterThan(bytes, 0)
+        audio.stop(); XCTAssertFalse(audio.isRunning)
+    }
     func testAudioEngineInitializationAndStopArePassiveAndIdempotent() {
         let audio = VoiceAudioEngine()
         XCTAssertFalse(audio.isRunning); XCTAssertFalse(audio.isPlaying)
@@ -390,6 +412,64 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         s.acknowledge(); await s.toggle(); XCTAssertEqual(s.state, .connecting); s.stop()
     }
     func testMicrophoneDeniedBlocksStart() async { let s = make(microphone: false); await s.toggle(); XCTAssertEqual(s.state, .failed); XCTAssertNil(client.configuration) }
+    func testAudioStartupWaitsForTransientInputAndUsesBoundedBackoff() async throws {
+        var attempts = 0, waits: [Duration] = []
+        try await VoiceAudioStartup.start(attempt: {
+            attempts += 1
+            if attempts < 3 { throw VoiceAudioEngine.AudioError.noInputDevice }
+        }, shouldContinue: { true }, wait: { waits.append($0) })
+        XCTAssertEqual(attempts, 3)
+        XCTAssertEqual(waits, [.milliseconds(200), .milliseconds(400)])
+    }
+    func testAudioStartupDoesNotRetryDeniedPermissionOrUnknownFailures() async {
+        for issue in [VoiceAudioEngine.AudioError.permission(.denied), .permission(.restricted)] {
+            var attempts = 0, waits = 0
+            do {
+                try await VoiceAudioStartup.start(attempt: { attempts += 1; throw issue }, shouldContinue: { true }, wait: { _ in waits += 1 })
+                XCTFail("Permission must fail")
+            } catch { XCTAssertEqual(error as? VoiceAudioEngine.AudioError, issue) }
+            XCTAssertEqual(attempts, 1); XCTAssertEqual(waits, 0)
+        }
+    }
+    func testAudioStartupStopsAfterFourAttemptsAndNeverContinuesAStoppedSession() async {
+        var attempts = 0
+        do {
+            try await VoiceAudioStartup.start(attempt: { attempts += 1; throw VoiceAudioEngine.AudioError.graph }, shouldContinue: { true }, wait: { _ in })
+            XCTFail("Unavailable graph must fail")
+        } catch { XCTAssertEqual(error as? VoiceAudioEngine.AudioError, .graph) }
+        XCTAssertEqual(attempts, 4)
+        var current = true; attempts = 0
+        do {
+            try await VoiceAudioStartup.start(attempt: { attempts += 1; throw VoiceAudioEngine.AudioError.noInputDevice }, shouldContinue: { current }, wait: { _ in current = false })
+            XCTFail("Stopped session must not reopen the mic")
+        } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(attempts, 1)
+    }
+    func testTransientAudioStartupFailureConnectsOnlyAfterRecovery() async {
+        let s = make(); audio.startFailures = [.noInputDevice, .graph]
+        await s.toggle()
+        XCTAssertEqual(audio.startAttempts, 3); XCTAssertTrue(audio.running)
+        XCTAssertNotNil(client.configuration); XCTAssertNil(s.audioIssue); s.stop()
+    }
+    func testAuthorizedMicrophoneWithDeviceFailureShowsDeviceRecoveryAndNeverConnects() async {
+        let s = make()
+        audio.startFailures = Array(repeating: .noInputDevice, count: 4)
+        await s.toggle()
+        XCTAssertEqual(s.state, .failed); XCTAssertTrue(s.microphone)
+        XCTAssertEqual(s.audioIssue, "devices")
+        XCTAssertTrue(s.error?.contains("Sound → Input") == true)
+        XCTAssertFalse(s.error?.contains("Allow Microphone") == true)
+        XCTAssertNil(client.configuration); XCTAssertFalse(audio.running)
+    }
+    func testAudioRouteFailureRetainsItsTypedReasonAndPreservesAnOpenReview() async {
+        let s = make(); var cancelled = 0
+        s.waitingForReview = { true }; s.cancelPending = { cancelled += 1 }
+        await s.toggle(); audio.onError?(.noOutputDevice)
+        XCTAssertEqual(s.state, .failed); XCTAssertEqual(cancelled, 0)
+        XCTAssertTrue(s.error?.contains("Sound → Output") == true)
+        XCTAssertEqual(s.audioIssue, "devices")
+        await s.toggle(); XCTAssertNil(s.audioIssue); s.stop()
+    }
     func testScreenDeniedContinuesVoiceOnly() async {
         let s = make(screen: false); await s.toggle(); s.handle(.sessionUpdated); await say(s)
         XCTAssertEqual(client.images, 0); XCTAssertEqual(client.commits, 1); XCTAssertEqual(client.responses, 1); XCTAssertNotNil(s.error); s.stop()
@@ -427,6 +507,43 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         await s.toggle(); s.handle(.sessionUpdated); await settle()
         XCTAssertTrue(client.contexts.contains("Near-term schedule snapshot: fictional quiz"))
         XCTAssertEqual(client.responses, 0, "Context never starts a reply"); s.stop()
+    }
+    func testFirstVoiceResponseWaitsForHistoryAndReconnectReadsTheLatestConversation() async {
+        let s = make(screen: false); var history = "Earlier typed fictional Aurora plan"
+        s.history = { history }; s.context = { "Fictional preference" }
+        await s.talk(true); audio.onInput?(Data(count: 9600)); await s.talk(false)
+        s.handle(.sessionUpdated); await settle()
+        XCTAssertTrue(client.contexts.contains { $0.contains(history) && $0.contains("Fictional preference") })
+        XCTAssertEqual(client.responses, 1)
+        XCTAssertFalse(client.configuration?.instructions.contains(history) == true, "History is data, not policy")
+        history = "Updated fictional Aurora plan from the shared chat"
+        client.onReconnect?(); s.handle(.sessionUpdated); await settle()
+        XCTAssertTrue(client.contexts.contains { $0.contains(history) })
+        XCTAssertEqual(client.responses, 1); XCTAssertTrue(client.texts.isEmpty); s.stop()
+    }
+    func testScheduleRefreshInvalidatesOldAvailabilityAndDropsSlowOldConnectionResults() async {
+        let s = make(); var version = "one", text = "Fictional Monday schedule"
+        s.scheduleVersion = { version }; s.schedule = { text }
+        await s.toggle(); s.handle(.sessionUpdated); await settle()
+        version = "two"; text = "Fictional changed Tuesday schedule"; s.tick(now: Date()); await settle()
+        XCTAssertTrue(client.contexts.contains { $0.contains("earlier schedule snapshot is stale") })
+        XCTAssertTrue(client.contexts.contains(text)); XCTAssertEqual(client.responses, 0)
+        var finish: CheckedContinuation<String, Never>?
+        version = "three"; s.schedule = { await withCheckedContinuation { finish = $0 } }
+        s.tick(now: Date()); await settle(); XCTAssertNotNil(finish)
+        s.schedule = { "Fictional reconnect schedule" }; client.onReconnect?(); s.handle(.sessionUpdated); await settle()
+        finish?.resume(returning: "Fictional stale connection data"); await settle()
+        XCTAssertFalse(client.contexts.contains("Fictional stale connection data"))
+        XCTAssertTrue(client.contexts.contains("Fictional reconnect schedule")); s.stop()
+    }
+    func testBlankFreshScreenClearsThePreviousTurnsRecognizedText() async {
+        let s = make(); var text = ""
+        s.onScreenText = { text = $0.text }
+        frames.text = ScreenTextRecognition(lines: [RecognizedScreenLine(text: "Fictional old screen", region: SourceRegion(x: 0, y: 0, width: 1, height: 0.1))])
+        await s.toggle(); s.handle(.sessionUpdated); await say(s)
+        XCTAssertEqual(text, "Fictional old screen")
+        frames.text = ScreenTextRecognition(lines: []); await say(s)
+        XCTAssertTrue(text.isEmpty); s.stop()
     }
     func testEachSpokenTurnAddsOnlyNewRelevantMemories() async {
         let s = make()
@@ -531,7 +648,9 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         XCTAssertNotNil(finish)
         s.handle(.userTranscript(itemID: "fictional", text: "My fictional schedule", final: true))
         client.onReconnect?(); s.handle(.sessionUpdated); finish?.resume(returning: "{\"saved\":true}"); await settle()
-        XCTAssertTrue(client.texts.first?.contains("My fictional schedule") == true); XCTAssertTrue(client.results.isEmpty); s.stop()
+        XCTAssertTrue(client.contexts.contains { $0.contains("My fictional schedule") }); XCTAssertTrue(client.texts.isEmpty)
+        XCTAssertEqual(client.responses, 0, "Restoring history cannot start an unsolicited reply")
+        XCTAssertTrue(client.results.isEmpty); s.stop()
     }
     func testIdleAndAccountLossEndSession() async {
         let s = make(); await s.toggle(); s.tick(now: Date().addingTimeInterval(61)); XCTAssertEqual(s.state, .ended)
@@ -555,4 +674,26 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         XCTAssertEqual(capture, 1); XCTAssertEqual(voice, 1); XCTAssertEqual(released, 1)
     }
     func testNewSessionInvalidatesControlToken() async { let s = make(); let old = s.token; await s.toggle(); XCTAssertNotEqual(old, s.token); s.stop() }
+}
+
+@MainActor
+final class VoiceSilenceTests: XCTestCase {
+    func testASilentMicrophoneIsNotSentAndSaysWhy() async throws {
+        let defaults = UserDefaults(suiteName: "VoiceSilence." + UUID().uuidString)!
+        defaults.set(2, forKey: "voice.acknowledgementVersion")
+        let client = PreviewVoiceClient(), audio = PreviewVoiceAudio()
+        let session = VoiceSessionController(client: client, audio: audio, overlay: PreviewVoiceOverlay(), frames: PreviewVoiceFrames(), defaults: defaults, permission: { true }, screenPermission: { false })
+        session.eligible = { true }; session.hasKey = { true }; session.releaseTail = .zero; session.tapThreshold = 0
+        await session.toggle(); session.handle(.sessionUpdated)
+        audio.inputLevel = 0.0001
+        await session.talk(true); audio.onInput?(Data(count: 9600)); await session.talk(false)
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(client.commits, 0, "Silence is never sent as a request")
+        XCTAssertTrue(session.error?.contains("isn’t hearing your microphone") == true)
+        audio.inputLevel = 0.2
+        await session.talk(true); audio.onInput?(Data(count: 9600)); await session.talk(false)
+        for _ in 0..<200 where client.commits == 0 { await Task.yield() }
+        XCTAssertEqual(client.commits, 1); XCTAssertNil(session.error)
+        session.stop()
+    }
 }

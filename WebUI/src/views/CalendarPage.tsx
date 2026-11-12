@@ -184,20 +184,21 @@ export function CalendarPage({
     return () => {
       current = false;
     };
-  }, [range, idsKey, refresh, sharingAccess, state.sharing?.error, state.calendarContentToken, state.voice?.active, state.captureID]);
+  }, [range, idsKey, refresh, sharingAccess, state.sharing?.error, state.calendarContentToken]);
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 60000);
     return () => clearInterval(timer);
   }, []);
   const view = state.calendarView;
-  const loading = pending || Boolean(view?.loading);
+  // What is on screen stays while it refreshes; only a range with nothing loaded yet shows loading.
   const matches = Boolean(
     view?.loaded &&
-    view.contentToken === state.calendarContentToken &&
     view.start &&
     new Date(view.start).getTime() === range.start.getTime() &&
     new Date(view.end!).getTime() === range.end.getTime(),
   );
+  const loading = !matches && (pending || Boolean(view?.loading));
+  const refreshing = matches && (pending || Boolean(view?.loading));
   const events = matches
     ? (view?.events || [])
         .filter((e) => ids.includes(e.calendarIdentifier))
@@ -462,10 +463,10 @@ export function CalendarPage({
           className="icon-button calendar-refresh"
           title="Refresh events"
           aria-label="Refresh events"
-          disabled={loading}
+          disabled={loading || refreshing}
           onClick={() => setRefresh((n) => n + 1)}
         >
-          {loading ? <Spinner /> : <RefreshCw size={14} />}
+          {loading || refreshing ? <Spinner /> : <RefreshCw size={14} />}
         </button>
         {!readOnly && (
           <button
@@ -561,7 +562,7 @@ export function CalendarPage({
         </Empty>
       ) : (
         <>
-          <div className="calendar-board" ref={board} aria-busy={loading}>
+          <div className="calendar-board" ref={board} aria-busy={loading || refreshing}>
             {mode === "month" ? (
               <section className="month-board" aria-label="Month calendar">
                 <div className="weekday-labels">

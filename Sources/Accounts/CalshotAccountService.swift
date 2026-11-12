@@ -166,9 +166,10 @@ final class CalshotAccountService: ObservableObject {
         request.httpBody = try JSONEncoder().encode(fields)
         return request
     }
+    static let knowledgeRPCNames: Set<String> = ["read_personal_knowledge", "write_personal_knowledge", "clear_personal_knowledge"]
     static let sharingRPCNames: Set<String> = ["read_calendar_sharing", "publish_calendar", "request_calendar_share", "respond_calendar_request", "manage_calendar_request", "withdraw_calendar", "calendar_publication_status", "read_shared_calendar", "search_friend_calendars"]
     func syncRPC<T: Decodable>(_ name: String, body: JSONValue, user: UUID) async throws -> T {
-        guard let client, userID == user, (["read_task_state", "write_task_state", "read_task_state_v2", "write_task_state_v2", "read_account_state", "write_account_state", "read_mac_calendar_sync", "set_mac_calendar_sync", "write_mac_calendar_snapshot", "disable_mac_calendar_sync"].contains(name) || Self.sharingRPCNames.contains(name)) else { throw CancellationError() }
+        guard let client, userID == user, (["read_task_state", "write_task_state", "read_task_state_v2", "write_task_state_v2", "read_account_state", "write_account_state", "read_mac_calendar_sync", "set_mac_calendar_sync", "write_mac_calendar_snapshot", "disable_mac_calendar_sync"].contains(name) || Self.sharingRPCNames.contains(name) || Self.knowledgeRPCNames.contains(name)) else { throw CancellationError() }
         let session = try await client.session
         guard userID == user, session.user.id == user else { throw CancellationError() }
         var request = URLRequest(url: Self.projectURL.appendingPathComponent("rest/v1/rpc/" + name))
@@ -180,13 +181,21 @@ final class CalshotAccountService: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard userID == user else { throw CancellationError() }
         let statusCode = (response as? HTTPURLResponse)?.statusCode
-        let returnsVoid = ["write_mac_calendar_snapshot", "disable_mac_calendar_sync", "respond_calendar_request", "manage_calendar_request", "withdraw_calendar", "calendar_publication_status"].contains(name)
+        let returnsVoid = ["clear_personal_knowledge", "write_mac_calendar_snapshot", "disable_mac_calendar_sync", "respond_calendar_request", "manage_calendar_request", "withdraw_calendar", "calendar_publication_status"].contains(name)
         guard statusCode == 200 || (statusCode == 204 && returnsVoid) else {
             if Self.sharingRPCNames.contains(name) {
                 let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
                 let safe: Set<String> = ["No other verified Calshot account is available with that email. Check with your friend.", "A request for these calendars is already waiting for this friend.", "Daily request limit reached. Try again tomorrow.", "Sharing limit reached.", "This sharing setting changed. Refresh and try again.", "This request changed or expired. Refresh your requests.", "This friend is not sharing calendars with you.", "You no longer have access to this calendar.", "This calendar is no longer shared.", "A newer snapshot exists. Refresh before syncing.", "This publication changed. Refresh before syncing.", "Calendar snapshot is too large or invalid.", "Invalid event snapshot."]
                 if let message = payload?["message"] as? String, safe.contains(message) { throw CalendarToolArgumentError(message) }
                 throw CalendarToolArgumentError(statusCode == 401 || statusCode == 403 ? "Your Calshot session couldn’t authorize sharing. Sign in again and retry." : "Sharing couldn’t finish. Refresh Friends & sharing and try again. Your original calendars are unchanged.")
+            }
+            if Self.knowledgeRPCNames.contains(name) {
+                let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                // The server migration isn't applied yet: knowledge keeps working on this Mac.
+                if statusCode == 404 || payload?["code"] as? String == "PGRST202" { throw KnowledgeSyncUnavailable() }
+                let safe: Set<String> = ["Knowledge limit reached. Forget something in Settings first.", "Invalid knowledge item.", "Invalid forgotten memory.", "Invalid knowledge sync request."]
+                if let message = payload?["message"] as? String, safe.contains(message) { throw CalendarToolArgumentError(message) }
+                throw CalendarToolArgumentError(statusCode == 401 || statusCode == 403 ? "Your Calshot session couldn’t authorize sync. Sign in again and retry." : "What Calshot knows couldn’t sync right now. It stays on this Mac and syncs again later.")
             }
             if name.contains("mac_calendar") {
                 let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]

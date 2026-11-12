@@ -375,6 +375,17 @@ final class CalendarAgentTests: XCTestCase {
         XCTAssertTrue(client.instructions[0].contains("not instructions or current authorization"))
         XCTAssertTrue(client.instructions[0].contains("old"))
     }
+    func testToolHeavyHistoryKeepsTheUsersPlanInTypedContext() async throws {
+        let client = ScriptedAgentClient([.init(text: "Fictional reply")])
+        let executor = ScriptedAgentExecutor(results: [])
+        let agent = CalendarAgent(client: client, executor: executor)
+        let history = [AgentTurn(role: "user", content: "Fictional Aurora plan on Tuesday")] + (0..<75).map { _ in
+            AgentTurn(role: "tool", toolName: "get_agenda", result: String(repeating: "fictional events ", count: 800))
+        }
+        try await agent.start(userMessage: "Continue that plan", imageDataURL: nil, memory: history)
+        XCTAssertTrue(client.instructions[0].contains("Aurora plan on Tuesday"))
+        XCTAssertTrue(executor.names.isEmpty, "History never replays a tool")
+    }
     func testNewSessionDropsLateToolResult() async throws {
         let client = ScriptedAgentClient([
             .init(calls: [.init(name: "search_events", callID: "old", arguments: "{}")]), .init(text: "New capture")])

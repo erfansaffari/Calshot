@@ -125,17 +125,28 @@ struct ModifierHoldDetector {
     private var chordStart: Date?
     private var pressed = false
     private var spoiled = false
+    /// Keys already down when the chord began. macOS can report a key as held long after it was released
+    /// (a lost key-up); such stale keys must never block the shortcut, only keys pressed during the hold.
+    private var baseline: Set<Int> = []
     init(modifiers: UInt32) { self.modifiers = modifiers }
 
     /// Returns true or false when the press state changes. `otherKeyDown` is any non-modifier key being held.
     mutating func update(modifiers current: UInt32, otherKeyDown: Bool, now: Date) -> Bool? {
+        update(modifiers: current, keysDown: otherKeyDown ? [-1] : [], now: now)
+    }
+    /// `keysDown` holds the non-modifier keys reported as down.
+    mutating func update(modifiers current: UInt32, keysDown: Set<Int>, now: Date) -> Bool? {
         guard current == modifiers else {
             chordStart = nil
             if current == 0 { spoiled = false }
             if pressed { pressed = false; return false }
             return nil
         }
-        if otherKeyDown { spoiled = true }
+        // The chord just began: whatever is already down is stale, not part of a combination.
+        if chordStart == nil && !pressed && !spoiled { baseline = keysDown }
+        // A stale key that comes up and goes down again is a real press.
+        baseline.formIntersection(keysDown)
+        if !keysDown.subtracting(baseline).isEmpty { spoiled = true }
         guard !pressed, !spoiled else { return nil }
         guard let start = chordStart else { chordStart = now; return nil }
         guard now.timeIntervalSince(start) >= Self.holdDelay else { return nil }
@@ -199,8 +210,8 @@ final class HotKeyController: HotKeyRegistering {
         var detector = ModifierHoldDetector(modifiers: modifiers)
         let timer = Timer(timeInterval: 0.04, repeats: true) { [weak self] _ in
             let flags = NSEvent.ModifierFlags(rawValue: UInt(CGEventSource.flagsState(.combinedSessionState).rawValue))
-            let other = (0..<UInt16(128)).contains { code in !Self.modifierKeyCodes.contains(Int(code)) && CGEventSource.keyState(.combinedSessionState, key: code) }
-            if let pressed = detector.update(modifiers: GlobalShortcut.carbonModifiers(flags), otherKeyDown: other, now: Date()) {
+            let down = Set((0..<128).filter { code in !Self.modifierKeyCodes.contains(code) && CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code)) })
+            if let pressed = detector.update(modifiers: GlobalShortcut.carbonModifiers(flags), keysDown: down, now: Date()) {
                 self?.dispatch(id: 2, pressed: pressed)
             }
         }

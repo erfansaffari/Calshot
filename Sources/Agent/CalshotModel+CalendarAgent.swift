@@ -51,15 +51,30 @@ extension CalshotModel {
             onApproval: { [weak self] value in self?.agentIsWaitingForApproval = value; self?.voiceSession.review(value) },
             onQuestion: { [weak self] question in self?.agentQuestion = question },
             onStep: { [weak self] text in self?.agentStatus = text })
-        executor.remember = { [weak self] kind, text in
+        executor.conversationContext = { [weak self] query, limit, runID in
+            guard let self, self.activeAgentRunID == runID else { throw CancellationError() }
+            return try self.ongoingConversationContext(query: query, limit: limit)
+        }
+        executor.remember = { [weak self] kind, text, replacing in
             guard let self else { throw CancellationError() }
-            try self.suggestPersonalMemory(kind: kind, text: text, sourceReference: self.currentMemoryRecordID?.uuidString)
+            switch try self.learnPersonalMemory(kind: kind, text: text, source: .user, replacing: replacing) {
+            case .added: return "saved"
+            case .updated: return "updated"
+            case .reinforced: return "alreadyKnown"
+            case .forgottenBefore: return "forgotten"
+            }
+        }
+        executor.forgetMemory = { [weak self] id in
+            guard let self else { throw CancellationError() }
+            try self.personalMemory.forget(id: id); self.objectWillChange.send()
+            return "forgotten"
         }
         executor.recall = { [weak self] query in
             guard let self else { throw CancellationError() }
             if let error = self.personalMemory.error { throw CalendarToolArgumentError(error) }
-            return self.personalMemoryContext(for: query)
+            return MemoryContextBuilder.build(request: query, items: self.personalMemory.items, withIDs: true)
         }
+        executor.typicalDuration = { [weak self] title in self?.calendarProfile?.typicalDuration(for: title) }
         executor.listFriends = { [weak self] in
             guard let self else { throw CancellationError() }
             return try await self.listAgentFriends()
@@ -263,6 +278,7 @@ extension CalshotModel {
         guard currentCaptureSessionID == sessionID, !Task.isCancelled else { return }
         // Network calendars load while the model reads the request; a search that arrives first reads live.
         Task { [weak executor] in await executor?.prefetchNetworkCalendars() }
+        refreshCalendarProfile()
         do {
             let imageURL = try image.map(ResponsesCalendarAgentClient.imageDataURL)
             analyzedWithOpenAI = agentClient == nil
@@ -341,7 +357,11 @@ extension CalshotModel {
 }
 
 extension CalshotModel {
-    var directCalendarAccounts: [CalendarAccountConnection.Account] { CalendarAccountConnection.accounts() }
+    var directCalendarAccounts: [CalendarAccountConnection.Account] {
+        // Isolated demos/tests must not read real credentials or trigger Keychain dialogs.
+        guard loadsAIConnectionAtLaunch else { return [] }
+        return CalendarAccountConnection.accounts()
+    }
     func connectCalendarAccount(_ provider: CalendarAccountConnection.Provider, clientID: String) {
         guard !calendarAccountIsConnecting else { return }
         calendarAccountError = false; connectingCalendarProvider = provider
@@ -922,8 +942,8 @@ extension CalshotModel {
         var envelopes: [AgentPermissionEnvelope] = []
         var reviewReason: String?
         var viaPermission = true
-        // Saved grants cover only requests the user typed. A screenshot-started run always asks.
-        if agentTypedRunID != runID { reviewReason = voiceRunID == runID ? "Voice requests always ask before changing your tasks." : "A screenshot started this request, so Calshot asks before changing your tasks." }
+        // Saved grants cover requests the user typed or spoke. A screenshot-started run always asks.
+        if !calendarGrantOrigin(runID) { reviewReason = "A screenshot started this request, so Calshot asks before changing your tasks." }
         do {
             for operation in plan.operations where reviewReason == nil {
                 let resources = await agentTaskResources(plan, runID: runID)
@@ -1071,7 +1091,7 @@ extension CalshotModel {
 
     /// Returns nil when the user must review (no matching grant, limit reached, or the store is unavailable).
     func commitAgentTaskOnlyImport(runID: UUID) async throws -> JSONValue? {
-        guard agentTypedRunID == runID else { return nil }
+        guard calendarGrantOrigin(runID) else { return nil }
         guard let batch = taskImport, !batch.items.isEmpty, batch.ownerID == account.userID, batch.storeURL == taskStore.url,
               batch.captureID == currentCaptureSessionID, batch.recordID == currentMemoryRecordID,
               batch.items.allSatisfy({ $0.resolvedCalendarIntent != .new || $0.dueDate == nil }) else { return nil }
@@ -1185,7 +1205,7 @@ extension CalshotModel {
 
     // MARK: Calendar grants
 
-    /// Typed requests and voice sessions may use a saved calendar grant. A screenshot-started run never does.
+    /// Typed requests and voice sessions may use a saved calendar or task grant. A screenshot-started run never does.
     func calendarGrantOrigin(_ runID: UUID) -> Bool {
         agentTypedRunID == runID || voiceRunID == runID || voicePreparedRunID == runID
     }
@@ -1252,7 +1272,7 @@ extension CalshotModel {
         let proposal = row.proposal
         if row.guests { return "Guests need review, because saving notifies them." }
         if row.recurring == true || (proposal.operation != .create && row.recurring != false) { return "A repeating event needs review." }
-        if duplicate { return "A matching event already exists, so this one needs review." }
+        if duplicate { return CalendarAgentToolExecutor.duplicateReason }
         if !Self.calendarGrantRowIsResolved(row, duplicate: false) { return "The date, year, time or title still needs review." }
         return nil
     }
@@ -1369,7 +1389,7 @@ extension CalshotModel {
             } catch let error as DirectCalendarWriter.WriteError {
                 try? await store.settle(envelope, outcome: .failedWithoutEffect)
                 agentPermissionLiveOperations.remove(operation.operationID)
-                if case .duplicate = error { review.append((row.proposal, "A matching event already exists, so this one needs review.")) }
+                if case .duplicate = error { review.append((row.proposal, CalendarAgentToolExecutor.duplicateReason)) }
                 else { failed.append((row.proposal, error.localizedDescription)) }
             } catch {
                 try? await store.settle(envelope, outcome: .failedWithoutEffect)

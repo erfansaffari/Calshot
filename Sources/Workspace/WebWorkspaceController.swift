@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import WebKit
 import EventKit
 import SwiftUI
@@ -26,6 +27,9 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
     private var timer: Timer?
     private var lastSnapshot = ""
     private var notice: String?
+    private(set) var aiContextInspection: JSONValue?
+    private var aiContextOwner = ""
+    private var contextOwner: String { (model.account.userID?.uuidString ?? "local") + "|" + model.memoryDirectoryURL.path }
     private var comparisons: [String: JSONValue] = [:]
     private var ready = false
     private var allowedPageURL: URL?
@@ -36,6 +40,12 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
     private var settingsWindow: NSWindow?
     private var settingsSection = "general"
     private var calendarViewRequestID = UUID()
+    /// Generation of the events currently on screen. Their selection handles stay valid while a refresh runs.
+    private var shownCalendarGeneration: String?
+    /// Recently shown ranges, so returning to a range or switching pages shows events at once while they refresh.
+    private struct CachedCalendarView { let view: JSONValue; let selections: [String: CalendarTaskSelection]; let generation: String }
+    private var calendarViewCache: [String: CachedCalendarView] = [:]
+    private var calendarViewCacheOrder: [String] = []
     private var lastFriendAccessToken = ""
     /// Authority stays native: JavaScript receives only a handle and view generation.
     private struct CalendarTaskSelection {
@@ -118,17 +128,47 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         let captureID = model.currentCaptureSessionID
         let accessToken = model.friendAccessToken
         let id = UUID(); calendarViewRequestID = id
-        calendarTaskSelections = [:]; calendarTaskNotices = [:]
-        calendarView = .object(["loading": .bool(true), "loaded": .bool(false), "start": .string(ISO8601DateFormatter().string(from: start)), "end": .string(ISO8601DateFormatter().string(from: end)), "events": .array([]), "errors": .array([])])
+        let iso = ISO8601DateFormatter()
+        let cacheKey = SHA256.hash(data: Data(((owner?.uuidString ?? "local") + "|" + iso.string(from: start) + "|" + iso.string(from: end) + "|" + identifiers.sorted().joined(separator: ",") + "|" + accessToken).utf8))
+            .prefix(12).map { String(format: "%02x", $0) }.joined()
+        // Keep what is on screen (or a recent copy of this range) while it refreshes; never blank the calendar.
+        let shown = calendarView.objectValue
+        if shown?["loaded"] == .bool(true), shown?["start"] == .string(iso.string(from: start)), shown?["end"] == .string(iso.string(from: end)), shown?["cacheKey"] == .string(cacheKey) {
+            var refreshing = shown ?? [:]; refreshing["loading"] = .bool(true)
+            calendarView = .object(refreshing)
+        } else if let cached = calendarViewCache[cacheKey] {
+            var refreshing = cached.view.objectValue ?? [:]; refreshing["loading"] = .bool(true)
+            calendarView = .object(refreshing)
+            calendarTaskSelections = cached.selections; shownCalendarGeneration = cached.generation; calendarTaskNotices = [:]
+        } else {
+            calendarTaskSelections = [:]; calendarTaskNotices = [:]; shownCalendarGeneration = nil
+            calendarView = .object(["loading": .bool(true), "loaded": .bool(false), "start": .string(iso.string(from: start)), "end": .string(iso.string(from: end)), "events": .array([]), "errors": .array([])])
+        }
         publish()
+        let service = model.calendarService
+        // Every calendar is read at the same time; results keep the calendar order.
+        typealias Outcome = (index: Int, result: Result<(events: [CalendarEventSnapshot], truncated: Bool), Error>)
+        let outcomes: [Outcome] = await withTaskGroup(of: Outcome.self) { group in
+            for (index, calendar) in calendars.enumerated() {
+                group.addTask {
+                    do {
+                        if calendar.id.hasPrefix("unavailable:") { throw CalendarDestinationError.calendarUnavailable }
+                        return (index, .success(try await Self.browseEvents(service: service, start: start, end: end, calendarID: calendar.id)))
+                    } catch { return (index, .failure(error)) }
+                }
+            }
+            var collected: [Outcome] = []
+            for await outcome in group { collected.append(outcome) }
+            return collected.sorted { $0.index < $1.index }
+        }
+        guard calendarViewRequestID == id else { return }
         var events: [JSONValue] = [], errors: [JSONValue] = []
         var truncated = false
         var selections: [String: CalendarTaskSelection] = [:]
-        for calendar in calendars {
-            guard calendarViewRequestID == id else { return }
-            do {
-                if calendar.id.hasPrefix("unavailable:") { throw CalendarDestinationError.calendarUnavailable }
-                let result = try await browseEvents(start: start, end: end, calendarID: calendar.id)
+        for outcome in outcomes {
+            let calendar = calendars[outcome.index]
+            switch outcome.result {
+            case .success(let result):
                 truncated = truncated || result.truncated
                 var seen = Set<String>()
                 for event in result.events.sorted(by: { $0.start < $1.start }) where event.start < end && event.end > start {
@@ -141,13 +181,14 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                     let handle = UUID().uuidString
                     row["selectionHandle"] = .string(handle)
                     row["selectionGeneration"] = .string(id.uuidString)
+                    guard let fingerprint = try? CalshotModel.taskSourceFingerprint(event) else { continue }
                     selections[handle] = CalendarTaskSelection(snapshot: event, calendarID: calendar.id,
-                        fingerprint: try CalshotModel.taskSourceFingerprint(event), ownerID: owner,
+                        fingerprint: fingerprint, ownerID: owner,
                         storeURL: storeURL, taskSessionID: taskSessionID,
                         captureID: captureID)
                     events.append(.object(row))
                 }
-            } catch {
+            case .failure(let error):
                 errors.append(.object(["calendarIdentifier": .string(calendar.id), "calendarName": .string(calendar.title), "message": .string(error.localizedDescription)]))
             }
         }
@@ -163,15 +204,22 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             }
         }
         guard calendarViewRequestID == id, model.account.userID == owner, model.friendAccessToken == accessToken,
-              model.calendarContentToken == contentToken, model.taskStore.url == storeURL, model.taskSessionID == taskSessionID, model.currentCaptureSessionID == captureID else { return }
+              model.taskStore.url == storeURL, model.taskSessionID == taskSessionID, model.currentCaptureSessionID == captureID else { return }
         if events.count > 3000 { truncated = true }
         let visible = Array(events.prefix(3000))
         let handles = Set(visible.compactMap { $0.objectValue?["selectionHandle"]?.stringValue })
         calendarTaskSelections = selections.filter { handles.contains($0.key) }
-        calendarView = .object(["loading": .bool(false), "loaded": .bool(true), "contentToken": .string(contentToken.uuidString), "start": .string(ISO8601DateFormatter().string(from: start)), "end": .string(ISO8601DateFormatter().string(from: end)), "events": .array(Array(events.prefix(3000))), "errors": .array(errors), "truncated": .bool(truncated)])
+        shownCalendarGeneration = id.uuidString
+        // A calendar change during the read leaves this result on screen but marked for another refresh.
+        let current = model.calendarContentToken == contentToken
+        calendarView = .object(["loading": .bool(false), "loaded": .bool(true), "contentToken": .string(contentToken.uuidString), "stale": .bool(!current), "cacheKey": .string(cacheKey),
+                                "start": .string(iso.string(from: start)), "end": .string(iso.string(from: end)), "events": .array(visible), "errors": .array(errors), "truncated": .bool(truncated)])
+        calendarViewCache[cacheKey] = CachedCalendarView(view: calendarView, selections: calendarTaskSelections, generation: id.uuidString)
+        calendarViewCacheOrder.removeAll { $0 == cacheKey }; calendarViewCacheOrder.append(cacheKey)
+        while calendarViewCacheOrder.count > 6 { calendarViewCache[calendarViewCacheOrder.removeFirst()] = nil }
     }
     private func resolveCalendarTaskSelection(handle: String?, generation: String?) throws -> CalendarTaskSelection {
-        guard let handle, generation == calendarViewRequestID.uuidString,
+        guard let handle, generation != nil, generation == shownCalendarGeneration,
               let selection = calendarTaskSelections[handle],
               selection.ownerID == model.account.userID, selection.storeURL == model.taskStore.url,
               selection.taskSessionID == model.taskSessionID, selection.captureID == model.currentCaptureSessionID,
@@ -209,10 +257,10 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 expectedFingerprint: selection.fingerprint)
             // Do not expose a prior owner's receipt if the account changed during the native read.
             guard selection.ownerID == model.account.userID, selection.storeURL == model.taskStore.url,
-                  body["selectionGeneration"] as? String == calendarViewRequestID.uuidString else { return }
+                  body["selectionGeneration"] as? String == shownCalendarGeneration else { return }
             calendarTaskNotices[handle] = .object(["status": .string("success"), "receipt": WebWorkspaceState.encoded(receipt)])
         } catch {
-            if selection.ownerID == model.account.userID, body["selectionGeneration"] as? String == calendarViewRequestID.uuidString {
+            if selection.ownerID == model.account.userID, body["selectionGeneration"] as? String == shownCalendarGeneration {
                 calendarTaskNotices[handle] = .object(["status": .string("error"), "message": .string(error.localizedDescription)])
             }
             throw error
@@ -397,15 +445,16 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         if before.notes != after.notes { fields.append("notes") }
         return Array(Set(fields)).sorted()
     }
-    private func browseEvents(start: Date, end: Date, calendarID: String, depth: Int = 0) async throws -> (events: [CalendarEventSnapshot], truncated: Bool) {
-        let events = try await model.calendarService.searchEvents(query: nil, start: start, end: end, in: .resolve(identifier: calendarID))
+    nonisolated private static func browseEvents(service: any CalendarDestinationService, start: Date, end: Date, calendarID: String, depth: Int = 0) async throws -> (events: [CalendarEventSnapshot], truncated: Bool) {
+        let events = try await service.searchEvents(query: nil, start: start, end: end, in: .resolve(identifier: calendarID))
         // Agent searches cap their results at 40. Subdivide busy ranges for the calendar UI.
         guard events.count >= 40 else { return (events, false) }
         guard depth < 6, end.timeIntervalSince(start) > 86400 else { return (events, true) }
         let middle = start.addingTimeInterval(end.timeIntervalSince(start) / 2)
-        let left = try await browseEvents(start: start, end: middle, calendarID: calendarID, depth: depth + 1)
-        let right = try await browseEvents(start: middle, end: end, calendarID: calendarID, depth: depth + 1)
-        return (left.events + right.events, left.truncated || right.truncated)
+        async let left = browseEvents(service: service, start: start, end: middle, calendarID: calendarID, depth: depth + 1)
+        async let right = browseEvents(service: service, start: middle, end: end, calendarID: calendarID, depth: depth + 1)
+        let (l, r) = try await (left, right)
+        return (l.events + r.events, l.truncated || r.truncated)
     }
     func refreshAccounts() {
         accounts = model.directCalendarAccounts.map { account in
@@ -421,7 +470,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         let friendToken = model.friendAccessToken
         if lastFriendAccessToken != friendToken {
             lastFriendAccessToken = friendToken
-            calendarViewRequestID = UUID()
+            calendarViewRequestID = UUID(); shownCalendarGeneration = nil
+            calendarViewCache = [:]; calendarViewCacheOrder = []
             calendarTaskSelections = [:]; calendarTaskNotices = [:]
             calendarView = .object(["loaded": .bool(false), "loading": .bool(false), "events": .array([]), "errors": .array([])])
         }
@@ -438,6 +488,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         }
         assets.refreshImage()
         var viewState = WebWorkspaceState.make(model, imageURL: assets.currentURL, notice: notice, accounts: accounts, googleReady: googleReady, comparisons: comparisons).objectValue ?? [:]
+        if aiContextOwner != contextOwner || !model.account.canUseWorkspace || model.workspaceSelection != .settings { aiContextInspection = nil }
+        viewState["aiContextInspection"] = aiContextInspection ?? .null
         viewState["settingsSection"] = .string(settingsSection)
         if isNotch { viewState["notchExpanded"] = .bool(notchExpanded) }
         viewState["calendarView"] = calendarView
@@ -462,12 +514,10 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         Task { try? await webView.callAsyncJavaScript("window.__calshotReply(reply)", arguments: ["reply": ["id": id, "ok": error == nil, "error": error ?? ""]], in: nil, contentWorld: .page) }
     }
     private func requireIdle() throws {
-        guard !model.voiceSession.active else { throw CalendarToolArgumentError("Voice mode is on — stop it first") }
         guard !calendarTaskLinkBusy, !calendarDirectActionBusy, !model.isSaving, !model.isCapturing, !model.agentIsRunning, !model.isRecognizing else { throw CalendarToolArgumentError("Finish or stop the current task first.") }
     }
     /// An open conversation doesn't block your own edits; the coordinator rejects any row it makes stale.
     private func requireCalendarDirectWrite() throws {
-        guard !model.voiceSession.active else { throw CalendarToolArgumentError("Voice mode is on — stop it first") }
         guard model.account.canUseWorkspace else { throw CalendarToolArgumentError("Sign in and connect a calendar first.") }
         guard !calendarTaskLinkBusy, !calendarDirectActionBusy, !model.isSaving, !model.directCalendarWriter.isWriting else {
             throw CalendarToolArgumentError("Wait for the current save to finish.")
@@ -493,6 +543,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             throw CalendarToolArgumentError("The review changed. Check the latest events before continuing.")
         }
     }
+    /// Starting another conversation run, restoring or deleting history, and shortcut changes conflict with a live voice session.
+    static let blockedDuringVoice: Set<String> = ["startCalendarTask", "importCapturedScreenshot", "retryAgent", "restoreMemory", "deleteMemory", "syncAccount", "shortcutRecording", "resetShortcut"]
     static let actionsAllowedBeforeSignIn: Set<String> = ["ready", "notchLayout", "collapseNotch", "expandNotch", "openWorkspace", "appearance", "authSignIn", "authSignUp", "authGoogle", "authVerify", "authResend", "authReset", "authChangePassword", "authRestore"]
     func handle(_ action: String, _ body: [String: Any]) async throws {
         guard !model.softwareUpdates.installing else { throw CalendarToolArgumentError("Calshot is restarting to install an update.") }
@@ -504,11 +556,20 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
            ["refreshCalendars", "connectGoogle", "selectCalendar", "calendarSettings", "internetAccountsSettings"].contains(action) {
             throw CalendarToolArgumentError("Set up your AI service before confirming calendars.")
         }
-        if model.voiceSession.active {
-            let safe: Set<String> = ["ready", "notchLayout", "collapseNotch", "expandNotch", "openWorkspace", "navigate", "authSignOut", "appearance", "glassAppearance", "stop", "stopVoice", "voiceTalk", "setVoiceDrawing", "voiceAISettings", "voiceMicrophoneSettings", "screenSettings", "approve", "skipApproval", "editProposal", "selectProposal", "selectCalendar", "selectInboxTaskImport", "loadCalendarEvents", "confirmProposalYears", "compareDuplicate", "allowDuplicate", "approveTaskChange", "cancelTaskChange", "answer", "cancelQuestion", "approveMemory", "rejectMemory", "agentEnabled"]
-            guard safe.contains(action) else { throw CalendarToolArgumentError("Voice mode is on — stop it first") }
+        // Voice is just another way to talk to Calshot: everything else keeps working. Only actions that would
+        // replace the voice conversation, rewrite its history or change the voice shortcut wait for voice to end.
+        if model.voiceSession.active, Self.blockedDuringVoice.contains(action) {
+            throw CalendarToolArgumentError("Finish talking first — this ends when voice does.")
         }
         switch action {
+        case "inspectAIContext", "closeAIContext":
+            guard !isNotch, model.workspaceSelection == .settings, model.account.canUseWorkspace,
+                  Set(body.keys).isSubset(of: ["action", "id"]) else { throw CalendarToolArgumentError("Open AI context from Settings in the main window.") }
+            aiContextInspection = nil
+            if action == "inspectAIContext" {
+                aiContextInspection = try WebWorkspaceState.contextInspection(model)
+                aiContextOwner = contextOwner
+            }
         case "voiceTalk":
             // Press is token-bound; release only ends the caller's own held turn, so it stays valid after the press rotates the token.
             guard Set(body.keys).isSubset(of: ["action", "id", "token", "pressed"]), let raw = body["pressed"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID(), let pressed = raw as? Bool else { throw CalendarToolArgumentError("Invalid voice control.") }
@@ -518,7 +579,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 guard model.account.canUseWorkspace else { throw CalendarToolArgumentError("Sign in and finish onboarding to use voice.") }
             }
             await voice.talk(pressed)
-        case "startVoice", "stopVoice", "setVoiceDrawing", "acknowledgeVoiceBilling", "voiceSettings", "voiceMicrophoneSettings", "voiceAISettings":
+        case "startVoice", "stopVoice", "setVoiceDrawing", "acknowledgeVoiceBilling", "voiceSettings", "voiceMicrophoneSettings", "voiceInputSettings", "voiceAISettings":
             let voice = model.voiceSession
             var fields: Set<String> = ["action", "id", "token"]
             if action == "setVoiceDrawing" { fields.insert("drawing") }
@@ -530,6 +591,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             else if action == "stopVoice" { voice.stop() }
             else if action == "setVoiceDrawing" { guard let raw = body["drawing"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID(), let drawing = raw as? Bool else { throw CalendarToolArgumentError("Choose a drawing state.") }; voice.setDrawing(drawing) }
             else if action == "acknowledgeVoiceBilling" { voice.acknowledge() }
+            else if action == "voiceInputSettings" { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension")!) }
             else if action == "voiceMicrophoneSettings" { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!) }
             else {
                 guard !isNotch, model.workspaceSelection == .settings, !voice.active else { throw CalendarToolArgumentError("Stop voice and change its preferences in Settings.") }
@@ -722,6 +784,12 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         case "changeCalendarEvent": try await changeCalendarEvent(body)
         case "dismissCalendarChange": calendarChange = .null
         case "dismissDirectWriteNotice": model.directWriteNotice = nil
+        case "undoChange":
+            guard Set(body.keys).isSubset(of: ["action", "id", "changeID", "token"]),
+                  let id = (body["changeID"] as? String).flatMap(UUID.init(uuidString:)), let token = body["token"] as? String else {
+                throw CalendarToolArgumentError("Choose a saved change to undo.")
+            }
+            try await model.undoCalendarChange(id, token: token)
         case "loadCalendarEvents": try await loadCalendarView(body)
         case "dismissNotice": notice = nil
         case "capture":
@@ -777,6 +845,9 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             if let question = model.agentQuestion {
                 guard body["questionID"] as? String == question.id.uuidString else { throw CalendarToolArgumentError("This question changed. Answer the current question.") }
                 model.answerAgentQuestion(text)
+            } else if model.voiceSession.active {
+                // Typing while voice is on continues the same conversation; Calshot answers aloud.
+                try model.voiceSession.typed(text)
             } else {
                 try requireIdle(); model.taskUsesNotch = isNotch
                 Task { await model.startAgentCommand(prompt: text) }
@@ -851,6 +922,17 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         case "retryAgent": try requireIdle(); model.taskUsesNotch = isNotch; Task { await model.retryAgentCommand() }
         case "addMemory", "editMemory", "forgetMemory", "approveMemory", "rejectMemory", "clearMemory":
             try model.handlePersonalMemoryAction(action, body: body, isNotch: isNotch)
+        case "knowledgeSync", "removeSyncedKnowledge":
+            guard !isNotch, model.workspaceSelection == .settings else { throw CalendarToolArgumentError("Manage memory sync in Settings.") }
+            if action == "knowledgeSync" {
+                guard Set(body.keys).isSubset(of: ["action", "id", "enabled"]), let value = body["enabled"],
+                      CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID(), let enabled = value as? Bool else { throw CalendarToolArgumentError("Choose whether to sync.") }
+                await model.setKnowledgeSync(enabled: enabled)
+            } else {
+                guard Set(body.keys).isSubset(of: ["action", "id", "confirmed"]), body["confirmed"] as? Bool == true,
+                      CFGetTypeID((body["confirmed"] ?? 0) as CFTypeRef) == CFBooleanGetTypeID() else { throw CalendarToolArgumentError("Confirm removing the synced copy first.") }
+                try await model.removeSyncedKnowledge()
+            }
         case "restoreMemory":
             try requireIdle()
             guard let raw = body["recordID"] as? String, let record = model.memoryRecords.first(where: { $0.id.uuidString == raw }) else { throw CalendarToolArgumentError("This task is no longer in History.") }

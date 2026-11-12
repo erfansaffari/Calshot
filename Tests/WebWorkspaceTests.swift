@@ -409,6 +409,8 @@ final class WebWorkspaceTests: XCTestCase {
         let model = fixture(); model.workspaceSelection = .settings
         let bridge = WebWorkspaceController(model: model)
         do { try await bridge.handle("stopVoice", ["token": "stale"]); XCTFail("Stale voice control accepted") } catch {}
+        do { try await bridge.handle("voiceInputSettings", ["token": "stale"]); XCTFail("Stale audio recovery control accepted") } catch {}
+        do { try await bridge.handle("voiceInputSettings", ["token": model.voiceSession.token, "url": "https://example.invalid"]); XCTFail("Recovery must not accept a caller-supplied destination") } catch {}
         let notch = WebWorkspaceController(model: model, isNotch: true)
         do { try await notch.handle("voiceSettings", ["token": model.voiceSession.token, "model": "fictional", "voice": "marin", "cap": 10.0]); XCTFail("Notch settings accepted") } catch {}
         let snapshot = WebWorkspaceState.make(model, imageURL: nil, notice: nil, accounts: [], googleReady: false)
@@ -426,7 +428,7 @@ final class WebWorkspaceTests: XCTestCase {
     func testVoiceSpokenApprovalStopAndTimedReviewUseRealExecutor() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, client) = wiredVoice(model)
         await voice.toggle(); voice.handle(.sessionUpdated)
-        XCTAssertEqual(model.agentToolExecutor?.clarifyByReview, true)
+        XCTAssertEqual(model.agentToolExecutor?.voiceMode, true)
         let args = #"{"events":[{"title":"Fictional workshop","date":"2026-11-10","startTime":"10:00","endTime":"11:00","allDay":false,"timeZone":"America/Toronto","location":null,"url":null,"notes":null,"evidence":"Fictional workshop November 10 2026 10-11am"}]}"#
         voice.handle(.functionCall(callID: "pending", name: "create_events", argumentsJSON: args))
         for _ in 0..<1000 { if model.agentIsWaitingForApproval { break }; await Task.yield() }
@@ -471,6 +473,54 @@ final class WebWorkspaceTests: XCTestCase {
         model.isRecognizing = false; model.isCapturing = true; XCTAssertThrowsError(try voice.prepare?())
         model.isCapturing = false; model.agentQuestion = AgentQuestion(question: "Fictional question", choices: [])
         XCTAssertThrowsError(try voice.prepare?())
+    }
+    func testTypedHistoryAndSavedReceiptsReachVoiceAndOlderLookupRejectsStaleRuns() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient())
+        var turns = [AgentTurn(role: "user", content: "Fictional Aurora plan: reserve the library"), AgentTurn(role: "assistant", content: "Keep the Tuesday preference")]
+        turns += (0..<65).map { AgentTurn(role: "user", content: "Fictional unrelated note \($0)") }
+        let record = try model.memoryStore.recordCommand("Fictional typed plan", transcript: turns)
+        var saved = row(); saved.state = .added
+        saved.receipt = CalendarActionReceipt(destinationID: "demo", calendarName: "Fictional calendar", eventIdentifier: "fictional-saved", savedAt: .now)
+        _ = try model.memoryStore.updateProposals(for: record.id, proposals: [saved])
+        let (voice, client) = wiredVoice(model); await voice.toggle(); voice.handle(.sessionUpdated)
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertTrue(client.contexts.contains { $0.contains("Fictional unrelated note 64") && $0.contains("Reviewed exam") && $0.contains("Recently saved calendar changes") })
+        let result = await voice.execute?("get_conversation_context", .object(["query": .string("Aurora")]))
+        XCTAssertTrue(result?.contains("reserve the library") == true)
+        try voice.transcript?("user", "Fictional latest spoken correction")
+        XCTAssertTrue(try model.ongoingConversationContext().jsonString().contains("latest spoken correction"))
+        model.activeAgentRunID = UUID()
+        let stale = await voice.execute?("get_conversation_context", .object([:]))
+        XCTAssertEqual(stale, "{\"cancelled\":true}")
+        voice.stop()
+    }
+    func testConversationLookupNeverFallsBackToAnotherAccountsData() throws {
+        let model = fixture()
+        _ = try model.memoryStore.recordCommand("Fictional account A", transcript: [AgentTurn(role: "user", content: "Private fictional account A")])
+        _ = mirrorUser(model)
+        XCTAssertThrowsError(try model.ongoingConversationContext(query: "Private"))
+    }
+    func testContextInspectorIsExplicitScopedAndExcludesToolsAndSharedFriendTurns() async throws {
+        let model = fixture()
+        var privateTurn = AgentTurn(role: "assistant", content: "Fictional private friend event"); privateTurn.sharedCalendarContext = true
+        _ = try model.memoryStore.recordCommand("Fictional plan", transcript: [AgentTurn(role: "user", content: "Fictional Aurora plan"), privateTurn,
+            AgentTurn(role: "tool", toolName: "search_events", result: "FICTIONAL_RAW_SECRET")])
+        model.recognizedText = "Fictional captured syllabus"
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        XCTAssertNil(bridge.aiContextInspection)
+        do { try await bridge.handle("inspectAIContext", [:]); XCTFail("Wrong page accepted") } catch {}
+        model.workspaceSelection = .settings
+        do { try await bridge.handle("inspectAIContext", ["query": "extra"]); XCTFail("Extra fields accepted") } catch {}
+        try await bridge.handle("inspectAIContext", [:])
+        let snapshot = try XCTUnwrap(bridge.aiContextInspection).jsonString()
+        XCTAssertTrue(snapshot.contains("Fictional Aurora plan")); XCTAssertTrue(snapshot.contains("Fictional captured syllabus"))
+        XCTAssertFalse(snapshot.contains("private friend event")); XCTAssertFalse(snapshot.contains("FICTIONAL_RAW_SECRET"))
+        XCTAssertTrue(snapshot.contains("No calendar snapshot has been sent")); XCTAssertEqual(model.recognizedText, "Fictional captured syllabus")
+        let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
+        do { try await notch.handle("inspectAIContext", [:]); XCTFail("Notch accepted") } catch {}
+        try await bridge.handle("closeAIContext", [:]); XCTAssertNil(bridge.aiContextInspection)
+        _ = mirrorUser(model)
+        XCTAssertThrowsError(try WebWorkspaceState.contextInspection(model), "Account mismatch must not expose old local data")
     }
     func testVoiceSharedContextIsStampedAndExcludedFromMemory() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, _) = wiredVoice(model); await voice.toggle()
@@ -559,6 +609,15 @@ final class WebWorkspaceTests: XCTestCase {
         _ = combo.update(modifiers: chord, otherKeyDown: false, now: start)
         XCTAssertNil(combo.update(modifiers: chord, otherKeyDown: true, now: start + 0.1))
         XCTAssertNil(combo.update(modifiers: chord, otherKeyDown: false, now: start + 1), "⌃⌥← belongs to another app, even after the arrow is released")
+        // macOS can report keys as held long after they were released (a lost key-up). Those never block the chord.
+        var stale = ModifierHoldDetector(modifiers: chord)
+        XCTAssertNil(stale.update(modifiers: 0, keysDown: [14, 31], now: start))
+        XCTAssertNil(stale.update(modifiers: chord, keysDown: [14, 31], now: start + 0.01))
+        XCTAssertEqual(stale.update(modifiers: chord, keysDown: [14, 31], now: start + 0.3), true, "Stale E and O do not spoil ⌃⌥")
+        XCTAssertEqual(stale.update(modifiers: 0, keysDown: [14, 31], now: start + 1), false)
+        _ = stale.update(modifiers: chord, keysDown: [14, 31], now: start + 2)
+        XCTAssertNil(stale.update(modifiers: chord, keysDown: [14, 31, 123], now: start + 2.1), "A key pressed during the hold still makes it a combination")
+        XCTAssertNil(stale.update(modifiers: chord, keysDown: [14, 31], now: start + 2.5))
         XCTAssertNil(combo.update(modifiers: 0, otherKeyDown: false, now: start + 2))
         _ = combo.update(modifiers: chord, otherKeyDown: false, now: start + 3)
         XCTAssertEqual(combo.update(modifiers: chord, otherKeyDown: false, now: start + 3.2), true, "A fresh hold works again")
@@ -717,103 +776,96 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertEqual(year(row), expected.map { calendar.component(.year, from: $0) })
         voice.stop()
     }
-    func testASpokenDateWithoutItsTranscriptOpensTheYearReviewInsteadOfGuessing() async throws {
+    private func assertNextOccurrence(_ row: CalendarActionProposal?, file: StaticString = #filePath, line: UInt = #line) {
+        guard let row else { return XCTFail("No row", file: file, line: line) }
+        XCTAssertFalse(row.draft.ambiguities.contains(.missingYear), "Voice never asks for a year", file: file, line: line)
+        let calendar = CalendarDraftValidation.calendar(for: row.draft)
+        let expected = CalendarToolDraftMapper.nextOccurrence(month: 11, day: 12, from: Date(), calendar: calendar)
+        XCTAssertEqual(year(row), expected.map { calendar.component(.year, from: $0) }, file: file, line: line)
+    }
+    func testASpokenDateWithoutItsTranscriptTakesItsNextOccurrence() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
         let voice = await speakAndRelease(model, transcriptWait: .milliseconds(50))
-        voice.handle(.functionCall(callID: "late", name: "create_events", argumentsJSON: spokenEvent("2027-11-12")))
+        voice.handle(.functionCall(callID: "late", name: "create_events", argumentsJSON: spokenEvent("2019-11-12")))
         await waitForReview(model)
-        XCTAssertTrue(model.calendarActions.proposals.first?.draft.ambiguities.contains(.missingYear) == true)
+        assertNextOccurrence(model.calendarActions.proposals.first)
         voice.stop()
     }
-    func testAScreenOnlyDateKeepsItsYearReviewInVoice() async throws {
+    func testAScreenOnlyDateTakesItsNextOccurrenceInVoice() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
         await voice.toggle(); voice.handle(.sessionUpdated)
         voice.handle(.userTranscript(itemID: "turn", text: "add this to my calendar", final: true))
-        voice.handle(.functionCall(callID: "screen", name: "create_events", argumentsJSON: spokenEvent("2027-11-12", evidence: "Dentist Nov 12 3 PM")))
+        voice.handle(.functionCall(callID: "screen", name: "create_events", argumentsJSON: spokenEvent("2019-11-12", evidence: "Dentist Nov 12 3 PM")))
         await waitForReview(model)
-        XCTAssertTrue(model.calendarActions.proposals.first?.draft.ambiguities.contains(.missingYear) == true)
+        assertNextOccurrence(model.calendarActions.proposals.first)
         XCTAssertNil(model.calendarActions.proposals.first?.receipt); voice.stop()
     }
-    func testOlderChatTurnsNeverSettleAYearForThisVoiceSession() async throws {
-        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
-        // An earlier typed turn in the shared chat named the same date. The current spoken request didn't.
-        let main = try XCTUnwrap(model.mainChatID())
-        _ = try model.memoryStore.updateAgentContext(for: main, transcript: [AgentTurn(role: "user", content: "Dentist Nov 12")])
-        let (voice, _) = wiredVoice(model)
-        await voice.toggle(); voice.handle(.sessionUpdated)
-        XCTAssertEqual(model.agentMessages.first?.content, "Dentist Nov 12")
-        XCTAssertTrue(model.voiceSpokenContext.isEmpty)
-        voice.handle(.functionCall(callID: "old", name: "create_events", argumentsJSON: spokenEvent("2027-11-12")))
-        await waitForReview(model)
-        XCTAssertTrue(model.calendarActions.proposals.first?.draft.ambiguities.contains(.missingYear) == true); voice.stop()
-    }
-    func testVoiceReviewYearConfirmationUsesTheFreshTokenKeepsOtherIssuesAndNeverSaves() async throws {
+    func testAScreenYearIsKeptInVoice() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
-        let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true), workspace = WebWorkspaceController(model: model, loadsResources: false)
         await voice.toggle(); voice.handle(.sessionUpdated)
-        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: spokenEvent("2027-11-12", end: nil, evidence: "Dentist Nov 12 3 PM")))
+        voice.handle(.functionCall(callID: "screen", name: "create_events", argumentsJSON: spokenEvent("2031-11-12", evidence: "Dentist Nov 12 2031 3 PM")))
         await waitForReview(model)
-        XCTAssertEqual(voice.state, .waitingForReview)
-        let stale = WebWorkspaceState.approvalToken(model)
-        // The destination control works during voice instead of failing with "Voice mode is on".
-        try await notch.handle("selectCalendar", ["calendarID": try XCTUnwrap(model.selectedCalendarID)])
-        // A native refresh replaces the token the page was holding.
-        model.calendarActions.update(model.calendarActions.proposals[0].id) { $0.draft.notes = "Fictional refresh" }
-        XCTAssertNotEqual(WebWorkspaceState.approvalToken(model), stale)
-        do { try await notch.handle("confirmProposalYears", ["token": stale, "year": 2028]); XCTFail("Stale token accepted") } catch {}
-        XCTAssertTrue(model.calendarActions.proposals[0].draft.ambiguities.contains(.missingYear))
-        try await notch.handle("confirmProposalYears", ["token": WebWorkspaceState.approvalToken(model), "year": 2028])
-        let row = model.calendarActions.proposals[0]
-        XCTAssertEqual(year(row), 2028); XCTAssertFalse(row.draft.ambiguities.contains(.missingYear))
-        XCTAssertTrue(row.draft.ambiguities.contains(.missingEndTime), "Other unresolved details stay")
-        XCTAssertFalse(row.isSelected, "Still unresolved, so it can't be selected")
-        XCTAssertNil(row.receipt); XCTAssertFalse(row.isFinished); XCTAssertTrue(model.agentIsWaitingForApproval, "Confirming never approves")
-        XCTAssertEqual(voice.state, .waitingForReview); XCTAssertTrue(voice.active)
-        // The full workspace reaches the same native review.
-        try await workspace.handle("skipApproval", ["token": WebWorkspaceState.approvalToken(model)])
-        XCTAssertFalse(model.agentIsWaitingForApproval); voice.stop()
+        XCTAssertEqual(year(model.calendarActions.proposals.first), 2031)
+        XCTAssertFalse(model.calendarActions.proposals.first?.draft.ambiguities.contains(.missingYear) ?? true); voice.stop()
     }
-    func testResolvingAVoiceRowsYearSelectsItButApprovalStillTakesTheCommand() async throws {
-        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, client) = wiredVoice(model)
-        let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
+    func testASpokenStartWithoutAnEndUsesTheUsualLength() async throws {
+        let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
         await voice.toggle(); voice.handle(.sessionUpdated)
-        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: spokenEvent("2027-11-12", evidence: "Dentist Nov 12 3 PM")))
+        model.agentToolExecutor?.typicalDuration = { _ in 45 }
+        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: spokenEvent("2031-11-12", end: nil, evidence: "Dentist Nov 12 2031 3 PM")))
         await waitForReview(model)
-        XCTAssertFalse(model.calendarActions.canApprove)
-        try await notch.handle("confirmProposalYears", ["token": WebWorkspaceState.approvalToken(model), "year": 2028])
-        XCTAssertTrue(model.calendarActions.proposals[0].isSelected)
-        XCTAssertNil(model.calendarActions.proposals[0].receipt); XCTAssertTrue(client.results.isEmpty); XCTAssertTrue(model.agentIsWaitingForApproval)
+        let row = try XCTUnwrap(model.calendarActions.proposals.first)
+        XCTAssertFalse(row.draft.ambiguities.contains(.missingEndTime))
+        XCTAssertEqual(row.draft.endDate.flatMap { end in row.draft.startDate.map { end.timeIntervalSince($0) } }, 45 * 60)
         voice.stop()
     }
-    func testASpokenYearFillsTheOpenReviewAndASecondProposalCannotReplaceIt() async throws {
+    func testAVoiceRowWithoutATimeIsAskedAloudNotReviewed() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, client) = wiredVoice(model)
         await voice.toggle(); voice.handle(.sessionUpdated)
-        voice.handle(.functionCall(callID: "first", name: "create_events", argumentsJSON: spokenEvent("2027-11-12", evidence: "Dentist Nov 12 3 PM")))
-        await waitForReview(model)
-        let id = try XCTUnwrap(model.calendarActions.proposals.first?.id)
-        // The model re-proposes after hearing the year. The open review keeps its rows, scope and token path.
-        voice.handle(.functionCall(callID: "second", name: "create_events", argumentsJSON: spokenEvent("2028-11-12", evidence: "Dentist Nov 12 3 PM")))
+        let args = JSONValue.object(["events": .array([.object(["title": .string("Fictional dentist"), "date": .string("2031-11-12"), "startTime": .null, "endTime": .null,
+            "allDay": .bool(false), "timeZone": .string("America/Toronto"), "location": .null, "url": .null, "notes": .null, "evidence": .string("Dentist Nov 12 2031"), "yearInferred": .bool(false), "dateAmbiguous": .bool(false)])])]).jsonString()
+        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: args))
         for _ in 0..<2000 where client.results.isEmpty { await Task.yield() }
-        XCTAssertTrue(client.results.first?.contains("reviewOpen") == true)
-        XCTAssertEqual(model.calendarActions.proposals.map(\.id), [id]); XCTAssertTrue(model.calendarActions.isInApprovalScope(id))
-        voice.handle(.userTranscript(itemID: "a", text: "not sure about 2026 or 2028", final: true))
-        XCTAssertTrue(model.calendarActions.proposals[0].draft.ambiguities.contains(.missingYear), "Competing years settle nothing")
-        voice.handle(.userTranscript(itemID: "b", text: "it's 2028", final: true))
-        XCTAssertEqual(year(model.calendarActions.proposals.first), 2028)
-        XCTAssertNil(model.calendarActions.proposals[0].receipt); XCTAssertTrue(model.agentIsWaitingForApproval, "A spoken year never approves")
+        XCTAssertTrue(client.results.first?.contains("needsDetails") == true)
+        XCTAssertFalse(model.agentIsWaitingForApproval, "No review opens for a missing time in voice")
+        XCTAssertTrue(model.calendarActions.proposals.allSatisfy { $0.receipt == nil })
         voice.stop()
     }
     func testAQuickTapOfTheVoiceKeyLeavesAnOpenReviewInPlace() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
         voice.releaseTail = .zero; voice.tapThreshold = 0.35
         await voice.toggle(); voice.handle(.sessionUpdated)
-        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: spokenEvent("2027-11-12", evidence: "Dentist Nov 12 3 PM")))
+        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: spokenEvent("2031-11-12", evidence: "Dentist Nov 12 2031 3 PM")))
         await waitForReview(model)
         await voice.talk(true); await voice.talk(false)
         XCTAssertFalse(voice.active); XCTAssertTrue(model.agentIsWaitingForApproval); XCTAssertEqual(model.calendarActions.proposals.count, 1)
-        try await WebWorkspaceController(model: model, loadsResources: false, isNotch: true).handle("confirmProposalYears", ["token": WebWorkspaceState.approvalToken(model), "year": 2028])
-        XCTAssertEqual(year(model.calendarActions.proposals.first), 2028)
         model.skipAgentApproval()
+    }
+    func testUndoInTheDoneListReversesOneSavedChangeOnceWithTheCurrentToken() async throws {
+        let service = UndoFixtureService()
+        let model = fixture(service: service, agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
+        var draft = row().draft; draft.title = "Fictional saved dentist"
+        let identifier = try await service.save(draft, to: .resolve(identifier: "demo"))
+        var saved = CalendarActionProposal(draft: draft); saved.state = .added
+        saved.receipt = CalendarActionReceipt(destinationID: "demo", calendarName: "Demo Calendar", eventIdentifier: identifier, savedAt: Date())
+        let main = try XCTUnwrap(model.mainChatID())
+        _ = try model.memoryStore.mergeProposals(for: main, proposals: [saved])
+        let snapshot = try XCTUnwrap(model.recentChangesSnapshot().objectValue)
+        let first = try XCTUnwrap(snapshot["items"]?.arrayValue?.first?.objectValue)
+        XCTAssertEqual(first["title"], .string("Fictional saved dentist")); XCTAssertEqual(first["canUndo"], .bool(true))
+        let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
+        do { try await notch.handle("undoChange", ["changeID": saved.id.uuidString, "token": "stale"]); XCTFail("Stale token accepted") } catch {}
+        let token = model.recentChangesToken
+        try await notch.handle("undoChange", ["changeID": saved.id.uuidString, "token": token])
+        let remaining = try await service.event(identifier: identifier, in: .resolve(identifier: "demo"))
+        XCTAssertNil(remaining, "Undoing an add removes that event")
+        let ledger = model.calendarChangeLedger()
+        XCTAssertTrue(ledger.contains { $0.undoOf == saved.id && $0.operation == .delete && $0.receipt != nil })
+        let after = try XCTUnwrap(model.recentChangesSnapshot().objectValue?["items"]?.arrayValue)
+        XCTAssertTrue(after.contains { $0.objectValue?["id"] == .string(saved.id.uuidString) && $0.objectValue?["undone"] == .bool(true) && $0.objectValue?["canUndo"] == .bool(false) })
+        do { try await notch.handle("undoChange", ["changeID": saved.id.uuidString, "token": model.recentChangesToken]); XCTFail("Undone twice") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Already undone")) }
+        do { try await notch.handle("undoChange", ["changeID": saved.id.uuidString, "token": model.recentChangesToken, "extra": true]); XCTFail("Unknown field accepted") } catch {}
     }
     func testNotchMemoryValidation() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
@@ -836,22 +888,30 @@ final class WebWorkspaceTests: XCTestCase {
         try await bridge.handle("startVoice", ["token": voice.token]); XCTAssertNil(client.configuration); XCTAssertTrue(voice.needsAcknowledgement)
     }
     func testVoiceBridgeValidationAndExclusiveActions() async throws {
-        let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
+        let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, client) = wiredVoice(model); model.workspaceSelection = .settings
         let bridge = WebWorkspaceController(model: model)
         let invalid: [(String, [String: Any])] = [("setVoiceDrawing", ["drawing": "true"]), ("shortcutRecording", ["enabled": "true", "target": "voice"]), ("shortcutRecording", ["enabled": true, "target": "notch"]), ("shortcutRecording", ["enabled": true]), ("stopVoice", ["unknown": "value"])]
         for (action, extra) in invalid {
             var body = extra; body["token"] = voice.token
             do { try await bridge.handle(action, body); XCTFail("Accepted invalid control") } catch {}
         }
-        await voice.toggle()
-        for action in ["newTask", "retryAgent", "capture", "voiceSettings", "shortcutRecording", "resetShortcut"] {
-            do { try await bridge.handle(action, ["token": voice.token]); XCTFail("Accepted busy action") } catch { XCTAssertTrue(error.localizedDescription.contains("Voice mode")) }
+        await voice.toggle(); voice.handle(.sessionUpdated)
+        // Only actions that would replace the voice conversation or its shortcut wait for voice to end.
+        for action in ["retryAgent", "startCalendarTask", "importCapturedScreenshot", "restoreMemory", "deleteMemory", "syncAccount", "shortcutRecording", "resetShortcut"] {
+            do { try await bridge.handle(action, ["token": voice.token]); XCTFail("Accepted \(action) during voice") } catch { XCTAssertTrue(error.localizedDescription.contains("Finish talking"), action) }
         }
+        XCTAssertFalse(WebWorkspaceController.blockedDuringVoice.contains("capture"), "Capture ends voice instead of refusing")
+        // Everything else keeps working, for example notices and settings.
+        try await bridge.handle("dismissNotice", [:]); XCTAssertTrue(voice.active)
+        // Typing while voice is on continues the same conversation and is answered aloud.
+        try await bridge.handle("send", ["text": "Fictional typed question"])
+        for _ in 0..<200 where client.texts.isEmpty { await Task.yield() }
+        XCTAssertEqual(client.texts.last, "Fictional typed question")
+        XCTAssertEqual(model.agentMessages.last { $0.role == "user" }?.content, "Fictional typed question")
         let record = try model.memoryStore.recordCommand("Fictional history")
         model.restoreCalendarReview(record); XCTAssertTrue(voice.active)
         await model.runAgentSession(prompt: "Fictional text", image: nil, sessionID: model.activeAgentRunID!)
         XCTAssertTrue(voice.active); XCTAssertTrue(model.agentError?.contains("Voice mode") == true)
-        await model.capture(); XCTAssertTrue(voice.error?.contains("stop it first") == true)
         await model.startAgentCommand(prompt: "Fictional text"); XCTAssertTrue(model.agentError?.contains("Voice mode") == true)
         voice.stop(); XCTAssertNil(model.voiceRunID)
     }
@@ -1027,6 +1087,34 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertEqual(bridge.calendarView.objectValue?["events"]?.arrayValue?.count, 1)
         XCTAssertEqual(bridge.calendarView.objectValue?["contentToken"], .string(model.calendarContentToken.uuidString))
         XCTAssertTrue(voice.active, "Browsing must not stop voice or write again")
+    }
+    func testCalendarRefreshKeepsEventsOnScreenAndRevisitedRangesShowAtOnce() async throws {
+        let model = fixture(); await model.loadCalendars()
+        let draft = row().draft
+        _ = try await model.calendarService.save(draft, to: .resolve(identifier: "demo"))
+        let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        let iso = ISO8601DateFormatter()
+        let first: [String: Any] = ["start": iso.string(from: draft.startDate!.addingTimeInterval(-86400)), "end": iso.string(from: draft.endDate!.addingTimeInterval(86400)), "calendarIDs": ["demo"]]
+        let other: [String: Any] = ["start": iso.string(from: draft.startDate!.addingTimeInterval(10 * 86400)), "end": iso.string(from: draft.endDate!.addingTimeInterval(12 * 86400)), "calendarIDs": ["demo"]]
+        try await bridge.handle("loadCalendarEvents", first)
+        func shown() -> (loaded: Bool, loading: Bool, count: Int) {
+            let view = bridge.calendarView.objectValue
+            return (view?["loaded"] == .bool(true), view?["loading"] == .bool(true), view?["events"]?.arrayValue?.count ?? -1)
+        }
+        // Refreshing the same range never blanks it.
+        var refresh = Task { try await bridge.handle("loadCalendarEvents", first) }
+        await Task.yield()
+        XCTAssertTrue(shown().loaded); XCTAssertEqual(shown().count, 1)
+        try await refresh.value
+        XCTAssertEqual(shown().loading, false); XCTAssertEqual(shown().count, 1)
+        // Another range, then back: the earlier range appears from the recent copy while it refreshes.
+        try await bridge.handle("loadCalendarEvents", other)
+        XCTAssertEqual(shown().count, 0)
+        refresh = Task { try await bridge.handle("loadCalendarEvents", first) }
+        await Task.yield()
+        XCTAssertTrue(shown().loaded); XCTAssertEqual(shown().count, 1, "Cached copy shown at once")
+        try await refresh.value
+        XCTAssertEqual(shown().loading, false)
     }
     func testReviewedCalendarWritesAlsoInvalidateTheBrowser() async throws {
         let model = fixture(); await model.loadCalendars()
@@ -2351,13 +2439,23 @@ final class AgentTaskReviewIntegrationTests: XCTestCase {
         XCTAssertEqual(model.taskDocument.items[0].title, "Typed request")
     }
 
-    func testVoiceRunAlwaysReviewsEvenWithSavedTaskGrant() async throws {
+    func testVoiceRunSavesUnderASavedTaskGrantWithoutReview() async throws {
         let model = fixture(), task = try addTasks(model, 1)[0], run = UUID()
         model.activeAgentRunID = run; model.voiceRunID = run; model.agentIsRunning = false; model.agentTypedRunID = nil
         try await grant(model, ["edit": true])
-        let call = Task { try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("Voice request")])]), runID: run) }
+        let result = try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("Voice request")])]), runID: run)
+        XCTAssertNil(model.agentTaskReview, "A spoken request covered by the saved grant never opens a review")
+        XCTAssertEqual(status(result), "saved")
+        XCTAssertEqual(model.taskDocument.items[0].title, "Voice request")
+    }
+
+    func testScreenshotRunStillReviewsTaskChangesWithASavedGrant() async throws {
+        let model = fixture(), task = try addTasks(model, 1)[0], run = UUID()
+        model.activeAgentRunID = run; model.voiceRunID = nil; model.agentIsRunning = true; model.agentTypedRunID = nil
+        try await grant(model, ["edit": true])
+        let call = Task { try await model.authorizeAgentTaskChange(request([patch(task, ["title": .string("Screenshot request")])]), runID: run) }
         try await waitFor { model.agentTaskReview != nil }
-        XCTAssertTrue(try XCTUnwrap(model.agentTaskReview).reason.contains("Voice"))
+        XCTAssertTrue(try XCTUnwrap(model.agentTaskReview).reason.contains("screenshot"))
         XCTAssertEqual(model.taskDocument.items[0].title, "Fictional task 0")
         model.cancelAgentTaskReview(); let result = try await call.value
         XCTAssertEqual(status(result), "cancelled")
@@ -2498,4 +2596,23 @@ final class FakeHotKeys: HotKeyRegistering {
     func registerVoice(_ shortcut: GlobalShortcut) -> OSStatus { registrations += 1; voice = voiceStatus == noErr ? shortcut : nil; return voiceStatus }
     func unregister() { unregisteredCapture += 1; capture = nil }
     func unregisterVoice() { unregisteredVoice += 1; voice = nil }
+}
+
+/// Plain fictional events that report no guests and no repeat, like real providers do. Never a real calendar.
+private actor UndoFixtureService: CalendarDestinationService {
+    private var items: [EventDraft] = []
+    func availableDestinations() async throws -> [CalendarDestinationInfo] { [CalendarDestinationInfo(id: "demo", title: "Demo Calendar (local fixture)", provider: .apple, isReadOnly: false)] }
+    func matchingEvents(_ draft: EventDraft, in destination: CalendarDestination) async throws -> [String] { items.filter { CalendarDraftValidation.sameEvent($0, draft) }.map { $0.id.uuidString } }
+    func searchEvents(query: String?, start: Date, end: Date, in destination: CalendarDestination) async throws -> [CalendarEventSnapshot] { items.compactMap(snapshot) }
+    func event(identifier: String, in destination: CalendarDestination) async throws -> CalendarEventSnapshot? { items.first { $0.id.uuidString == identifier }.flatMap(snapshot) }
+    func update(_ draft: EventDraft, identifier: String, in destination: CalendarDestination) async throws -> String { identifier }
+    func delete(identifier: String, in destination: CalendarDestination) async throws { items.removeAll { $0.id.uuidString == identifier } }
+    func save(_ draft: EventDraft, to destination: CalendarDestination) async throws -> String { items.append(draft); return draft.id.uuidString }
+    private func snapshot(_ draft: EventDraft) -> CalendarEventSnapshot? {
+        guard let start = draft.startDate, let end = draft.endDate else { return nil }
+        var event = CalendarEventSnapshot(eventIdentifier: draft.id.uuidString, title: draft.title, start: start, end: end, isAllDay: draft.isAllDay, timeZone: draft.timeZoneIdentifier,
+                                          location: draft.location, calendarName: "Demo Calendar", url: draft.url, notes: draft.notes)
+        event.isRecurring = false; event.hasAttendees = false
+        return event
+    }
 }

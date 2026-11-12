@@ -9,6 +9,9 @@
 /* Begin PBXBuildFile section */
 		1AE5BBE24CCF1A64C89E52CA /* PersonalMemoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8486D31BE6FF0E5E873F7154; };
 		6423AF195207CB7F70A67B1F /* MemoryContextBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F2934381A93AC3C531CB4BF; };
+		C0FFEE0A1B2C3D4E5F60718A /* CalendarProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0A1B2C3D4E5F60718B; };
+		C0FFEE0A1B2C3D4E5F60718C /* ContextReflection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0A1B2C3D4E5F60718D; };
+		C0FFEE0A1B2C3D4E5F607190 /* KnowledgeSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0A1B2C3D4E5F607191; };
 		E3DCECAC7AD4CDD0C06F91F9 /* RealtimeVoiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8494EAD4600247B362F45E9; };
 		90DF6323D49B1AE000342C7F /* VoiceAudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C49AFEE5793CF85304544B3F; };
 		D1728034BEF312B46E0B9A4D /* FocusOverlayController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40146CC37DACA6CB1B55E038; };
@@ -46,6 +49,7 @@
 		A30000000000000000000015 /* ChatGPTConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* ChatGPTConnection.swift */; };
 		A30000000000000000000016 /* OpenAIStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* OpenAIStreamTests.swift */; };
 		A30000000000000000000019 /* CalendarActionProposal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019; };
+		C0FFEE0A1B2C3D4E5F60718E /* RecentChanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0A1B2C3D4E5F60718F; };
 		A3000000000000000000001A /* CalendarActionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001A; };
 		A3000000000000000000001B /* CalendarBatchReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001B; };
 		A3000000000000000000001C /* CalendarActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001C; };
@@ -91,6 +95,9 @@
 /* Begin PBXFileReference section */
 		8486D31BE6FF0E5E873F7154 /* PersonalMemoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "PersonalMemoryStore.swift"; path = "Sources/Memory/PersonalMemoryStore.swift"; sourceTree = SOURCE_ROOT; };
 		5F2934381A93AC3C531CB4BF /* MemoryContextBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "MemoryContextBuilder.swift"; path = "Sources/Memory/MemoryContextBuilder.swift"; sourceTree = SOURCE_ROOT; };
+		C0FFEE0A1B2C3D4E5F60718B /* CalendarProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarProfile.swift"; path = "Sources/Memory/CalendarProfile.swift"; sourceTree = SOURCE_ROOT; };
+		C0FFEE0A1B2C3D4E5F60718D /* ContextReflection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ContextReflection.swift"; path = "Sources/Memory/ContextReflection.swift"; sourceTree = SOURCE_ROOT; };
+		C0FFEE0A1B2C3D4E5F607191 /* KnowledgeSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "KnowledgeSync.swift"; path = "Sources/Memory/KnowledgeSync.swift"; sourceTree = SOURCE_ROOT; };
 		A8494EAD4600247B362F45E9 /* RealtimeVoiceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "RealtimeVoiceClient.swift"; path = "Sources/Voice/RealtimeVoiceClient.swift"; sourceTree = SOURCE_ROOT; };
 		C49AFEE5793CF85304544B3F /* VoiceAudioEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceAudioEngine.swift"; path = "Sources/Voice/VoiceAudioEngine.swift"; sourceTree = SOURCE_ROOT; };
 		40146CC37DACA6CB1B55E038 /* FocusOverlayController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "FocusOverlayController.swift"; path = "Sources/Voice/FocusOverlayController.swift"; sourceTree = SOURCE_ROOT; };
@@ -130,6 +137,7 @@
 		A20000000000000000000017 /* ChatGPTConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ChatGPTConnection.swift"; path = "Sources/Agent/ChatGPTConnection.swift"; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000018 /* OpenAIStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "OpenAIStreamTests.swift"; path = "Tests/OpenAIStreamTests.swift"; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000019 /* CalendarActionProposal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarActionProposal.swift"; path = "Sources/Calendar/CalendarActionProposal.swift"; sourceTree = SOURCE_ROOT; };
+		C0FFEE0A1B2C3D4E5F60718F /* RecentChanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "RecentChanges.swift"; path = "Sources/Calendar/RecentChanges.swift"; sourceTree = SOURCE_ROOT; };
 		A2000000000000000000001A /* CalendarActionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarActionCoordinator.swift"; path = "Sources/Calendar/CalendarActionCoordinator.swift"; sourceTree = SOURCE_ROOT; };
 		A2000000000000000000001B /* CalendarBatchReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarBatchReviewView.swift"; path = "Sources/Workspace/CalendarBatchReviewView.swift"; sourceTree = SOURCE_ROOT; };
 		A2000000000000000000001C /* CalendarActionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarActionTests.swift"; path = "Tests/CalendarActionTests.swift"; sourceTree = SOURCE_ROOT; };
@@ -198,6 +206,9 @@
 			children = (
 				8486D31BE6FF0E5E873F7154 /* PersonalMemoryStore.swift */,
 				5F2934381A93AC3C531CB4BF /* MemoryContextBuilder.swift */,
+				C0FFEE0A1B2C3D4E5F60718B /* CalendarProfile.swift */,
+				C0FFEE0A1B2C3D4E5F60718D /* ContextReflection.swift */,
+				C0FFEE0A1B2C3D4E5F607191 /* KnowledgeSync.swift */,
 			);
 			name = "Memory";
 			path = "Memory";
@@ -278,6 +289,7 @@
 				A20000000000000000000029 /* CalendarAccountConnection.swift */,
 				A2000000000000000000001A /* CalendarActionCoordinator.swift */,
 				A20000000000000000000019 /* CalendarActionProposal.swift */,
+				C0FFEE0A1B2C3D4E5F60718F /* RecentChanges.swift */,
 				A20000000000000000000006 /* CalendarDestination.swift */,
 				A2000000000000000000002B /* ConnectedCalendarService.swift */,
 				A20000000000000000000002 /* EventDraft.swift */,
@@ -525,6 +537,9 @@
 			files = (
 				1AE5BBE24CCF1A64C89E52CA /* PersonalMemoryStore.swift in Sources */,
 				6423AF195207CB7F70A67B1F /* MemoryContextBuilder.swift in Sources */,
+				C0FFEE0A1B2C3D4E5F60718A /* CalendarProfile.swift in Sources */,
+				C0FFEE0A1B2C3D4E5F60718C /* ContextReflection.swift in Sources */,
+				C0FFEE0A1B2C3D4E5F607190 /* KnowledgeSync.swift in Sources */,
 				E3DCECAC7AD4CDD0C06F91F9 /* RealtimeVoiceClient.swift in Sources */,
 				90DF6323D49B1AE000342C7F /* VoiceAudioEngine.swift in Sources */,
 				D1728034BEF312B46E0B9A4D /* FocusOverlayController.swift in Sources */,
@@ -550,6 +565,7 @@
 				A3000000000000000000001B /* CalendarBatchReviewView.swift in Sources */,
 				A3000000000000000000001A /* CalendarActionCoordinator.swift in Sources */,
 				A30000000000000000000019 /* CalendarActionProposal.swift in Sources */,
+				C0FFEE0A1B2C3D4E5F60718E /* RecentChanges.swift in Sources */,
 				A30000000000000000000001 /* CalshotApp.swift in Sources */,
 				B30000000000000000000005 /* AppAppearance.swift in Sources */,
 				B30000000000000000000003 /* WebWorkspaceAssets.swift in Sources */,

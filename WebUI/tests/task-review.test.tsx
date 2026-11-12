@@ -55,7 +55,7 @@ describe("Task-only review in the conversation", () => {
   });
 
   it("keeps the review usable and shows a stale-click error next to it", async () => {
-    mock.command.mockRejectedValueOnce(new Error("This task review is no longer current."));
+    mock.command.mockImplementation(async (c) => { if (c.action === "approveTaskChange") throw new Error("This task review is no longer current."); });
     mock.state.taskReview = review(1);
     render(<App />);
     await userEvent.click(screen.getByRole("button", { name: "Save changes" }));

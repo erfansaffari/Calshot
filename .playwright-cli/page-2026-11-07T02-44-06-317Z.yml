@@ -1,0 +1,121 @@
+- generic [ref=e3]:
+  - complementary "Sidebar" [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: Calshot
+      - button "Collapse sidebar" [expanded] [ref=e10] [cursor=pointer]
+    - generic [ref=e14]:
+      - navigation "Main navigation" [ref=e15]:
+        - button "Assistant" [ref=e16] [cursor=pointer]
+        - button "Calendar" [ref=e20] [cursor=pointer]
+        - button "Tasks" [ref=e24] [cursor=pointer]
+        - button "History" [ref=e29] [cursor=pointer]
+        - button "Settings" [active] [ref=e35] [cursor=pointer]
+      - region "Up next" [ref=e40]:
+        - generic [ref=e41]:
+          - heading "Up next" [level=2] [ref=e42]
+          - generic [ref=e43]: Next 7 days
+          - button "Refresh upcoming events" [ref=e44] [cursor=pointer]
+        - generic "Upcoming events and tasks" [ref=e50]:
+          - generic [ref=e51]:
+            - heading "Events" [level=3] [ref=e52]
+            - button "Open calendar" [ref=e53] [cursor=pointer]
+          - button "Dinner reservation Sun, Nov 8 · 6:00 PM Waterloo · Google" [ref=e57] [cursor=pointer]:
+            - generic [ref=e60]:
+              - strong [ref=e61]: Dinner reservation
+              - generic [ref=e62]: Sun, Nov 8 · 6:00 PM
+              - generic [ref=e63]: Waterloo · Google
+          - button "Course registration opens Mon, Nov 9 · All day Apple Calendar · iCloud" [ref=e64] [cursor=pointer]:
+            - generic [ref=e67]:
+              - strong [ref=e68]: Course registration opens
+              - generic [ref=e69]: Mon, Nov 9 · All day
+              - generic [ref=e70]: Apple Calendar · iCloud
+          - button "Weekend trip Tue, Nov 10 · 10:00 AM Personal · Google" [ref=e71] [cursor=pointer]:
+            - generic [ref=e74]:
+              - strong [ref=e75]: Weekend trip
+              - generic [ref=e76]: Tue, Nov 10 · 10:00 AM
+              - generic [ref=e77]: Personal · Google
+          - generic [ref=e78]:
+            - heading "Tasks" [level=3] [ref=e79]
+            - button "Open tasks" [ref=e80] [cursor=pointer]
+          - paragraph [ref=e84]: Loading your tasks…
+      - generic [ref=e85]:
+        - button "3 calendars ready. Manage calendar accounts" [ref=e86] [cursor=pointer]:
+          - generic [ref=e88]: 3 calendars ready
+        - button "Capture screen" [ref=e89] [cursor=pointer]:
+          - text: Capture
+          - generic [ref=e95]: ⌃⇧C
+  - main [ref=e96]:
+    - generic [ref=e173]:
+      - heading "Settings" [level=1] [ref=e175]
+      - navigation "Settings sections" [ref=e176]:
+        - button "General" [ref=e177] [cursor=pointer]
+        - button "Calendar accounts" [ref=e178] [cursor=pointer]
+        - button "Friends & sharing" [ref=e179] [cursor=pointer]
+        - button "AI service" [ref=e180] [cursor=pointer]
+        - button "Voice" [ref=e181] [cursor=pointer]
+        - button "Privacy & permissions" [ref=e182] [cursor=pointer]
+      - generic [ref=e183]:
+        - region [ref=e184]:
+          - heading "Liquid Glass" [level=2] [ref=e185]
+          - generic [ref=e186]:
+            - generic [ref=e187]:
+              - generic [ref=e188]:
+                - heading "Liquid Glass appearance" [level=3] [ref=e189]
+                - paragraph [ref=e190]: A translucent window, luminous controls and softer layers.
+              - switch "Liquid Glass appearance" [checked] [ref=e191] [cursor=pointer]
+            - generic [ref=e193]:
+              - generic [ref=e194]:
+                - generic [ref=e195]:
+                  - text: Window opacity
+                  - status "Window opacity 35" [ref=e196]: 35%
+                - slider "Window opacity" [ref=e197] [cursor=pointer]: "35"
+              - generic [ref=e198]:
+                - generic [ref=e199]:
+                  - text: Surface blur
+                  - status "Surface blur 24" [ref=e200]: "24"
+                - slider "Surface blur" [ref=e201] [cursor=pointer]: "24"
+              - generic [ref=e202]:
+                - generic [ref=e203]:
+                  - text: Surface contrast
+                  - status "Surface contrast 50" [ref=e204]: 50%
+                - slider "Surface contrast" [ref=e205] [cursor=pointer]: "50"
+            - generic "Glass appearance preview" [ref=e206]:
+              - generic [ref=e208]:
+                - generic [ref=e213]:
+                  - strong [ref=e214]: Your day, in focus
+                  - paragraph [ref=e215]: Preview of the glass surface
+                - generic [ref=e216]: Calshot
+            - paragraph [ref=e217]: Lower opacity reveals more of what’s behind the window. Higher contrast gives surfaces a stronger edge. Saved on this Mac.
+            - generic [ref=e218]:
+              - button "Reset to defaults" [ref=e219] [cursor=pointer]
+              - status
+              - button "Apply appearance" [disabled] [ref=e223]
+        - heading "Appearance & capture" [level=2] [ref=e224]
+        - generic [ref=e225]:
+          - generic [ref=e226]:
+            - generic [ref=e227]:
+              - heading "Appearance" [level=3] [ref=e228]
+              - paragraph [ref=e229]: System follows your Mac.
+            - combobox "Appearance" [ref=e231]:
+              - option "System" [selected]
+              - option "Light"
+              - option "Dark"
+          - generic [ref=e232]:
+            - generic [ref=e233]:
+              - heading "Capture shortcut" [level=3] [ref=e234]
+              - paragraph [ref=e235]: Select part of your screen from anywhere.
+            - button "⌃⇧C" [disabled] [ref=e237]
+          - generic [ref=e238]:
+            - generic [ref=e239]:
+              - heading "Voice shortcut" [level=3] [ref=e240]
+              - paragraph [ref=e241]: Hold to talk from anywhere. Tap to end voice.
+            - button [disabled] [ref=e243]
+          - generic [ref=e244]:
+            - generic [ref=e245]:
+              - heading "Show Calshot in the notch" [level=3] [ref=e246]
+              - paragraph [ref=e247]: Point at the top of the screen to capture or ask. When off, tasks open here.
+            - checkbox "Show Calshot in the notch" [checked] [ref=e248]
+          - generic [ref=e249]:
+            - heading "Copy captures to clipboard" [level=3] [ref=e251]
+            - checkbox "Copy captures to clipboard" [checked] [ref=e252]
+  - generic: Design preview · fictional data · no calendar access

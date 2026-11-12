@@ -11,6 +11,31 @@ enum WebWorkspaceState {
         guard let data = try? encoder.encode(value), let result = try? JSONDecoder().decode(JSONValue.self, from: data) else { return .null }
         return result
     }
+    /// Local, read-only inspection. Never gathers a new screen or sends data to an AI service.
+    static func contextInspection(_ model: CalshotModel) throws -> JSONValue {
+        let conversation = try model.ongoingConversationContext(limit: 40, budget: 24_000)
+        let rows = conversation.objectValue?["turns"]?.arrayValue ?? []
+        let transcript = rows.compactMap { row -> String? in
+            guard let fields = row.objectValue, let text = fields["text"]?.stringValue else { return nil }
+            return (fields["role"]?.stringValue == "user" ? "You: " : "Assistant: ") + text
+        }.joined(separator: "\n\n")
+        let personal = model.personalMemory
+        let memories = personal.items.filter { $0.status == .active && !$0.isExpired(at: Date()) }
+        let screen = model.agentToolExecutor?.memorySuggestionsBlocked == true ? "Withheld: this run contains shared-friend context." : String((model.voiceSession.active ? model.voiceScreenText : model.recognizedText).prefix(16_000))
+        let receipts = model.calendarChangeLedger().prefix(10).map { "\($0.operation.rawValue): \($0.draft.title) · \($0.receipt?.calendarName ?? "Calendar")" }.joined(separator: "\n")
+        func section(_ title: String, _ detail: String, _ text: String, _ empty: String) -> JSONValue {
+            .object(["title": .string(title), "detail": .string(detail), "text": .string(text.isEmpty ? empty : text)])
+        }
+        return .object(["capturedAt": .string(ISO8601DateFormatter().string(from: Date())), "sections": .array([
+            section("Saved memories", "Approved, unexpired memories. Pending suggestions are not used. Manage these in Memory below.", personal.error.map { "Unavailable: " + $0 } ?? memories.map { "[\($0.kind.rawValue)] \($0.text)" }.joined(separator: "\n\n"), "No approved memories saved."),
+            section("Retained conversation", "Recent bounded excerpts; up to 600 stored turns are retained. Older retained details can be retrieved by the assistant. Shared-friend turns and raw tool calls are excluded. Excerpts may be clipped.", transcript, "No retained conversation excerpts."),
+            section("Connected calendars", "Readable sources available to calendar tools. This list does not mean every event has been read.", model.readableCalendars.map { "\($0.title) · \($0.provider.rawValue)" }.joined(separator: "\n"), "No readable calendars connected."),
+            section("Voice calendar snapshot", "The last snapshot sent during this voice session, with freshness status. This viewer does not fetch calendar events.", model.voiceSession.scheduleContextForInspection, "No voice snapshot."),
+            section("Screen text", "Latest captured text, limited to 16,000 characters. Captured evidence, not a live screen. Images may also accompany a request; they are not shown here.", screen, "No screen text available."),
+            section("Saved calendar changes", "Up to 10 recent changes backed by native receipts. These are historical outcomes, not current event state.", receipts, "No saved calendar changes."),
+            section("Tasks", "Up to 100 current task titles available through native task tools; full details are read on request.", model.taskError.map { "Unavailable: " + $0 } ?? model.taskDocument.items.filter { !$0.deleted }.prefix(100).map { $0.title }.joined(separator: "\n"), "No current tasks.")
+        ])])
+    }
     static func approvalToken(_ model: CalshotModel) -> String {
         let rows = model.calendarActions.proposals.filter { model.calendarActions.isInApprovalScope($0.id) && !$0.isFinished }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys; encoder.dateEncodingStrategy = .iso8601
@@ -26,8 +51,10 @@ enum WebWorkspaceState {
         state["tasks"] = .object(["items": encoded(model.taskDocument.items), "token": .string(model.tasksToken), "loaded": .bool(model.taskDataReady), "busy": .bool(model.taskSyncBusy), "error": model.taskError.map(JSONValue.string) ?? .null, "reminderError": model.taskReminderError.map(JSONValue.string) ?? .null, "conflict": .bool(model.taskConflict), "deviceID": .string(CalshotModel.syncDeviceID)])
         let personal = model.personalMemory
         state["personalMemory"] = .object(["loaded": .bool(personal.error == nil), "error": personal.error.map(JSONValue.string) ?? .null,
-            "items": encoded(personal.items.filter { $0.status == .active }), "pending": encoded(personal.items.filter { $0.status == .pendingApproval }), "token": .string(personal.token)])
+            "items": encoded(personal.items.filter { $0.status == .active }), "pending": encoded(personal.items.filter { $0.status == .pendingApproval }), "token": .string(personal.token),
+            "sync": model.knowledgeSyncSnapshot])
         state["voice"] = model.voiceSession.snapshot
+        state["recentChanges"] = model.recentChangesSnapshot()
         state["calendarContentToken"] = .string(model.calendarContentToken.uuidString)
         state["voiceShortcut"] = .string(model.voiceShortcut.label)
         func shortcutState(_ target: ShortcutTarget, _ value: GlobalShortcut, fallback: GlobalShortcut) -> JSONValue {
@@ -134,7 +161,7 @@ enum WebWorkspaceState {
         if model.account.requiresLogin {
             for key in ["messages", "proposals", "calendars", "accounts", "memory"] { state[key] = .array([]) }
             state.removeValue(forKey: "voice"); state.removeValue(forKey: "personalMemory"); state.removeValue(forKey: "tasks"); state.removeValue(forKey: "taskImport")
-            for key in ["taskReview", "taskOutcome", "agentPermissions"] { state.removeValue(forKey: key) }
+            for key in ["taskReview", "taskOutcome", "agentPermissions", "recentChanges"] { state.removeValue(forKey: key) }
             for key in ["imageURL", "summary", "question", "agentError", "status", "notice", "agentStatus"] { state.removeValue(forKey: key) }
             state["ocr"] = .string(""); state["streaming"] = .string(""); state["canApprove"] = .bool(false)
             state["waitingApproval"] = .bool(false); state["running"] = .bool(false)

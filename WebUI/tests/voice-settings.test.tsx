@@ -54,3 +54,13 @@ it("doesn't advertise a capture shortcut macOS isn't running", () => {
   render(<Sidebar state={{ ...preview, shortcuts: shortcuts({ capture: { label: "⌃⇧C", isDefault: true, error: "⌃⇧C isn’t working." } }) }} onAction={async () => {}} />);
   expect(screen.getByText("Shortcut off")).toBeTruthy();
 });
+
+it("offers Sound settings for device failures even when microphone permission is allowed", async () => {
+  render(<SettingsPage state={{ ...preview, settingsSection: "voice", voice: { ...voice, state: "failed", audioIssue: "devices", error: "macOS hasn’t provided a usable microphone. Check Sound → Input." } }} />);
+  expect(screen.getByRole("alert").textContent).toContain("usable microphone");
+  await userEvent.click(screen.getByRole("button", { name: "Open Sound settings" }));
+  expect(command).toHaveBeenCalledWith({ action: "voiceInputSettings", token: "fixture" });
+  expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: "startVoice" }));
+  await userEvent.click(screen.getByRole("button", { name: "Retry voice" }));
+  expect(command).toHaveBeenCalledWith({ action: "startVoice", token: "fixture" });
+});

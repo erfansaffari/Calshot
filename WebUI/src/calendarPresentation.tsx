@@ -45,6 +45,8 @@ export function CalendarPresentationProvider({
     </CalendarContext.Provider>
   );
 }
+/** Optional for standalone sidebar surfaces; the workspace always supplies the provider. */
+export const useCalendarNavigation = () => useContext(CalendarContext);
 export function useCalendar() {
   const value = useContext(CalendarContext);
   if (!value) throw new Error("Calendar presentation is unavailable.");

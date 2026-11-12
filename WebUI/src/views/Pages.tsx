@@ -14,7 +14,7 @@ import {
   ExternalLink,
   Trash2,
 } from "lucide-react";
-import type { AppState, PersonalMemoryItem } from "../types";
+import type { AppState, PersonalMemoryItem, PersonalMemoryState } from "../types";
 import { command } from "../bridge";
 import { SoftwareUpdates } from "./SoftwareUpdates";
 import { FriendsSettings } from "./FriendsSettings";
@@ -1039,6 +1039,7 @@ export function SettingsPage({ state }: { state: AppState }) {
             </div>
           </section>
         )}
+        {tab === "privacy" && <AIContextInspector state={state} />}
         {tab === "privacy" && <PersonalMemorySettings state={state} />}
         {tab === "privacy" && <AgentAutonomy state={state} />}
         {tab === "privacy" && (
@@ -1142,7 +1143,29 @@ export function SettingsPage({ state }: { state: AppState }) {
   );
 }
 
-const memoryKinds = ["preference", "fact", "person", "routine"] as const;
+const memoryKinds = ["style", "preference", "routine", "goal", "person", "fact"] as const;
+const memoryKindTitles: Record<(typeof memoryKinds)[number], string> = {
+  style: "How Calshot talks to you",
+  preference: "Preferences",
+  routine: "Routines",
+  goal: "Goals",
+  person: "People",
+  fact: "Facts",
+};
+export function memorySourceLabel(item: PersonalMemoryItem) {
+  switch (item.source) {
+    case "conversation":
+      return (item.confidence ?? 1) >= 0.75 ? "Learned from your conversations" : "Guessed from your conversations";
+    case "behavior":
+      return "Learned from how you use Calshot";
+    case "calendar":
+      return "Learned from your calendar";
+    case "user":
+      return (item.evidenceCount ?? 1) > 1 ? `You said this (${item.evidenceCount} times)` : "You said this";
+    default:
+      return item.origin === "suggested" ? "Suggested" : "You added this";
+  }
+}
 function MemoryRow({
   item,
   token,
@@ -1219,6 +1242,7 @@ function MemoryRow({
       ) : (
         <>
           <p>{item.text}</p>
+          {!pending && <p className="fine-print personal-memory-source">{memorySourceLabel(item)}</p>}
           {item.expiresAt && new Date(item.expiresAt) <= new Date() && (
             <Badge>Expired</Badge>
           )}
@@ -1279,6 +1303,42 @@ function MemoryRow({
     </div>
   );
 }
+function KnowledgeSyncControls({ sync }: { sync: NonNullable<PersonalMemoryState["sync"]> }) {
+  const a = useAction();
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  return (
+    <div className="knowledge-sync">
+      <label className="inline-check">
+        <input
+          type="checkbox"
+          checked={sync.enabled}
+          disabled={a.busy || sync.busy}
+          onChange={(e) => void a.run("knowledgeSync", { enabled: e.target.checked })}
+        />
+        Sync what Calshot knows with your account, so your other Macs know it too
+      </label>
+      <p className="fine-print" role="status">
+        {sync.busy ? "Syncing…" : sync.status || (sync.enabled ? "Syncs in the background. The copy on this Mac is always used first." : "Not syncing. Everything stays on this Mac.")}
+      </p>
+      <InlineError message={a.error || sync.error || ""} />
+      {sync.serverReady && (
+        <div className="knowledge-sync-remove">
+          <label className="inline-check">
+            <input type="checkbox" checked={confirmRemove} onChange={(e) => setConfirmRemove(e.target.checked)} />
+            Confirm removing the copy stored with your account
+          </label>
+          <button
+            className="button secondary"
+            disabled={!confirmRemove || a.busy || sync.busy}
+            onClick={async () => { if (await a.run("removeSyncedKnowledge", { confirmed: true })) setConfirmRemove(false); }}
+          >
+            Remove synced copy
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 export function PersonalMemorySettings({ state }: { state: AppState }) {
   const memory = state.personalMemory;
   const a = useAction();
@@ -1291,12 +1351,15 @@ export function PersonalMemorySettings({ state }: { state: AppState }) {
       <h2 className="section-label">Memory</h2>
       <div className="card settings-card">
         <p className="fine-print">
-          Personal memories stay on this Mac, separately for each account.
-          Relevant memories are sent to your chosen AI service as context. They
-          never authorize changes. Forgetting prevents the same text from being
-          suggested again; source history is kept separately.
+          What Calshot knows about you: what you tell it, what it learns from
+          your conversations and how you react, and patterns in your calendar.
+          It stays on this Mac, separately for each account. Relevant items are
+          sent to your chosen AI service as context and never authorize changes.
+          Edit anything that is wrong; forgetting means it won’t be learned
+          again.
         </p>
         <InlineError message={memory?.error || ""} />
+        {memory?.sync?.available && <KnowledgeSyncControls sync={memory.sync} />}
         {!memory?.loaded && !memory?.error && <p>Loading memories…</p>}
         {memory?.loaded && !memory.items.length && !memory.pending.length && (
           <p>No personal memories yet.</p>
@@ -1305,7 +1368,7 @@ export function PersonalMemorySettings({ state }: { state: AppState }) {
           (k) =>
             memory?.items.some((i) => i.kind === k) && (
               <div key={k}>
-                <h3>{k[0].toUpperCase() + k.slice(1)}</h3>
+                <h3>{memoryKindTitles[k]}</h3>
                 {memory.items
                   .filter((i) => i.kind === k)
                   .map((i) => (
@@ -1409,7 +1472,7 @@ function VoiceSettings({ state }: { state: AppState }) {
   if (!v) return <p>Voice settings are available in the Mac app.</p>;
   return <section className="card settings-card voice-settings"><h2>Voice</h2>
     <p>Microphone audio and screen frames are sent to OpenAI. Voice uses paid OpenAI Realtime API billing and requires an OpenAI API key. ChatGPT plan billing does not cover voice. The estimate includes transcription.</p>
-    <InlineError message={a.error || v.error} />
+    <InlineError message={a.error || v.error}>{v.audioIssue === "devices" && <button className="text-button" onClick={() => void a.run("voiceInputSettings", { token: v.token })}>Open Sound settings</button>}{v.audioIssue === "devices" && !v.active && <button className="text-button" disabled={a.busy} onClick={() => void a.run("startVoice", { token: v.token })}>Retry voice</button>}</InlineError>
     <ShortcutControl state={state} target="voice" title="Voice shortcut" description="Hold to talk from anywhere. Tap to end voice." />
     <label>Model <input value={model} disabled={v.active} onChange={e => setModel(e.target.value)} /></label>
     <label>Voice <select value={voice} disabled={v.active} onChange={e => setVoice(e.target.value)}>{["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"].map(name => <option key={name}>{name}</option>)}</select></label>
@@ -1417,5 +1480,25 @@ function VoiceSettings({ state }: { state: AppState }) {
     <button className="button primary" disabled={v.active || a.busy} onClick={() => void a.run("voiceSettings", { token: v.token, model, voice, cap: Number(cap) })}>Save voice settings</button>
     <p>Microphone: {v.permissions.microphone ? "Allowed" : "Check access"} <button className="text-button" onClick={() => void a.run("voiceMicrophoneSettings", { token: v.token })}>Open microphone settings</button></p>
     <p>Screen Recording: {v.permissions.screen ? "Allowed" : "Voice only until allowed"} <button className="text-button" onClick={() => void a.run("screenSettings")}>Set up Screen Recording</button></p>
+  </section>;
+}
+
+
+export function AIContextInspector({ state }: { state: AppState }) {
+  const a = useAction();
+  const snapshot = state.aiContextInspection;
+  return <section aria-label="AI context">
+    <h2 className="section-label">AI context</h2>
+    <div className="card settings-card">
+      <div className="settings-row"><div><h3>What Calshot knows</h3><p>Inspect saved information and context available to the assistant.</p></div>
+        <button className="button secondary" disabled={a.busy || !state.native} onClick={() => void a.run("inspectAIContext")}>{a.busy ? "Loading…" : snapshot ? "Refresh context" : "View context"}</button></div>
+      <p className="fine-print">A local snapshot, not the complete prompt sent to a model. Different requests use different excerpts. Opening this viewer does not capture your screen, fetch events, or contact an AI service.</p>
+      {!state.native && <p className="fine-print">Open Calshot on your Mac to inspect local context.</p>}
+      <InlineError message={a.error} />
+      {snapshot && <div className="ai-context-inspector">
+        <div className="settings-row"><p className="fine-print">Snapshot: {new Date(snapshot.capturedAt).toLocaleString()}. Refresh to see changes.</p><button className="button secondary" disabled={a.busy} onClick={() => void a.run("closeAIContext")}>Hide context</button></div>
+        {snapshot.sections.map(section => <details key={section.title} className="ai-context-section"><summary>{section.title}</summary><p className="fine-print">{section.detail}</p><pre tabIndex={0} aria-label={section.title + " contents"}>{section.text}</pre></details>)}
+      </div>}
+    </div>
   </section>;
 }

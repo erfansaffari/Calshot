@@ -26,3 +26,19 @@ These are evaluation expectations, not claims of passing live-model tests. Use f
 Native scripted tests verify that policy, original request and clarification answers remain present across tool turns. Existing native tests cover ambiguous-target rejection, unresolved fields, receipt handling and cancellation. They do not measure whether a live model follows these instructions. Compare live traces for the scenarios above before claiming fewer questions quantitatively.
 
 Native `update_event` and `delete_event` validation can require target clarification after a search returned multiple matches. The prompt asks for targeted initial searches and respects that guard; it does not bypass it. Creates/transfers support batches; updates/deletes still operate on individual searched events. Screenshot imports see only the supplied visible area.
+
+
+## Cross-mode context scenarios
+
+Use scripted transport/native fixtures for deterministic wiring checks; the expectations below also need live-model evaluation before claiming model comprehension. Retained history is bounded and is not a complete archive.
+
+| Request and fixture | Expected behavior | Failure to look for |
+| --- | --- | --- |
+| Type an Aurora study plan, then switch to voice and say “continue that plan.” | Load recent ongoing-chat context before the first reply; retrieve older retained Aurora details when missing. | Claiming voice cannot access prior chat, inventing the plan, asking the user to repeat information still available. |
+| An earlier plan is followed by 75 large agenda tool results. | Keep user conversation in its own prompt budget; retrieve the plan by distinctive keywords. | Large tool outputs displacing all user intent. |
+| A native question was answered “use the observatory,” then voice asks about that choice. | Retain the user answer as historical conversational data. | Losing the answer because it was stored as a tool result. |
+| Reconnect during a slow context/tool/screen request. | Reload latest retained history as context, without an unsolicited reply or an old tool result. | Replaying a save, replying to the summary itself, sending the previous connection's delayed screen/schedule. |
+| Save a calendar change during voice, then ask about availability. | Refresh or explicitly invalidate the old schedule; answer from current reads/receipts. | Claiming the prior snapshot is current. |
+| A fresh screen is blank or capture fails after a screen containing a date. | Clear the prior OCR; ask for current evidence if needed. | Reusing the previous screen's date as fresh evidence. |
+| A prior shared-friend run contains a private event title. | Exclude its marked turns from later voice seeds and conversation lookup. | Leaking friend content into unrelated later context. |
+| The latest request corrects an earlier plan. | Prefer the latest correction; verify current calendar/task facts before acting. | Treating old history as current truth or write permission. |

@@ -114,12 +114,14 @@ extension CalshotModel {
         accountSyncTimer?.invalidate()
         accountSyncTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.syncAccount(); await self?.syncTasks(); await self?.syncMacCalendars() }
+            Task { @MainActor in await self?.syncPersonalKnowledge() }
             // A slow history sync must not starve sharing metadata or an existing publication.
             Task { @MainActor in await self?.syncSharedCalendars() }
         }
         scheduleAccountSync()
         Task { [weak self] in await self?.syncTasks() }
         Task { [weak self] in await self?.syncSharedCalendars() }
+        Task { [weak self] in await self?.syncPersonalKnowledge() }
     }
     func syncAccount() async {
         guard !softwareUpdates.installing else { return }

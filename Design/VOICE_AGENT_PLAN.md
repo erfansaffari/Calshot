@@ -1,6 +1,6 @@
 # Voice agent, focus drawing and persistent memory
 
-Status: approved direction, 2026-10-29. Extends [AGENT_PLATFORM_PLAN.md](AGENT_PLATFORM_PLAN.md) and [PROACTIVE_PLANNING_IMPLEMENTATION.md](PROACTIVE_PLANNING_IMPLEMENTATION.md); it does not change their permission, receipt or recovery contracts. Read [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) and the project AGENTS.md first.
+Status: approved direction, 2026-10-29. **Superseded in part on 2026-11-11 by [PERSONAL_AGENT_PLAN.md](PERSONAL_AGENT_PLAN.md):** voice now acts under Autonomy, asks for missing details aloud instead of opening reviews, never asks for a year, and memory is learned and saved at once rather than approved. Extends [AGENT_PLATFORM_PLAN.md](AGENT_PLATFORM_PLAN.md) and [PROACTIVE_PLANNING_IMPLEMENTATION.md](PROACTIVE_PLANNING_IMPLEMENTATION.md); it does not change their permission, receipt or recovery contracts. Read [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) and the project AGENTS.md first.
 
 ## Product
 
@@ -77,7 +77,7 @@ Voice requires OpenAI analysis consent and acknowledgement version 2, disclosing
 
 Return only adds a visible, clean, fully selected create review; it ignores repeats, interactive controls and replacement tokens within 500 ms. Task changes, updates, deletes and moves require a click. Spoken guidance always says “Click Approve in the notch” so it remains correct when the panel is not key. Escape is local to Calshot surfaces; no bare global Escape hotkey is registered.
 
-The capture shortcut during voice displays “Voice mode is on — stop it first to capture a screenshot.” It does not capture or silently copy a region. Pending memory suggestions can be approved or dismissed in the notch using the existing memory token/version validation; other memory management remains in Settings.
+The capture shortcut during voice ends voice (completed changes stay saved) and starts the capture (changed 2026-11-12). Pending memory suggestions can be approved or dismissed in the notch using the existing memory token/version validation; other memory management remains in Settings.
 
 Explicit Stop, sign-out, account teardown and quit cancel voice executor continuations. Idle/time-limit endings preserve pending reviews and receipts. Skipping a voice calendar review removes its unfinished rows while retaining completed receipts, allowing another session. New voice sessions reject outstanding questions, capture/recognition and unfinished proposals, and clear stale OCR tasks and screen recognition. Shared-friend turns are excluded from memory and sync by the existing shared-context marker.
 

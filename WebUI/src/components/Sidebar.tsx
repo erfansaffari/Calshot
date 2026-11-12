@@ -10,6 +10,7 @@ import {
   PanelLeftOpen,
 } from "lucide-react";
 import type { AppState, Page } from "../types";
+import { UpNext } from "./UpNext";
 import { CalendarSidebar } from "./CalendarSidebar";
 
 export function Sidebar({
@@ -173,7 +174,7 @@ export function Sidebar({
         {expanded && state.page === "calendars" ? (
           <CalendarSidebar state={state} onAction={onAction} />
         ) : (
-          <div className="sidebar-spacer" />
+          expanded ? <UpNext state={state} onAction={onAction} /> : <div className="sidebar-spacer" />
         )}
         <div className="sidebar-bottom">
           <button

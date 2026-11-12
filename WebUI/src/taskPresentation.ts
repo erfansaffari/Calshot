@@ -118,6 +118,7 @@ export function deadlineTaskID(notes?: string) {
 const openTaskKey = "calshot.openTask";
 export function requestTaskEditor(id: string) {
   try { sessionStorage.setItem(openTaskKey, id.toLowerCase()); } catch {}
+  window.dispatchEvent(new Event("calshot:open-task"));
 }
 export function takeRequestedTaskEditor() {
   try {

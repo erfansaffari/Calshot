@@ -6,6 +6,7 @@ import { command, useAppState } from "./bridge";
 import { Question } from "./components/Question";
 import { Review } from "./components/Review";
 import { TaskChangeReview, TaskOutcomeCard } from "./components/TaskChangeReview";
+import { RecentChanges } from "./components/RecentChanges";
 import { InlineError, Spinner } from "./components/ui";
 
 /** Small by default. Questions, edits and approvals share the native task's state. */
@@ -23,6 +24,8 @@ export default function NotchApp() {
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
   const [dismissedOutcome, setDismissedOutcome] = useState("");
+  // Changes saved in the last 10 minutes stay visible with Undo until dismissed.
+  const [changesDismissedAt, setChangesDismissedAt] = useState(0);
   const voice = state.voice;
   const compact = state.notchExpanded === false;
   const voiceRun = (action: string, extra: Record<string, unknown> = {}) => run(action, { token: voice?.token, ...extra });
@@ -54,7 +57,10 @@ export default function NotchApp() {
   const captured = Boolean(state.imageURL) && !state.messages.length && !state.proposals.length && !state.summary && !state.taskOutcome;
   const source = sourceRequested && (captured || rows.length > 0);
   const destination = state.calendars.find(c => c.id === state.selectedCalendarID);
-  const detail = Boolean(state.personalMemory?.pending.length || voice?.error || voice?.needsAcknowledgement || state.question || taskReview || outcome || review || source || error || state.agentError || state.screenPermissionNeeded || state.notice);
+  const changesSince = Math.max(Date.now() - 600000, changesDismissedAt);
+  const recentDone = (state.recentChanges?.items || []).some(c => c.savedAt && Date.parse(c.savedAt) >= changesSince);
+  const showDone = recentDone && !state.question && !taskReview && !outcome && !review && !source;
+  const detail = Boolean(showDone || state.personalMemory?.pending.length || voice?.error || voice?.needsAcknowledgement || state.question || taskReview || outcome || review || source || error || state.agentError || state.screenPermissionNeeded || state.notice);
   // Only clean, selected creates get a one-click shortcut. Other operations need visible review.
   const quickApprove = !state.taskImport && rows.length > 0 && rows.every(p => p.operation === "create" && p.isSelected && p.isApprovable && p.state !== "failed");
   const run = async (action: string, extra: Record<string, unknown> = {}) => {
@@ -178,14 +184,14 @@ export default function NotchApp() {
       <button className="icon-button notch-popout" aria-label="Open full app" title="Open full app" onClick={() => void run("openWorkspace")}><ExternalLink size={15} /></button>
     </div>
     {detail && <div className="notch-details" aria-hidden={compact} inert={compact ? true : undefined}>
-      <div className="notch-detail-heading"><span>{state.question ? "Your answer stays in this task" : taskReview ? "Review task change" : outcome ? "Task result" : review ? "Review changes" : source ? "Captured screenshot" : "Needs attention"}</span><button className="icon-button" aria-label="Hide details" onClick={() => { if (outcome) setDismissedOutcome(outcome.id); else if (state.question || taskReview) void run("collapseNotch"); else { setReview(false); setSource(false); } }}><X size={14} /></button></div>
+      <div className="notch-detail-heading"><span>{state.question ? "Your answer stays in this task" : taskReview ? "Review task change" : outcome ? "Task result" : review ? "Review changes" : source ? "Captured screenshot" : showDone ? "Done" : "Needs attention"}</span><button className="icon-button" aria-label="Hide details" onClick={() => { if (outcome) setDismissedOutcome(outcome.id); else if (state.question || taskReview) void run("collapseNotch"); else if (showDone && !review && !source) setChangesDismissedAt(Date.now()); else { setReview(false); setSource(false); } }}><X size={14} /></button></div>
       <InlineError message={error || state.notice} />
-      <InlineError message={voice?.error}>{voice?.needsKey ? <button className="text-button" onClick={() => void voiceRun("voiceAISettings")}>Open Settings → AI service</button> : <>{voice?.permissions && !voice.permissions.microphone && <button className="text-button" onClick={() => void voiceRun("voiceMicrophoneSettings")}>Microphone settings</button>}{voice?.permissions && !voice.permissions.screen && <button className="text-button" onClick={() => void run("screenSettings")}>Screen Recording settings</button>}</>}</InlineError>
+      <InlineError message={voice?.error}>{voice?.needsKey ? <button className="text-button" onClick={() => void voiceRun("voiceAISettings")}>Open Settings → AI service</button> : <>{voice?.audioIssue === "devices" && <button className="text-button" onClick={() => void voiceRun("voiceInputSettings")}>Sound settings</button>}{voice?.audioIssue === "devices" && !voice.active && <button className="text-button" onClick={() => void voiceRun("startVoice")}>Retry voice</button>}{voice?.permissions && !voice.permissions.microphone && <button className="text-button" onClick={() => void voiceRun("voiceMicrophoneSettings")}>Microphone settings</button>}{voice?.permissions && !voice.permissions.screen && <button className="text-button" onClick={() => void run("screenSettings")}>Screen Recording settings</button>}</>}</InlineError>
       {voice?.needsAcknowledgement && <div><p>Microphone audio and screen frames are sent to OpenAI. Voice uses paid OpenAI Realtime API billing, including transcription, even when text uses your ChatGPT plan. Your text billing choice stays the same.</p><button className="button primary" onClick={() => void voiceRun("acknowledgeVoiceBilling")}>I understand</button></div>}
       {state.personalMemory?.pending.map(item => <div key={item.id}><p>Remember: {item.text}</p><button className="text-button" onClick={() => void run("approveMemory", { token: state.personalMemory!.token, memoryID: item.id, expectedVersion: item.version })}>Remember this</button><button className="text-button" onClick={() => void run("rejectMemory", { token: state.personalMemory!.token, memoryID: item.id, expectedVersion: item.version, dontSuggestAgain: false })}>Dismiss suggestion</button></div>)}
       <InlineError message={state.agentError}>{state.canRetry && <button className="text-button" onClick={() => void run("retryAgent")}>Try again</button>}</InlineError>
       {state.screenPermissionNeeded && <InlineError message={state.status || "Allow Screen Recording to capture your screen."}><button className="text-button" onClick={() => void run("screenSettings")}>Open Screen Recording settings</button></InlineError>}
-      {state.question ? <Question key={state.question.id} question={state.question} /> : taskReview ? <TaskChangeReview key={taskReview.id} review={taskReview} compact /> : outcome ? <TaskOutcomeCard key={outcome.id} outcome={outcome} /> : review ? <Review state={{ ...state, proposals: rows }} /> : source ? <img className="notch-source" src={state.imageURL} alt="Source screenshot" /> : null}
+      {state.question ? <Question key={state.question.id} question={state.question} /> : taskReview ? <TaskChangeReview key={taskReview.id} review={taskReview} compact /> : outcome ? <TaskOutcomeCard key={outcome.id} outcome={outcome} /> : review ? <Review state={{ ...state, proposals: rows }} /> : source ? <img className="notch-source" src={state.imageURL} alt="Source screenshot" /> : showDone ? <RecentChanges changes={state.recentChanges} since={changesSince} limit={4} heading="Saved just now" hideHeading /> : null}
       {!!rows.length && !state.question && !voice?.active && <form className="notch-followup" onSubmit={e => { e.preventDefault(); void submit(); }}><input aria-label="Follow-up message" placeholder={busy ? "Approve or skip these changes to continue" : "Ask a follow-up…"} value={text} maxLength={8000} disabled={busy || sending} onChange={e => setText(e.target.value)} /><button className="button primary" disabled={busy || sending || !text.trim()} aria-label="Send follow-up"><ArrowUp size={14} /></button></form>}
       {!state.question && !busy && state.imageURL && (captured || rows.length > 0) && <div className="notch-footer"><button className="text-button" onClick={() => { setSource(!source); setReview(false); }}>View screenshot</button></div>}
     </div>}
