@@ -18,7 +18,7 @@ case "$RELEASE_MODE" in
     : "${SIGNING_IDENTITY:?Set a Developer ID Application identity}"
     : "${NOTARY_PROFILE:?Set a notarytool keychain profile}"
     [[ "$SIGNING_IDENTITY" == 'Developer ID Application: '* ]] || { echo 'A Developer ID Application certificate is required.' >&2; exit 1; }
-    security find-identity -v -p codesigning | rg -F "$SIGNING_IDENTITY" >/dev/null || { echo 'Distribution signing identity is unavailable.' >&2; exit 1; }
+    security find-identity -v -p codesigning | grep -F "$SIGNING_IDENTITY" >/dev/null || { echo 'Distribution signing identity is unavailable.' >&2; exit 1; }
     RUNTIME=YES
     ;;
   *) echo 'RELEASE_MODE must be notarized or unnotarized.' >&2; exit 1 ;;
@@ -41,8 +41,8 @@ codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign -dv --verbose=4 "$APP_PATH" 2> "$OUT_DIR/signing.txt"
 lipo "$APP_PATH/Contents/MacOS/Calshot" -verify_arch arm64 x86_64
 if [[ "$RELEASE_MODE" == notarized ]]; then
-  rg 'Authority=Developer ID Application:' "$OUT_DIR/signing.txt" >/dev/null
-  rg 'flags=.*runtime' "$OUT_DIR/signing.txt" >/dev/null
+  grep -E 'Authority=Developer ID Application:' "$OUT_DIR/signing.txt" >/dev/null
+  grep -E 'flags=.*runtime' "$OUT_DIR/signing.txt" >/dev/null
   ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$OUT_DIR/notarization.zip"
   NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
   if [[ -n "${NOTARY_KEYCHAIN:-}" ]]; then NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN"); fi
@@ -51,7 +51,7 @@ if [[ "$RELEASE_MODE" == notarized ]]; then
   xcrun stapler validate "$APP_PATH"
   spctl --assess --type execute --verbose=2 "$APP_PATH"
 else
-  rg '^Signature=adhoc$' "$OUT_DIR/signing.txt" >/dev/null
+  grep -E '^Signature=adhoc$' "$OUT_DIR/signing.txt" >/dev/null
 fi
 ARCHIVE_NAME="Calshot-$VERSION.zip"
 FEED_DIR="$(mktemp -d "$OUT_DIR/feed.XXXXXX")"
