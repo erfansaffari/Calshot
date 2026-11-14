@@ -154,7 +154,6 @@ export default function NotchApp() {
     <div className="notch-bar">
       {voice?.active && (compact || (!state.waitingApproval && !taskReview)) ? <>
         <VoicePill voice={voice} talkProps={talkProps}>
-          {voice.talking && <span className="sr-only" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={1} aria-valuenow={voice.inputLevel} />}
           {voice.permissions.screen && <Eye size={14} className="voice-eye" role="img" aria-label="Calshot can see your screen" />}
           {voice.permissions.screen && !compact && <button className="voice-pill-action" aria-label={voice.drawing ? "Finish drawing" : "Draw focus"} aria-pressed={voice.drawing} onClick={() => void voiceRun("setVoiceDrawing", { drawing: !voice.drawing })}><ScanLine size={15} /></button>}
           <button className="voice-pill-action" aria-label={compact ? "Show task controls" : "Hide task controls"} aria-expanded={!compact} onClick={() => void run(compact ? "expandNotch" : "collapseNotch")}><ChevronDown size={15} /></button>

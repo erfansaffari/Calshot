@@ -39,6 +39,17 @@ The context engine turns signals into a small, ranked, *current* picture of the 
 | Behavior | native counters, no model: interruptions while Calshot speaks, repeated corrections, cancelled actions, time of day of use | "Keep spoken replies to one sentence" (after interruptions) |
 | Calendar | native profile over the last 8 weeks and next 4 weeks of the user's own calendars | routines (weekday + time), typical durations per kind of event, usual day start/end, frequent places, busy days ahead |
 
+Added 2026-11-13:
+
+| Source | How it is captured | Example knowledge |
+| --- | --- | --- |
+| Identity | account display name and email, else the Mac user name; sent with every request | "name: …" |
+| Calendar conclusions | the reflection reads the calendar profile; a separate pass runs when the set of repeated titles changes (at most once a day) | "Is a university student, likely statistics and computer science" |
+| Screen | text recognized on screen during a voice session is evidence for the end-of-session reflection; source `screen`, confidence ≤ 0.7, expires unless seen again, never synced | "Is working on a compiler project" |
+| Conversation notes | each reflection writes a 1–3 sentence dated note of the conversation (200 kept, device-only, forgettable in Settings → Memory) | "Asked about Monday and added a task to text Martin, due 9:00" |
+
+Reflection now also runs after typed requests (not screenshot runs). Chat turns are timestamped, and history includes clipped results of what Calshot did.
+
 ### Memory model
 
 Each item has kind (`preference`, `fact`, `person`, `routine`, `style`, `goal`), text, **source** (`user`, `conversation`, `behavior`, `calendar`), **confidence**, **evidence count**, last seen, optional expiry, and `supersedes` when it replaced an older item. Rules:

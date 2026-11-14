@@ -1,8 +1,9 @@
-import { useRef, type HTMLAttributes } from "react";
+import type { HTMLAttributes } from "react";
 import { Mic } from "lucide-react";
 import { VoiceBeam, type VoiceBeamColorVariant } from "voice-glow";
 import { ThinkingOrb, type OrbState } from "thinking-orbs";
 import type { VoiceState } from "../types";
+import { voiceLevels } from "../bridge";
 
 export type VoicePhase =
   "connecting" | "ready" | "listening" | "thinking" | "speaking" | "review";
@@ -45,13 +46,6 @@ export function VoicePill({
 }) {
   const phase = voicePhase(voice),
     look = LOOK[phase];
-  const level = useRef(0);
-  level.current =
-    phase === "speaking"
-      ? (voice.outputLevel ?? 0.4)
-      : phase === "listening"
-        ? voice.inputLevel
-        : 0;
   const shortcut = voice.shortcut || "⌃⇧V";
   const label = look.label || `Hold ${shortcut} to talk`;
   const pill = (
@@ -81,13 +75,18 @@ export function VoicePill({
       {children}
     </div>
   );
-  // Thinking has no voice to follow: a slow breath keeps the violet glow alive without implying sound.
+  // Levels arrive outside React (about 30 a second) and are read per frame. Thinking has no voice to
+  // follow: a slow breath keeps the violet glow alive without implying sound.
   const drive =
     phase === "thinking"
       ? () => 0.22 + 0.14 * Math.sin(performance.now() / 520)
-      : () => level.current;
+      : phase === "speaking"
+        ? () => voiceLevels.output
+        : phase === "listening"
+          ? () => voiceLevels.input
+          : () => 0;
   return (
-    <VoiceBeam active={Boolean(look.glow)} level={drive} colorVariant={look.glow || "ocean"} theme="dark">
+    <VoiceBeam active={Boolean(look.glow)} level={drive} colorVariant={look.glow || "ocean"} theme="dark" distortion={0}>
       {pill}
     </VoiceBeam>
   );

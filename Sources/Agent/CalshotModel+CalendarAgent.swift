@@ -72,7 +72,9 @@ extension CalshotModel {
         executor.recall = { [weak self] query in
             guard let self else { throw CancellationError() }
             if let error = self.personalMemory.error { throw CalendarToolArgumentError(error) }
-            return MemoryContextBuilder.build(request: query, items: self.personalMemory.items, withIDs: true)
+            // Identity and conversation notes ride along, so "who am I" and "what did we do last week" are answerable.
+            return [self.userIdentityContext, MemoryContextBuilder.build(request: query, items: self.personalMemory.items, withIDs: true),
+                    MemoryContextBuilder.notes(self.personalMemory.notes, characterBudget: 6_000)].filter { !$0.isEmpty }.joined(separator: "\n")
         }
         executor.typicalDuration = { [weak self] title in self?.calendarProfile?.typicalDuration(for: title) }
         executor.listFriends = { [weak self] in
@@ -100,9 +102,9 @@ extension CalshotModel {
             return try await self.authorizeAgentTaskChange(change, runID: runID, preflighted: true)
         }
         executor.cancelTaskMutation = { [weak self] runID in self?.cancelAgentTaskReview(runID: runID) }
-        executor.commitTaskOnlyImport = { [weak self] runID in
+        executor.commitTaskOnlyImport = { [weak self] runID, withDeadlines in
             guard let self else { throw CancellationError() }
-            return try await self.commitAgentTaskOnlyImport(runID: runID)
+            return try await self.commitAgentTaskOnlyImport(runID: runID, withDeadlines: withDeadlines)
         }
         // Calendar grants are a separate Settings choice. The executor still sends unclear rows to the existing review.
         executor.applyCalendarGrant = { [weak self] runID, destinationID, destinationName, rows in
@@ -285,6 +287,10 @@ extension CalshotModel {
             lastAnalysisProvider = agentClient == nil ? "Calendar agent + Vision OCR" : "Offline calendar agent demo"
             try await agent.start(userMessage: prompt, imageDataURL: imageURL, memory: memory, personalMemoryContext: personalMemoryContext(for: prompt), sessionID: sessionID)
             guard currentCaptureSessionID == sessionID else { return }
+            // A typed request teaches Calshot too; a screenshot run does not (its content is not the user's words).
+            if agentClient == nil, agentTypedRunID == sessionID, image == nil, executor.memorySuggestionsBlocked != true {
+                reflect(on: [("user", prompt)] + agent.transcript.filter { $0.role == "assistant" && $0.toolName == nil }.compactMap { turn in turn.content.map { ("assistant", $0) } }, channel: "typed")
+            }
             lastCaptureSummary = "\(calendarActions.addedCount) added · \(calendarActions.updatedCount) changed · \(calendarActions.deletedCount) removed · \(calendarActions.movedCount) moved"
         } catch is CancellationError { }
         catch {
@@ -1090,11 +1096,13 @@ extension CalshotModel {
     // MARK: Task-only create under a saved grant
 
     /// Returns nil when the user must review (no matching grant, limit reached, or the store is unavailable).
-    func commitAgentTaskOnlyImport(runID: UUID) async throws -> JSONValue? {
+    /// `withDeadlines` also saves tasks whose deadline will be published to the calendar. This grant covers only the
+    /// task itself; the caller writes each deadline under the calendar grant (or its review) afterwards.
+    func commitAgentTaskOnlyImport(runID: UUID, withDeadlines: Bool = false) async throws -> JSONValue? {
         guard calendarGrantOrigin(runID) else { return nil }
         guard let batch = taskImport, !batch.items.isEmpty, batch.ownerID == account.userID, batch.storeURL == taskStore.url,
               batch.captureID == currentCaptureSessionID, batch.recordID == currentMemoryRecordID,
-              batch.items.allSatisfy({ $0.resolvedCalendarIntent != .new || $0.dueDate == nil }) else { return nil }
+              withDeadlines || batch.items.allSatisfy({ $0.resolvedCalendarIntent != .new || $0.dueDate == nil }) else { return nil }
         guard let store = try? await openAgentPermissionStore() else { return nil }
         var fields: Set<String> = ["title", "timeZone"]
         for task in batch.items {

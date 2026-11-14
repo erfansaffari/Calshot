@@ -11,6 +11,7 @@
   box-shadow: 0 0 0 1.5px #ffffffd9, 0 0 44px #2563ff66, 0 0 90px #7a22ff33;
 }
 .home-orb::before {
+  will-change: transform;
   content: "";
   position: absolute;
   inset: -22%;

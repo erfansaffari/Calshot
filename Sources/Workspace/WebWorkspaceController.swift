@@ -1,3 +1,4 @@
+import Combine
 import AppKit
 import CryptoKit
 import WebKit
@@ -25,7 +26,12 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
     let assets: WebWorkspaceAssets
     private(set) var webView: WKWebView!
     private var timer: Timer?
-    private var lastSnapshot = ""
+    private var levelTimer: Timer?
+    private var changeObservation: AnyCancellable?
+    private var publishScheduled = false
+    private var lastPublishAt = Date.distantPast
+    private var lastLevels: (input: Float, output: Float) = (0, 0)
+    private var lastState: JSONValue?
     private var notice: String?
     private(set) var aiContextInspection: JSONValue?
     private var aiContextOwner = ""
@@ -89,9 +95,40 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             allowedPageURL = url.standardizedFileURL
             webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        // State is pushed when the model changes, at most once per frame. The slow timer only catches values
+        // that are not observable (permissions, accessibility settings).
+        changeObservation = model.objectWillChange.sink { [weak self] _ in self?.schedulePublish() }
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.publish() }
         }
+        if isNotch {
+            let levels = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.pushVoiceLevels() }
+            }
+            RunLoop.main.add(levels, forMode: .common)
+            levelTimer = levels
+        }
+    }
+    /// Coalesces bursts of model changes (streamed text, voice state) into at most 30 snapshots a second,
+    /// sent after the change has landed.
+    private func schedulePublish() {
+        guard !publishScheduled else { return }
+        publishScheduled = true
+        let wait = max(0, 1.0 / 30 - Date().timeIntervalSince(lastPublishAt))
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            guard let self else { return }
+            publishScheduled = false
+            publish()
+        }
+    }
+    /// The notch glow follows the voice without re-rendering the page: only two numbers cross the bridge.
+    private func pushVoiceLevels() {
+        guard ready, let webView else { return }
+        let session = model.voiceSession
+        let next = session.active ? session.levels : (input: Float(0), output: Float(0))
+        guard abs(next.input - lastLevels.input) > 0.004 || abs(next.output - lastLevels.output) > 0.004 else { return }
+        lastLevels = next
+        webView.evaluateJavaScript("window.__calshotLevels?.(\(next.input),\(next.output))", completionHandler: nil)
     }
     func resetNotchPresentation() {
         guard isNotch, let webView else { return }
@@ -465,6 +502,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
     }
     func publish() {
         guard ready else { return }
+        lastPublishAt = Date()
         if wasConnecting && !model.calendarAccountIsConnecting { refreshAccounts() }
         wasConnecting = model.calendarAccountIsConnecting
         let friendToken = model.friendAccessToken
@@ -496,10 +534,22 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         viewState["calendarTaskNotices"] = model.account.canUseWorkspace ? .object(calendarTaskNotices) : .object([:])
         viewState["calendarChange"] = model.account.canUseWorkspace ? calendarChange : .null
         viewState["directWriteNotice"] = model.directWriteNotice.map(JSONValue.string) ?? .null
-        let snapshot = JSONValue.object(viewState).jsonString()
-        guard snapshot != lastSnapshot else { return }
-        lastSnapshot = snapshot
-        Task { try? await webView.callAsyncJavaScript("window.__calshotReceive(state)", arguments: ["state": (try? JSONSerialization.jsonObject(with: Data(snapshot.utf8))) ?? [:]], in: nil, contentWorld: .page) }
+        // Only the top-level keys that changed cross the bridge: comparing values is much cheaper than encoding
+        // them, and the page keeps every unchanged part (the chat, tasks, calendars) as the same object.
+        let previous = lastState?.objectValue
+        let value = JSONValue.object(viewState)
+        guard value != lastState else { return }
+        lastState = value
+        var patch: [String: JSONValue] = [:]
+        for (key, next) in viewState where previous?[key] != next { patch[key] = next }
+        let removed = previous.map { old in old.keys.filter { viewState[$0] == nil }.sorted() } ?? []
+        let snapshot = JSONValue.object(patch).jsonString()
+        let full = previous == nil
+        // The JSON text goes across as one string and JSON.parse reads it: much cheaper than converting it to
+        // Foundation objects here and having WebKit serialize them again.
+        // Sent directly, not from a Task, so patches always arrive in the order they were made.
+        webView.callAsyncJavaScript("window.__calshotPatch(JSON.parse(patch), removed, full)",
+                                    arguments: ["patch": snapshot, "removed": removed, "full": full], in: nil, in: .page, completionHandler: nil)
     }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, message.frameInfo.request.url?.standardizedFileURL == allowedPageURL,
@@ -678,7 +728,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             onNotchExpand?()
         case "openWorkspace": model.taskUsesNotch = false; model.openPanel()
         case "ready":
-            ready = true; lastSnapshot = ""; model.refreshMemory()
+            ready = true; lastState = nil; model.refreshMemory()
             if EKEventStore.authorizationStatus(for: .event) == .fullAccess {
                 model.calendarConnectionMessage = "Checking connected calendars…"
                 Task { await model.loadCalendars(); refreshAccounts() }
@@ -920,7 +970,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             }
         case "editProposal": try edit(body)
         case "retryAgent": try requireIdle(); model.taskUsesNotch = isNotch; Task { await model.retryAgentCommand() }
-        case "addMemory", "editMemory", "forgetMemory", "approveMemory", "rejectMemory", "clearMemory":
+        case "addMemory", "editMemory", "forgetMemory", "approveMemory", "rejectMemory", "clearMemory", "forgetNote":
             try model.handlePersonalMemoryAction(action, body: body, isNotch: isNotch)
         case "knowledgeSync", "removeSyncedKnowledge":
             guard !isNotch, model.workspaceSelection == .settings else { throw CalendarToolArgumentError("Manage memory sync in Settings.") }
@@ -1009,6 +1059,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             model.openAIAnalysisEnabled = body["enabled"] as? Bool == true
         case "notchEnabled":
             guard !isNotch, let enabled = body["enabled"] as? Bool else { throw CalendarToolArgumentError("Turn the notch on or off in Settings.") }
+            guard CalshotModel.notchAvailable else { throw CalendarToolArgumentError("The notch is turned off in this version.") }
             model.notchEnabled = enabled
         case "copyCaptures": CaptureClipboard.automaticallyCopyCapture = body["enabled"] as? Bool == true
         case "saveAPIKey":
@@ -1084,7 +1135,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         if navigationAction.request.url?.standardizedFileURL == allowedPageURL { decisionHandler(.allow) }
         else { decisionHandler(.cancel) }
     }
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { ready = false; lastSnapshot = ""; webView.reload() }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { ready = false; lastState = nil; webView.reload() }
 }
 
 

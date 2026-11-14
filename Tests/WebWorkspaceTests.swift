@@ -1429,6 +1429,10 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertEqual(external.barHeight, 30)
         XCTAssertEqual(external.frame(for: external.closedSize), NSRect(x: 868, y: 1050, width: 184, height: 30))
         XCTAssertEqual(external.expandedHeight(detail: true, detailHeight: 490), 520)
+        // Voice stays at menu-bar height: a short tab here, wings beside a camera housing.
+        XCTAssertEqual(external.voiceIslandSize, NSSize(width: 236, height: 30))
+        let housing = NotchGeometry(frame: NSRect(x: 0, y: 0, width: 1512, height: 982), visibleFrame: NSRect(x: 0, y: 70, width: 1512, height: 880), safeAreaTop: 32, leftAuxiliaryWidth: 662, rightAuxiliaryWidth: 662, statusBarThickness: 24)
+        XCTAssertEqual(housing.voiceIslandSize, NSSize(width: 188 + NotchGeometry.islandWing * 2, height: 32))
         // MacBook without a notch, with the menu bar hidden automatically.
         let hidden = NotchGeometry(frame: NSRect(x: 0, y: 0, width: 1440, height: 900), visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 900), safeAreaTop: 0, leftAuxiliaryWidth: nil, rightAuxiliaryWidth: nil, statusBarThickness: 22)
         XCTAssertEqual(hidden.barHeight, 24)
@@ -1499,6 +1503,12 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertEqual(NotchVoiceActivity.resolve(state: .speaking, transmittingAudio: false), .speaking)
         XCTAssertNil(NotchVoiceActivity.resolve(state: .listening, transmittingAudio: false))
         XCTAssertEqual(NotchVoiceActivity.resolve(state: .waitingForReview, transmittingAudio: false), .review)
+        // A voice problem shows as a small island until the user opens it; talking still wins.
+        XCTAssertEqual(NotchVoiceActivity.resolve(state: .listening, transmittingAudio: false, needsAttention: true), .attention)
+        XCTAssertEqual(NotchVoiceActivity.resolve(state: .idle, transmittingAudio: false, needsAttention: true), .attention)
+        XCTAssertEqual(NotchVoiceActivity.resolve(state: .listening, transmittingAudio: true, needsAttention: true), .listening)
+        XCTAssertFalse(NotchVoiceActivity.review.usesIsland)
+        XCTAssertTrue(NotchVoiceActivity.speaking.usesIsland)
         var panel = NotchPresentationState()
         panel.open(now: Date(timeIntervalSince1970: 100))
         panel.advance(to: Date(timeIntervalSince1970: 101))
@@ -1650,7 +1660,21 @@ final class WebWorkspaceTests: XCTestCase {
         defaults.set("invalid", forKey: AppAppearance.defaultsKey)
         XCTAssertEqual(AppAppearance.load(from: defaults), .system)
     }
+    func testNotchStaysOffWhileItIsSwitchedOffForThisVersion() async throws {
+        XCTAssertFalse(CalshotModel.notchAvailable)
+        let model = fixture(); let bridge = WebWorkspaceController(model: model, loadsResources: false)
+        model.notchEnabled = true
+        XCTAssertFalse(model.notchEnabled)
+        do { try await bridge.handle("notchEnabled", ["enabled": true]); XCTFail("Turned on a notch that is switched off") } catch {}
+        XCTAssertFalse(model.notchEnabled)
+        let settings = WebWorkspaceState.make(model, imageURL: nil, notice: nil, accounts: [], googleReady: false).objectValue?["settings"]?.objectValue
+        XCTAssertEqual(settings?["notchAvailable"], .bool(false))
+        model.taskUsesNotch = true
+        XCTAssertFalse(model.taskUsesNotch)
+    }
     func testNotchSettingIsSettingsOnlyAndRoutesTasksToTheWorkspaceWhenOff() async throws {
+        CalshotModel.notchAvailable = true
+        defer { CalshotModel.notchAvailable = false }
         let model = fixture(); let bridge = WebWorkspaceController(model: model, loadsResources: false)
         model.notchEnabled = true
         let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
@@ -2344,6 +2368,34 @@ final class AgentTaskReviewIntegrationTests: XCTestCase {
         XCTAssertEqual(saved?.arrayValue?.count, 1); XCTAssertEqual(model.taskDocument.items.map(\.title), ["Fictional task-only item"])
         XCTAssertNil(model.taskImport); XCTAssertEqual(model.agentTaskOutcome?.status, "saved")
         XCTAssertEqual(try model.taskStore.load().items.count, 1)
+    }
+
+    func testDatedTasksSaveAtOnceAndPublishEachDeadlineUnderTheCalendarGrant() async throws {
+        let model = fixture(); await model.loadCalendars(); model.selectedCalendarID = "demo"
+        model.currentMemoryRecordID = try model.memoryStore.recordCommand("Add fictional assignments").id
+        try await model.saveAgentAutonomy(enabled: true, revision: 0)
+        model.configureCalendarAgent(); let executor = try XCTUnwrap(model.agentToolExecutor)
+        let run = startRun(model); model.currentCaptureSessionID = run; executor.activate(sessionID: run)
+        func task(_ title: String, _ day: String) -> JSONValue {
+            .object(["title": .string(title), "dueDate": .string(day), "yearResolved": .bool(true), "sourceText": .string(title + " due " + day)])
+        }
+        let raw = await executor.execute(name: "create_tasks", arguments: .object(["calendarIdentifier": .null,
+            "tasks": .array([task("Fictional essay", "2027-03-10"), task("Fictional lab report", "2027-03-12")])]), sessionID: run)
+        let result = try XCTUnwrap(try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8)).objectValue)
+        XCTAssertFalse(model.agentIsWaitingForApproval, "Two dated tasks need no review under Autonomy")
+        XCTAssertEqual(result["tasksSaved"]?.arrayValue?.count, 2)
+        XCTAssertEqual(result["calendar"]?.objectValue?["saved"]?.arrayValue?.count, 2)
+        XCTAssertEqual(result["calendar"]?.objectValue?["awaitingReview"]?.arrayValue?.count, 0)
+        XCTAssertEqual(model.taskDocument.items.map(\.title).sorted(), ["Fictional essay", "Fictional lab report"])
+        XCTAssertTrue(model.taskDocument.items.allSatisfy { $0.receipt != nil }, "Each task is linked to the deadline that was written")
+        XCTAssertNil(model.taskImport)
+        // A screenshot-started run still stages the same request for one review and saves nothing.
+        let capture = UUID(); model.activeAgentRunID = capture; model.agentTypedRunID = nil; model.currentCaptureSessionID = capture; executor.activate(sessionID: capture)
+        let pending = Task { await executor.execute(name: "create_tasks", arguments: .object(["calendarIdentifier": .null, "tasks": .array([task("Fictional quiz prep", "2027-03-15")])]), sessionID: capture) }
+        try await waitFor { model.agentIsWaitingForApproval }
+        XCTAssertEqual(model.taskDocument.items.count, 2); XCTAssertNotNil(model.taskImport)
+        executor.skipApproval(); _ = await pending.value
+        XCTAssertEqual(model.taskDocument.items.count, 2)
     }
 
     func testScreenshotImportCannotUseTheCreateGrantWithoutATypedRequest() async throws {

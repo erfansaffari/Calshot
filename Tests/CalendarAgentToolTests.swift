@@ -50,6 +50,22 @@ private actor ToolCalendarService: CalendarDestinationService {
 
 @MainActor
 final class CalendarAgentToolTests: XCTestCase {
+    func testConversationContextCarriesLocalTimeAndWhatCalshotDid() throws {
+        var said = AgentTurn(role: "user", content: "Add a fictional task to call Robin"); said.at = Date(timeIntervalSince1970: 1_800_000_000)
+        var did = AgentTurn(role: "tool", toolName: "create_tasks", result: #"{"tasksSaved":[{"title":"Call fictional Robin"}]}"#); did.at = said.at
+        let read = AgentTurn(role: "tool", toolName: "search_events", result: #"{"events":[]}"#)
+        var shared = AgentTurn(role: "tool", toolName: "create_tasks", result: #"{"tasksSaved":[{"title":"Fictional shared"}]}"#); shared.sharedCalendarContext = true
+        let rows = try XCTUnwrap(ConversationContextBuilder.build([said, did, read, shared]).objectValue?["turns"]?.arrayValue)
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0].objectValue?["at"]?.stringValue, ConversationContextBuilder.stamp(said.at!))
+        XCTAssertEqual(rows[1].objectValue?["role"]?.stringValue, "action")
+        XCTAssertTrue(rows[1].objectValue?["text"]?.stringValue?.contains("create_tasks → ") == true)
+        XCTAssertTrue(rows[1].objectValue?["text"]?.stringValue?.contains("Call fictional Robin") == true)
+        // A turn saved before timestamps existed still decodes and simply has no time.
+        let old = try JSONDecoder().decode(AgentTurn.self, from: Data(#"{"role":"user","content":"Fictional older turn"}"#.utf8))
+        XCTAssertNil(old.at)
+        XCTAssertNil(ConversationContextBuilder.build([old]).objectValue?["turns"]?.arrayValue?.first?.objectValue?["at"])
+    }
     func testConversationLookupFindsOlderPlansAndQuestionAnswersWithoutToolOrFriendContent() throws {
         var turns = [AgentTurn(role: "user", content: "Fictional Aurora plan: study on Monday"),
             AgentTurn(role: "assistant", content: "Which room?"),
@@ -582,6 +598,21 @@ final class CalendarAgentToolTests: XCTestCase {
             })
         active = tools
         return tools
+    }
+
+    func testAFinishedReviewIsReportedAsClosedNotAsStillWaiting() async throws {
+        let service = ToolCalendarService(events: [])
+        let coordinator = CalendarActionCoordinator(service: service)
+        let tools = decliningReviewExecutor(service, coordinator) {}
+        let session = UUID(); tools.activate(sessionID: session)
+        tools.applyCalendarGrant = { _, _, _, rows in .split(saved: [], review: rows.map { ($0.proposal, "Fictional reason for review") }, failed: []) }
+        let result = try decode(await tools.execute(name: "create_events", arguments: .object(["calendarIdentifier": .null, "events": .array([
+            .object(["title": .string("Fictional seminar"), "date": .string("2026-11-20"), "startTime": .string("10:00"), "endTime": .string("11:00"),
+                     "allDay": .bool(false), "timeZone": .null, "location": .null, "url": .null, "notes": .null,
+                     "evidence": .string("Fictional seminar Nov 20, 2026 10-11"), "yearInferred": .bool(false), "dateAmbiguous": .bool(false)])])]), sessionID: session))
+        XCTAssertEqual((result["awaitingReview"] as? [Any])?.count, 0, "The review returned, so nothing is waiting")
+        XCTAssertEqual((result["reviewed"] as? [[String: Any]])?.first?["title"] as? String, "Fictional seminar")
+        XCTAssertTrue((result["note"] as? String)?.contains("closed") == true)
     }
 
     func testFocusedSearchResolvesAgendaAmbiguityInTypedAndVoiceSessions() async throws {

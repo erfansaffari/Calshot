@@ -6,9 +6,18 @@ import CoreGraphics
 /// Explicit, credential-free view state. OAuth/API secrets never cross into JavaScript.
 @MainActor
 enum WebWorkspaceState {
+    /// Creating a formatter costs far more than formatting; snapshots are built often, so share one.
+    static let iso = ISO8601DateFormatter()
+    private static let snapshotEncoder: JSONEncoder = { let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; return encoder }()
+    /// Decoded values by their encoded bytes. Most of a snapshot (the chat, tasks, rows) is unchanged between
+    /// snapshots, and decoding it again was most of the cost of building one.
+    private static var decodedCache: [Data: JSONValue] = [:]
     static func encoded<T: Encodable>(_ value: T) -> JSONValue {
-        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(value), let result = try? JSONDecoder().decode(JSONValue.self, from: data) else { return .null }
+        guard let data = try? snapshotEncoder.encode(value) else { return .null }
+        if let cached = decodedCache[data] { return cached }
+        guard let result = try? JSONDecoder().decode(JSONValue.self, from: data) else { return .null }
+        if decodedCache.count >= 512 { decodedCache.removeAll(keepingCapacity: true) }
+        decodedCache[data] = result
         return result
     }
     /// Local, read-only inspection. Never gathers a new screen or sends data to an AI service.
@@ -28,6 +37,7 @@ enum WebWorkspaceState {
         }
         return .object(["capturedAt": .string(ISO8601DateFormatter().string(from: Date())), "sections": .array([
             section("Saved memories", "Approved, unexpired memories. Pending suggestions are not used. Manage these in Memory below.", personal.error.map { "Unavailable: " + $0 } ?? memories.map { "[\($0.kind.rawValue)] \($0.text)" }.joined(separator: "\n\n"), "No approved memories saved."),
+            section("Who you are and earlier conversations", "Your name and account, and Calshot's dated notes on earlier conversations. Sent with each request. Notes stay on this Mac.", [model.userIdentityContext, MemoryContextBuilder.notes(personal.notes)].filter { !$0.isEmpty }.joined(separator: "\n\n"), "Nothing yet."),
             section("Retained conversation", "Recent bounded excerpts; up to 600 stored turns are retained. Older retained details can be retrieved by the assistant. Shared-friend turns and raw tool calls are excluded. Excerpts may be clipped.", transcript, "No retained conversation excerpts."),
             section("Connected calendars", "Readable sources available to calendar tools. This list does not mean every event has been read.", model.readableCalendars.map { "\($0.title) · \($0.provider.rawValue)" }.joined(separator: "\n"), "No readable calendars connected."),
             section("Voice calendar snapshot", "The last snapshot sent during this voice session, with freshness status. This viewer does not fetch calendar events.", model.voiceSession.scheduleContextForInspection, "No voice snapshot."),
@@ -51,7 +61,7 @@ enum WebWorkspaceState {
         state["tasks"] = .object(["items": encoded(model.taskDocument.items), "token": .string(model.tasksToken), "loaded": .bool(model.taskDataReady), "busy": .bool(model.taskSyncBusy), "error": model.taskError.map(JSONValue.string) ?? .null, "reminderError": model.taskReminderError.map(JSONValue.string) ?? .null, "conflict": .bool(model.taskConflict), "deviceID": .string(CalshotModel.syncDeviceID)])
         let personal = model.personalMemory
         state["personalMemory"] = .object(["loaded": .bool(personal.error == nil), "error": personal.error.map(JSONValue.string) ?? .null,
-            "items": encoded(personal.items.filter { $0.status == .active }), "pending": encoded(personal.items.filter { $0.status == .pendingApproval }), "token": .string(personal.token),
+            "items": encoded(personal.items.filter { $0.status == .active }), "pending": encoded(personal.items.filter { $0.status == .pendingApproval }), "notes": encoded(Array(personal.notes.suffix(30).reversed())), "token": .string(personal.token),
             "sync": model.knowledgeSyncSnapshot])
         state["voice"] = model.voiceSession.snapshot
         state["recentChanges"] = model.recentChangesSnapshot()
@@ -127,7 +137,7 @@ enum WebWorkspaceState {
             let title = record.isMainChat == true ? "Your conversation with Calshot" : record.calendarProposals.first?.draft.title ?? record.agentTranscript?.first(where: { $0.role == "user" })?.content ?? "Screenshot"
             var row: [String: JSONValue] = [
                 "id": .string(record.id.uuidString), "title": .string(String(title.prefix(180))),
-                "createdAt": .string(ISO8601DateFormatter().string(from: record.createdAt)),
+                "createdAt": .string(iso.string(from: record.createdAt)),
                 "completed": .number(Double(record.calendarProposals.filter(\.isFinished).count)),
                 "count": .number(Double(record.calendarProposals.count)), "provider": .string(record.analysisProvider ?? "Capture")]
             if !record.screenshotFileName.isEmpty || !(record.additionalScreenshots ?? []).isEmpty {
@@ -143,7 +153,7 @@ enum WebWorkspaceState {
             "useAPIKey": .bool(model.agentUseAPIKey), "chatGPTPlan": .bool(model.chatGPTAccount?.canUsePlan == true), "chatGPTConnecting": .bool(model.chatGPTIsConnecting),
             "model": .string(model.agentUseAPIKey || model.chatGPTAccount == nil ? OpenAIEventAnalyzer.modelName : model.chatGPTAccount?.model ?? ""),
             "models": .array(model.chatGPTModels.map { .object(["id": .string($0.slug), "name": .string($0.displayName)]) }),
-            "copyCaptures": .bool(CaptureClipboard.automaticallyCopyCapture), "notchEnabled": .bool(model.notchEnabled)]
+            "copyCaptures": .bool(CaptureClipboard.automaticallyCopyCapture), "notchEnabled": .bool(model.notchEnabled), "notchAvailable": .bool(CalshotModel.notchAvailable)]
         if let email = model.chatGPTAccount?.email { settings["chatGPTEmail"] = .string(email) }
         if let error = model.chatGPTConnectionError { settings["chatGPTError"] = .string(error) }
         state["settings"] = .object(settings)

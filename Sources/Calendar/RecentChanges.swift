@@ -8,8 +8,10 @@ import CryptoKit
 extension CalshotModel {
     static let recentChangeLimit = 8
 
-    var recentChangesToken: String {
-        let ledger = calendarChangeLedger().prefix(40)
+    var recentChangesToken: String { recentChangesToken(calendarChangeLedger()) }
+
+    private func recentChangesToken(_ all: [CalendarActionProposal]) -> String {
+        let ledger = all.prefix(40)
         let undone = Set(ledger.compactMap(\.undoOf))
         let text = ledger.map { $0.id.uuidString + (undone.contains($0.id) ? "u" : "") }.joined(separator: "|") + "|" + (account.userID?.uuidString ?? "")
         return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -18,7 +20,7 @@ extension CalshotModel {
     func recentChangesSnapshot(now: Date = Date()) -> JSONValue {
         let ledger = calendarChangeLedger()
         let undone = Set(ledger.compactMap(\.undoOf))
-        let iso = ISO8601DateFormatter()
+        let iso = WebWorkspaceState.iso
         let rows: [JSONValue] = ledger.prefix(Self.recentChangeLimit).map { change in
             let isUndo = change.undoOf != nil
             let canUndo = !isUndo && !undone.contains(change.id) && !(change.operation == .delete && change.targetOccurrence?.isRecurring == true)
@@ -39,7 +41,7 @@ extension CalshotModel {
             }
             return .object(fields)
         }
-        return .object(["items": .array(rows), "token": .string(recentChangesToken)])
+        return .object(["items": .array(rows), "token": .string(recentChangesToken(ledger))])
     }
 
     /// Reverses one saved change the user clicked Undo on. Guests and repeating events are not undone here,

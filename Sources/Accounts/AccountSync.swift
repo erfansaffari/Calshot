@@ -136,14 +136,8 @@ extension CalshotModel {
             let response: AccountSyncResponse = try await account.syncRPC("read_account_state", body: .object([:]), user: user)
             guard account.userID == user, memoryStore === store, !agentIsRunning, !isSaving, !isCapturing, !isRecognizing else { return }
             let baselineKey = "calshot.sync.baseline." + user.uuidString
-            let baseline = UserDefaults.standard.data(forKey: baselineKey).flatMap { try? JSONDecoder().decode(AccountSyncBaseline.self, from: $0) } ?? AccountSyncBaseline()
             let localRecords = store.listRecords()
-            let localHashes = try Dictionary(uniqueKeysWithValues: localRecords.map { ($0.id.uuidString, try $0.syncHash()) })
-            var document = try AccountSyncMerge.merge(remote: response.payload, local: localRecords, baseline: baseline)
             let localPreferences: [String: JSONValue] = ["appearance": .string(appearanceMode.rawValue), "sidebarExpanded": .bool(sidebarExpanded)]
-            for (key, value) in localPreferences {
-                if document.preferences[key] == nil || (baseline.preferences[key] != nil && value != baseline.preferences[key]) { document.preferences[key] = value }
-            }
             var connections = directCalendarAccounts.map { AccountSyncConnection(key: Self.connectionKey($0.provider.rawValue + ":" + $0.subject), provider: $0.provider.rawValue, label: $0.email) }
             for calendar in readableCalendars where calendar.provider == .apple && !connections.contains(where: { $0.key == Self.connectionKey("apple:" + (calendar.sourceName ?? "Apple Calendar")) }) {
                 connections.append(.init(key: Self.connectionKey("apple:" + (calendar.sourceName ?? "Apple Calendar")), provider: "apple", label: calendar.sourceName ?? "Apple Calendar"))
@@ -151,12 +145,29 @@ extension CalshotModel {
             if let chatGPTAccount { connections.append(.init(key: Self.connectionKey("chatgpt:" + chatGPTAccount.subject), provider: "chatgpt", label: chatGPTAccount.email)) }
             let deviceID = Self.syncDeviceID
             let name = String((Host.current().localizedName ?? "Mac").prefix(100))
+            // Same server revision, same local files, same preferences and connections as a sync that changed
+            // nothing: the merge would change nothing again, so skip hashing the history on the main thread.
+            let unchangedKey = [user.uuidString, String(response.revision), String(store.recordsRevision), store.locationURL.path,
+                                appearanceMode.rawValue, String(sidebarExpanded), name, deviceID,
+                                connections.map { $0.key + ":" + $0.label }.joined(separator: ",")].joined(separator: "|")
+            if unchangedKey == accountSyncUnchangedKey {
+                accountSyncDevices = response.payload.devices; accountDisplayName = response.displayName
+                accountSyncLastDate = .now; accountSyncStatus = "Up to date · Screenshots stay on this Mac"
+                return
+            }
+            let baseline = UserDefaults.standard.data(forKey: baselineKey).flatMap { try? JSONDecoder().decode(AccountSyncBaseline.self, from: $0) } ?? AccountSyncBaseline()
+            let localHashes = try Dictionary(uniqueKeysWithValues: localRecords.map { ($0.id.uuidString, try $0.syncHash()) })
+            var document = try AccountSyncMerge.merge(remote: response.payload, local: localRecords, baseline: baseline)
+            for (key, value) in localPreferences {
+                if document.preferences[key] == nil || (baseline.preferences[key] != nil && value != baseline.preferences[key]) { document.preferences[key] = value }
+            }
             let oldDevice = document.devices[deviceID]
             if oldDevice?.connections != connections || oldDevice?.name != name {
                 document.devices[deviceID] = AccountSyncDevice(name: name, connections: connections, updatedAt: .now)
             }
             let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys; encoder.dateEncodingStrategy = .iso8601
-            if try encoder.encode(document) != encoder.encode(response.payload) {
+            let wrote = try encoder.encode(document) != encoder.encode(response.payload)
+            if wrote {
                 let payload = try JSONDecoder().decode(JSONValue.self, from: encoder.encode(document))
                 let _: Int = try await account.syncRPC("write_account_state", body: .object(["document": payload, "expected_revision": .number(Double(response.revision))]), user: user)
             }
@@ -166,8 +177,11 @@ extension CalshotModel {
                   sidebarExpanded == localPreferences["sidebarExpanded"]?.boolValue else {
                 throw CalendarToolArgumentError("Local data changed during sync. Your changes are kept; sync again to finish.")
             }
+            let revisionBeforeApply = store.recordsRevision
             try store.applyAccountSync(document)
             memoryRecords = store.listRecords()
+            // Only a pass that wrote nothing anywhere may be skipped next time.
+            accountSyncUnchangedKey = !wrote && store.recordsRevision == revisionBeforeApply ? unchangedKey : nil
             if let mode = document.preferences["appearance"]?.stringValue.flatMap(AppAppearance.init(rawValue:)) { appearanceMode = mode }
             if let expanded = document.preferences["sidebarExpanded"]?.boolValue { sidebarExpanded = expanded }
             let next = AccountSyncBaseline(hashes: try document.history.mapValues { try $0.syncHash() }, preferences: document.preferences)

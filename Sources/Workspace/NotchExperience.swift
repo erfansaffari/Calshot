@@ -32,6 +32,15 @@ final class NotchExperienceController: ObservableObject {
     @Published private(set) var visibleSize = NSSize(width: 184, height: 24)
     /// WebKit layout size, held at the larger size during a transition so it never re-lays out per frame.
     @Published private(set) var contentSize = NSSize(width: 184, height: 24)
+    /// The web view's layout size. It never shrinks to the closed notch, so the page stays attached and laid out
+    /// while hidden and opening only reveals it, with no WebKit layout during the animation.
+    @Published private(set) var webSize = NSSize(width: 520, height: 90)
+    @Published private(set) var colorScheme: ColorScheme?
+    /// Hover opens the quick menu only while the notch is on. With it off, only the voice island shows, and a
+    /// click on it opens the voice controls (Stop, errors, billing confirmation, a voice review).
+    @Published private(set) var quickMenuEnabled = true
+    /// Read per frame by the island meter; never published, so levels never re-render the shell.
+    var voiceLevels: (input: Float, output: Float) { model?.voiceSession.levels ?? (0, 0) }
     @Published private(set) var expandedWidth: CGFloat = 520
     @Published private(set) var cameraInset: CGFloat = 24
     @Published private(set) var activity = NotchActivity.idle
@@ -49,8 +58,8 @@ final class NotchExperienceController: ObservableObject {
     var expandedHeight: CGFloat {
         geometry?.expandedHeight(detail: detail, detailHeight: detailHeight) ?? cameraInset + (detail ? detailHeight : 66)
     }
-    /// Displays without a camera housing get a visible black notch in the menu bar.
-    var drawsClosedNotch: Bool { geometry.map { !$0.hasCameraHousing } ?? false }
+    /// Displays without a camera housing get a small handle in the menu bar, never a painted notch.
+    var drawsClosedNotch: Bool { quickMenuEnabled && geometry.map { !$0.hasCameraHousing } ?? false }
 
     init(model: CalshotModel) {
         self.model = model
@@ -72,7 +81,7 @@ final class NotchExperienceController: ObservableObject {
         }
         workspace.onNotchCollapse = { [weak self] in self?.collapse() }
         workspace.onNotchExpand = { [weak self] in self?.openQuickMenu() }
-        let content = NSHostingView(rootView: NotchExperienceView(controller: self, model: model))
+        let content = NSHostingView(rootView: NotchExperienceView(controller: self))
         // The animated panel owns its bounds; SwiftUI must not force the final size early.
         content.sizingOptions = []
         panel.contentView = content
@@ -121,7 +130,7 @@ final class NotchExperienceController: ObservableObject {
         apply(next)
     }
     func openQuickMenu() {
-        guard model?.notchEnabled != false || model?.voiceSession.active == true else { return }
+        guard model?.notchEnabled != false || voiceActivity != nil || model?.voiceSession.active == true else { return }
         model?.taskUsesNotch = true
         var next = presentation; next.open()
         apply(next)
@@ -145,6 +154,8 @@ final class NotchExperienceController: ObservableObject {
         updatePointer(hoverRegion.contains(NSEvent.mouseLocation))
     }
     private func updatePointer(_ inside: Bool, now: Date = .now) {
+        // With the notch off, hovering never opens anything; an open voice panel still closes when the pointer leaves.
+        guard quickMenuEnabled || presentation.isExpanded else { return }
         var next = presentation
         next.pointerChanged(inside, now: now, location: NSEvent.mouseLocation)
         next.advance(to: now)
@@ -171,25 +182,27 @@ final class NotchExperienceController: ObservableObject {
     private func position(animated: Bool = true) {
         guard let screen = targetScreen else { return }
         let geometry = NotchGeometry(screen)
-        self.geometry = geometry
-        cameraInset = geometry.barHeight
-        expandedWidth = geometry.expandedWidth(detail: detail)
-        launcherSize = voiceActivity != nil ? geometry.voiceIndicatorSize : showsNotification ? geometry.notificationSize : geometry.closedSize
+        // Assign only real changes: every published write re-renders the SwiftUI shell, and this runs on each model change.
+        update(\.geometry, geometry)
+        update(\.cameraInset, geometry.barHeight)
+        update(\.expandedWidth, geometry.expandedWidth(detail: detail))
+        update(\.launcherSize, voiceActivity.map { showsIsland($0) ? geometry.voiceIslandSize : geometry.voiceIndicatorSize }
+               ?? (showsNotification ? geometry.notificationSize : geometry.closedSize))
+        if webSize.height <= geometry.barHeight { update(\.webSize, geometry.voiceIndicatorSize) }
         let size = isExpanded ? NSSize(width: expandedWidth, height: expandedHeight) : launcherSize
-        var frame = geometry.frame(for: size)
-        if model?.notchEnabled == false, model?.voiceSession.active == true {
-            frame.origin.y = screen.visibleFrame.maxY - frame.height - 12
-        }
+        let frame = geometry.frame(for: size)
         // Frequent agent snapshots must not restart an in-flight transition.
         guard targetFrame != frame || !animated else { return }
         let previous = targetFrame
         targetFrame = frame
         let id = UUID(); transitionID = id
+        let showsWeb = isExpanded || voiceActivity.map { !showsIsland($0) } == true
         if isExpanded { presentsExpandedContent = true }
         let shouldAnimate = animated && panel.isVisible && previous != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard shouldAnimate else {
             panel.setFrame(frame, display: true)
             contentSize = size; visibleSize = size
+            if showsWeb { update(\.webSize, size) }
             presentsExpandedContent = isExpanded
             return
         }
@@ -198,19 +211,34 @@ final class NotchExperienceController: ObservableObject {
         let cover = panel.frame.union(frame)
         if cover != panel.frame { panel.setFrame(cover, display: false) }
         contentSize = NSSize(width: max(visibleSize.width, size.width), height: max(visibleSize.height, size.height))
-        let spring: Animation = isExpanded ? .spring(response: 0.34, dampingFraction: 0.84) : .spring(response: 0.28, dampingFraction: 1)
+        if showsWeb { update(\.webSize, contentSize) }
+        // Quick and settled: the island snaps out beside the notch, the panel drops a little slower, and
+        // closing never bounces.
+        let growing = size.width * size.height > visibleSize.width * visibleSize.height
+        let spring: Animation = isExpanded ? .spring(response: 0.3, dampingFraction: 0.86)
+            : growing ? .spring(response: 0.24, dampingFraction: 0.82) : .spring(response: 0.2, dampingFraction: 1)
         withAnimation(spring, completionCriteria: .logicallyComplete) {
             visibleSize = size
         } completion: { [weak self] in
             guard let self, self.transitionID == id else { return }
             self.panel.setFrame(frame, display: true)
             self.contentSize = size
+            if self.isExpanded || self.voiceActivity.map({ !self.showsIsland($0) }) == true { self.update(\.webSize, size) }
             self.presentsExpandedContent = self.isExpanded
         }
     }
+    /// A voice review needs the web controls while the notch is on; with it off, it is an island like the rest.
+    func showsIsland(_ activity: NotchVoiceActivity) -> Bool { activity.usesIsland || !quickMenuEnabled }
+    private func update<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<NotchExperienceController, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+    }
     private func refreshActivity() {
         guard let model else { return }
-        voiceActivity = NotchVoiceActivity.resolve(state: model.voiceSession.state, transmittingAudio: model.voiceSession.transmittingAudio)
+        let session = model.voiceSession
+        update(\.voiceActivity, NotchVoiceActivity.resolve(state: session.state, transmittingAudio: session.transmittingAudio,
+                                                            needsAttention: (session.active && session.error != nil) || session.needsAcknowledgement || session.needsKey))
+        update(\.colorScheme, model.appearanceMode.colorScheme)
+        update(\.quickMenuEnabled, model.notchEnabled)
         let executing = model.isSaving
         if executing && !wasExecuting {
             executionBaseline = Set(model.calendarActions.proposals.filter { $0.isFinished && $0.receipt != nil }.map(\.id))
@@ -227,7 +255,7 @@ final class NotchExperienceController: ObservableObject {
             }
         }
         wasExecuting = executing
-        activity = NotchActivity.resolve(model, completion: completionMessage)
+        update(\.activity, NotchActivity.resolve(model, completion: completionMessage))
         var next = presentation
         next.observe(activityKey: activity.notificationKey(model), notify: model.taskUsesNotch && activity.phase != .idle, now: .now)
         next.advance(to: .now)
@@ -330,6 +358,12 @@ struct NotchGeometry: Equatable {
     var closedSize: NSSize { NSSize(width: closedWidth, height: barHeight) }
     var notificationSize: NSSize { NSSize(width: min(max(340, closedWidth + 24), screenFrame.width - 32), height: barHeight + 26) }
     var voiceIndicatorSize: NSSize { NSSize(width: expandedWidth(detail: false), height: barHeight + 66) }
+    /// Voice status at menu-bar height: wings beside the camera housing, or a short tab on other displays.
+    var voiceIslandSize: NSSize {
+        let width = hasCameraHousing ? closedWidth + Self.islandWing * 2 : 236
+        return NSSize(width: min(width, screenFrame.width - 32), height: barHeight)
+    }
+    static let islandWing: CGFloat = 96
     /// Bottom corners of the closed shape, close to the physical housing.
     var closedCornerRadius: CGFloat { min(10, barHeight / 3) }
     func expandedWidth(detail: Bool) -> CGFloat {
@@ -350,15 +384,27 @@ struct NotchGeometry: Equatable {
 
 /// Compact activity is independent of the hover-open control panel and never shows transcripts.
 enum NotchVoiceActivity: String {
-    case connecting, listening, thinking, speaking, review
-    static func resolve(state: VoiceSessionController.State, transmittingAudio: Bool) -> Self? {
+    case connecting, listening, thinking, speaking, review, attention
+    /// Everything but a review is a native island at menu-bar height; a review needs the web controls.
+    var usesIsland: Bool { self != .review }
+    var label: String {
+        switch self {
+        case .connecting: "Connecting"
+        case .listening: "Listening"
+        case .thinking: "Thinking"
+        case .speaking: "Speaking"
+        case .review: "Needs review"
+        case .attention: "Check voice"
+        }
+    }
+    static func resolve(state: VoiceSessionController.State, transmittingAudio: Bool, needsAttention: Bool = false) -> Self? {
         if transmittingAudio { return .listening }
         switch state {
-        case .checking, .connecting: return .connecting
+        case .checking, .connecting: return needsAttention ? .attention : .connecting
         case .thinking: return .thinking
         case .speaking: return .speaking
         case .waitingForReview: return .review
-        default: return nil
+        default: return needsAttention ? .attention : nil
         }
     }
 }
@@ -409,42 +455,149 @@ private struct NotchWebContent: NSViewRepresentable {
 
 private struct NotchExperienceView: View {
     @ObservedObject var controller: NotchExperienceController
-    @ObservedObject var model: CalshotModel
     var body: some View {
-        Group {
-            if controller.presentsExpandedContent || controller.voiceActivity != nil {
-                VStack(spacing: 0) {
-                    Color.black.frame(height: controller.cameraInset)
-                    NotchWebContent(controller: controller.workspace)
-                        .frame(width: controller.contentSize.width, height: max(0, controller.contentSize.height - controller.cameraInset))
-                }
-                .frame(width: controller.contentSize.width, height: controller.contentSize.height, alignment: .top)
-                // Fixed-size content revealed by an animated clip: the panel drops down without reflowing.
-                .frame(width: controller.visibleSize.width, height: controller.visibleSize.height, alignment: .top)
-                .background(.black)
-                .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 22, bottomTrailingRadius: 22))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            } else if controller.showsNotification {
+        let showsWeb = controller.presentsExpandedContent || controller.voiceActivity.map { !controller.showsIsland($0) } == true
+        ZStack(alignment: .top) {
+            // Always attached, laid out at its open size and revealed by an animated clip: the panel drops down
+            // without WebKit reflowing or re-attaching mid-animation.
+            VStack(spacing: 0) {
+                Color.black.frame(height: controller.cameraInset)
+                NotchWebContent(controller: controller.workspace)
+                    .frame(width: controller.webSize.width, height: max(0, controller.webSize.height - controller.cameraInset))
+            }
+            .frame(width: controller.webSize.width, height: controller.webSize.height, alignment: .top)
+            .frame(width: controller.visibleSize.width, height: controller.visibleSize.height, alignment: .top)
+            .background(.black)
+            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 22, bottomTrailingRadius: 22))
+            .opacity(showsWeb ? 1 : 0)
+            .allowsHitTesting(showsWeb)
+            .accessibilityHidden(!showsWeb)
+            if !showsWeb, let voice = controller.voiceActivity {
                 Button { controller.openQuickMenu() } label: {
-                    HStack(spacing: 8) {
-                        if controller.activity.phase == .working { ProgressView().controlSize(.mini) }
-                        else { Image(systemName: controller.activity.symbol).foregroundStyle(controller.activity.phase == .completed ? .green : .white) }
-                        Text(controller.activity.label).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                    }.foregroundStyle(.white).padding(.horizontal, 12).padding(.bottom, 6)
-                        .frame(width: controller.launcherSize.width, height: controller.launcherSize.height, alignment: .bottom)
-                        .background(.black, in: UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14))
-                }.buttonStyle(.plain).help("Open task in notch")
-            } else {
-                // A physical housing already shows the notch; elsewhere draw one in the menu bar.
-                UnevenRoundedRectangle(bottomLeadingRadius: controller.geometry?.closedCornerRadius ?? 8, bottomTrailingRadius: controller.geometry?.closedCornerRadius ?? 8)
-                    .fill(controller.drawsClosedNotch ? Color.black : Color.clear)
+                    VoiceIsland(activity: voice, size: controller.launcherSize,
+                                housingWidth: controller.geometry?.hasCameraHousing == true ? controller.geometry?.closedWidth ?? 0 : 0,
+                                levels: { controller.voiceLevels })
+                        .frame(width: controller.launcherSize.width, height: controller.launcherSize.height)
+                        // Fixed content revealed by the animated clip, like the panel.
+                        .frame(width: controller.visibleSize.width, height: controller.visibleSize.height)
+                        .background(.black)
+                        .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Calshot voice: \(voice.label)")
+                .accessibilityHint("Opens voice controls")
+                .help("Voice controls")
+            } else if !showsWeb {
+                if controller.showsNotification {
+                    Button { controller.openQuickMenu() } label: {
+                        HStack(spacing: 8) {
+                            if controller.activity.phase == .working { ProgressView().controlSize(.mini) }
+                            else { Image(systemName: controller.activity.symbol).foregroundStyle(controller.activity.phase == .completed ? .green : .white) }
+                            Text(controller.activity.label).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                        }.foregroundStyle(.white).padding(.horizontal, 12).padding(.bottom, 6)
+                            .frame(width: controller.launcherSize.width, height: controller.launcherSize.height, alignment: .bottom)
+                            .background(.black, in: UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14))
+                    }.buttonStyle(.plain).help("Open task in notch")
+                } else {
+                    // A physical housing already is the notch. Elsewhere Calshot never paints a fake one: a small
+                    // handle in the menu bar marks where to rest the pointer.
+                    ZStack(alignment: .top) {
+                        Color.clear
+                        if controller.drawsClosedNotch {
+                            Capsule().fill(Color.primary.opacity(0.22))
+                                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+                                .frame(width: 84, height: 6)
+                                .padding(.top, 5)
+                        }
+                    }
                     .frame(width: controller.launcherSize.width, height: controller.launcherSize.height)
+                    .accessibilityElement()
                     .accessibilityLabel("Calshot. Move the pointer here to capture or ask.")
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .clipped()
         .contentShape(Rectangle()).onHover { controller.pointerChanged($0) }
-        .preferredColorScheme(model.appearanceMode.colorScheme)
+        .preferredColorScheme(controller.colorScheme)
+    }
+}
+
+/// Native voice status: label on the left wing, a level meter on the right, coloured per phase
+/// (blue listens, violet thinks, green speaks). Drawn by SwiftUI, never by the web view.
+private struct VoiceIsland: View {
+    let activity: NotchVoiceActivity
+    let size: NSSize
+    let housingWidth: CGFloat
+    let levels: () -> (input: Float, output: Float)
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(activity.label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(activity.tint)
+                .lineLimit(1)
+                .id(activity)
+                .transition(.opacity)
+            Spacer(minLength: housingWidth + 12)
+            if activity == .attention || activity == .review {
+                Image(systemName: activity == .review ? "checklist" : "exclamationmark.circle.fill")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(activity.tint)
+            } else {
+                VoiceIslandMeter(activity: activity, levels: levels).frame(width: 26, height: min(16, size.height - 10))
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(width: size.width, height: size.height)
+        .animation(.easeOut(duration: 0.14), value: activity)
+    }
+}
+
+private struct VoiceIslandMeter: View {
+    let activity: NotchVoiceActivity
+    let levels: () -> (input: Float, output: Float)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+            Canvas { graphics, size in
+                let t = context.date.timeIntervalSinceReferenceDate
+                let count = 5, gap: CGFloat = 2.5
+                let width = (size.width - gap * CGFloat(count - 1)) / CGFloat(count)
+                let level = Self.level(activity, levels())
+                for index in 0..<count {
+                    let i = Double(index)
+                    let shape: Double
+                    switch activity {
+                    case .listening, .speaking: shape = 0.6 + 0.4 * sin(t * 9 + i * 1.3)
+                    case .thinking: shape = 0.5 + 0.5 * sin(t * 4.2 - i * 0.9)
+                    default: shape = 0.5 + 0.5 * sin(t * 2.5)
+                    }
+                    let height = max(width, size.height * CGFloat(reduceMotion ? 0.35 : 0.18 + 0.82 * level * shape))
+                    let bar = CGRect(x: CGFloat(index) * (width + gap), y: (size.height - height) / 2, width: width, height: height)
+                    graphics.fill(Path(roundedRect: bar, cornerRadius: width / 2), with: .color(activity.tint))
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+    /// Microphone RMS is small; the speaker level is already scaled. Both map to 0–1 for the bars.
+    static func level(_ activity: NotchVoiceActivity, _ levels: (input: Float, output: Float)) -> Double {
+        switch activity {
+        case .listening: min(1, Double(levels.input).squareRoot() * 2.2)
+        case .speaking: min(1, max(0.25, Double(levels.output).squareRoot() * 1.1))
+        case .thinking: 0.45
+        default: 0.18
+        }
+    }
+}
+
+private extension NotchVoiceActivity {
+    var tint: Color {
+        switch self {
+        case .listening: Color(red: 0.43, green: 0.66, blue: 1)
+        case .thinking: Color(red: 0.79, green: 0.65, blue: 1)
+        case .speaking: Color(red: 0.5, green: 0.89, blue: 0.66)
+        case .attention, .review: Color(red: 0.95, green: 0.81, blue: 0.45)
+        case .connecting: Color(white: 0.6)
+        }
     }
 }

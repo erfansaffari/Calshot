@@ -6,7 +6,8 @@ struct MemoryItem: Codable, Identifiable, Equatable, Sendable {
     enum Origin: String, Codable, Sendable { case explicit, suggested, learned }
     enum Status: String, Codable, Sendable { case active, pendingApproval }
     /// Where the knowledge came from. Nil on version 1 items, which were all user-stated or user-approved.
-    enum Source: String, Codable, Sendable { case user, conversation, behavior, calendar }
+    /// `screen` knowledge was inferred from what was on the user's screen; it never leaves this device.
+    enum Source: String, Codable, Sendable { case user, conversation, behavior, calendar, screen }
     var id = UUID()
     var version = UUID()
     var ownerID: UUID?
@@ -44,6 +45,16 @@ struct BehaviorSignals: Codable, Equatable, Sendable {
     }
 }
 
+/// A short dated note of one finished conversation, so later sessions know what was discussed and done.
+/// Kept on this device only; context, never authorization.
+struct ConversationNote: Codable, Identifiable, Equatable, Sendable {
+    var id = UUID()
+    var at: Date
+    var text: String
+    /// "voice" or "typed".
+    var channel: String
+}
+
 /// One instance per account directory. A failed load permanently blocks this instance's writes.
 final class PersonalMemoryStore {
     struct Tombstone: Codable, Equatable { let normalizedTextHash: String; let forgottenAt: Date }
@@ -53,6 +64,8 @@ final class PersonalMemoryStore {
         var tombstones: [Tombstone] = []
         var signals: BehaviorSignals?
         var sync: SyncState?
+        /// Newest last. Never synced.
+        var notes: [ConversationNote]?
     }
     /// What this device has sent to and read from the account copy. Never synced itself.
     struct SyncState: Codable, Equatable {
@@ -82,6 +95,22 @@ final class PersonalMemoryStore {
     private(set) var token = UUID().uuidString
     var items: [MemoryItem] { document.items }
     var signals: BehaviorSignals { document.signals ?? BehaviorSignals() }
+    var notes: [ConversationNote] { document.notes ?? [] }
+    static let noteLimit = 200
+    /// Records what one conversation was about. The oldest notes fall off past the limit.
+    @discardableResult
+    func addNote(_ text: String, channel: String, now: Date = .now) throws -> ConversationNote? {
+        let clean = String(text.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces).prefix(600))
+        guard clean.count >= 8, !isForgotten(clean) else { return nil }
+        let note = ConversationNote(at: now, text: clean, channel: channel)
+        var doc = document; doc.notes = Array(((doc.notes ?? []) + [note]).suffix(Self.noteLimit))
+        try save(doc); return note
+    }
+    func removeNote(id: UUID) throws {
+        guard notes.contains(where: { $0.id == id }) else { throw CalendarToolArgumentError("That conversation note is already gone.") }
+        var doc = document; doc.notes?.removeAll { $0.id == id }
+        try save(doc)
+    }
     init(directory: URL, ownerID: UUID? = nil) {
         self.directory = directory; self.ownerID = ownerID
         do {
@@ -96,7 +125,8 @@ final class PersonalMemoryStore {
     static func hash(_ text: String) -> String { SHA256.hash(data: Data(normalize(text).utf8)).map { String(format: "%02x", $0) }.joined() }
     func isForgotten(_ text: String) -> Bool { document.tombstones.contains { $0.normalizedTextHash == Self.hash(text) } }
     private func validate(_ doc: Document) throws {
-        guard (1...Self.schemaVersion).contains(doc.schemaVersion), doc.items.count <= 500, Set(doc.items.map(\.id)).count == doc.items.count else { throw CalendarToolArgumentError("Unsupported or invalid memory document (maximum 500 items).") }
+        guard (1...Self.schemaVersion).contains(doc.schemaVersion), doc.items.count <= 500, Set(doc.items.map(\.id)).count == doc.items.count,
+              (doc.notes ?? []).count <= Self.noteLimit else { throw CalendarToolArgumentError("Unsupported or invalid memory document (maximum 500 items).") }
         var keys = Set<String>()
         for item in doc.items {
             guard item.ownerID == ownerID, item.text == item.text.trimmingCharacters(in: .whitespacesAndNewlines), (1...500).contains(item.text.count),
@@ -145,7 +175,7 @@ final class PersonalMemoryStore {
         guard (1...500).contains(clean.count) else { throw CalendarToolArgumentError("Memory text must be 1–500 characters.") }
         if isForgotten(clean) { return .forgottenBefore }
         let base = min(1, max(0.1, confidence ?? (source == .user ? 0.95 : 0.6)))
-        func expiry(_ value: Double) -> Date? { source == .user || value >= 0.75 ? nil : now.addingTimeInterval(90 * 86_400) }
+        func expiry(_ value: Double) -> Date? { source == .user || (value >= 0.75 && source != .screen) ? nil : now.addingTimeInterval(90 * 86_400) }
         var doc = document
         if let index = doc.items.firstIndex(where: { Self.normalize($0.text) == Self.normalize(clean) }) {
             var item = doc.items[index]
@@ -231,7 +261,8 @@ final class PersonalMemoryStore {
 
     func outgoingChanges() -> OutgoingChanges {
         let sync = document.sync ?? SyncState()
-        return OutgoingChanges(items: items.filter { sync.known[$0.id] != $0.version },
+        // Knowledge inferred from the screen stays on this device.
+        return OutgoingChanges(items: items.filter { sync.known[$0.id] != $0.version && $0.source != .screen },
                                deletes: sync.pendingDeletes.map { ($0.key, $0.value) }.sorted { $0.id.uuidString < $1.id.uuidString },
                                tombstones: document.tombstones.filter { !sync.sentTombstones.contains($0.normalizedTextHash) })
     }
@@ -296,7 +327,7 @@ final class PersonalMemoryStore {
         guard confirmed else { throw CalendarToolArgumentError("Confirm forgetting all personal memories first.") }
         var doc = document
         doc.tombstones += doc.items.map { .init(normalizedTextHash: Self.hash($0.text), forgottenAt: .now) }
-        doc.items = []; doc.signals = nil; try save(doc)
+        doc.items = []; doc.signals = nil; doc.notes = nil; try save(doc)
     }
 }
 
@@ -312,10 +343,16 @@ extension CalshotModel {
         personalMemoryCache = store; return store
     }
     /// Knowledge plus the learned calendar profile. Per-turn additions (`relevantOnly`) carry knowledge only.
-    func personalMemoryContext(for request: String, relevantOnly: Bool = false) -> String {
-        let knowledge = MemoryContextBuilder.build(request: request, items: personalMemory.items, characterBudget: relevantOnly ? 2_000 : 6_000, relevantOnly: relevantOnly)
-        guard !relevantOnly, let profile = calendarProfileContext, !profile.isEmpty else { return knowledge }
-        return [knowledge, profile].filter { !$0.isEmpty }.joined(separator: "\n")
+    /// The standing picture (not `relevantOnly`) also says who the user is and what earlier conversations were about.
+    func personalMemoryContext(for request: String, relevantOnly: Bool = false, characterBudget: Int = 6_000) -> String {
+        let knowledge = MemoryContextBuilder.build(request: request, items: personalMemory.items, characterBudget: relevantOnly ? 2_000 : characterBudget, relevantOnly: relevantOnly)
+        guard !relevantOnly else { return knowledge }
+        return [userIdentityContext, knowledge, calendarProfileContext ?? "", MemoryContextBuilder.notes(personalMemory.notes)].filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+    /// The account's display name, else the name of this Mac's user account.
+    var userIdentityContext: String {
+        let fromAccount = !accountDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return MemoryContextBuilder.identity(name: fromAccount ? accountDisplayName : NSFullUserName(), nameIsFromAccount: fromAccount, email: account.email)
     }
     @discardableResult
     func suggestPersonalMemory(kind: MemoryItem.Kind, text: String, sourceReference: String? = nil) throws -> MemoryItem {
@@ -344,6 +381,7 @@ extension CalshotModel {
         case "approveMemory", "forgetMemory": allowed.formUnion(["memoryID", "expectedVersion"])
         case "rejectMemory": allowed.formUnion(["memoryID", "expectedVersion", "dontSuggestAgain"])
         case "clearMemory": allowed.insert("confirmed")
+        case "forgetNote": allowed.insert("noteID")
         default: throw CalendarToolArgumentError("Unknown memory action.")
         }
         guard Set(body.keys).isSubset(of: allowed), body["token"] as? String == store.token else { throw CalendarToolArgumentError("Memory changed. Check the latest memories and try again.") }
@@ -352,6 +390,10 @@ extension CalshotModel {
             return flag
         }
         if action == "clearMemory" { try store.clear(confirmed: boolean("confirmed")); return }
+        if action == "forgetNote" {
+            guard let id = (body["noteID"] as? String).flatMap(UUID.init(uuidString:)) else { throw CalendarToolArgumentError("Choose a current conversation note.") }
+            try store.removeNote(id: id); return
+        }
         if action == "addMemory" || action == "editMemory" {
             guard let raw = body["kind"] as? String, let kind = MemoryItem.Kind(rawValue: raw), let text = body["text"] as? String, (1...500).contains(text.trimmingCharacters(in: .whitespacesAndNewlines).count) else { throw CalendarToolArgumentError("Choose a memory kind and enter 1–500 characters.") }
             if action == "addMemory" { try store.add(kind: kind, text: text); return }

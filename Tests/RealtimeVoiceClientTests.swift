@@ -488,7 +488,57 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         XCTAssertEqual(client.images, 0); XCTAssertEqual(client.responses, 0)
         audio.onInput?(Data(count: 9600)); await s.talk(false); await settle()
         XCTAssertEqual(frames.captures, 1, "Release reuses the prefetched frame")
-        XCTAssertEqual(client.commits, 1); XCTAssertEqual(client.images, 1); XCTAssertEqual(client.responses, 1); s.stop()
+        XCTAssertEqual(client.commits, 1); XCTAssertEqual(client.responses, 1)
+        XCTAssertEqual(client.images, 0, "Without drawing, the screen travels as text; the image is sent on demand")
+        XCTAssertTrue(client.contexts.contains { $0.contains("as text only") && $0.contains("look_at_screen") }); s.stop()
+    }
+    func testLookAtScreenSendsTheTurnsFrameWithItsToolResult() async {
+        let s = make(); var ran: [String] = []; s.execute = { name, _ in ran.append(name); return "{}" }
+        await s.toggle(); s.handle(.sessionUpdated)
+        XCTAssertTrue(client.configuration?.tools.contains { $0.objectValue?["name"]?.stringValue == "look_at_screen" } == true)
+        await say(s); XCTAssertEqual(frames.captures, 1); XCTAssertEqual(client.images, 0)
+        s.handle(.functionCall(callID: "look-1", name: "look_at_screen", argumentsJSON: "{}")); await settle()
+        XCTAssertEqual(client.images, 1); XCTAssertEqual(client.results, ["{\"shown\":true}"])
+        XCTAssertEqual(frames.captures, 1, "The frame captured while the user spoke is reused")
+        XCTAssertTrue(ran.isEmpty, "Looking at the screen is not a native tool run"); s.stop()
+    }
+    func testLookAtScreenIsNotOfferedWithoutScreenPermission() async {
+        let s = make(screen: false); await s.toggle(); s.handle(.sessionUpdated)
+        XCTAssertFalse(client.configuration?.tools.contains { $0.objectValue?["name"]?.stringValue == "look_at_screen" } ?? true)
+        s.handle(.functionCall(callID: "look-1", name: "look_at_screen", argumentsJSON: "{}")); await settle()
+        XCTAssertEqual(client.images, 0); XCTAssertTrue(client.results.first?.contains("\"shown\":false") == true); s.stop()
+    }
+    func testSessionEndHandsSpokenTurnsAndScreenTextToReflection() async {
+        let s = make(); var ended: (turns: Int, screen: String)?
+        s.onConversationEnded = { turns, screen in ended = (turns.count, screen) }
+        frames.text = ScreenTextRecognition(lines: [RecognizedScreenLine(text: "Fictional course outline", region: SourceRegion(x: 0, y: 0, width: 1, height: 0.1))])
+        await s.toggle(); s.handle(.sessionUpdated); await say(s)
+        s.handle(.userTranscript(itemID: "u1", text: "Fictional question about my week", final: true)); s.stop()
+        XCTAssertEqual(ended?.turns, 1); XCTAssertEqual(ended?.screen, "Fictional course outline")
+    }
+    func testMarkedTextIsNamedAsWhatTheUserMeans() async {
+        let s = make()
+        frames.text = ScreenTextRecognition(lines: [
+            RecognizedScreenLine(text: "Fictional essay due Mar 10", region: SourceRegion(x: 0.1, y: 0.20, width: 0.3, height: 0.03)),
+            RecognizedScreenLine(text: "Fictional unrelated banner", region: SourceRegion(x: 0.1, y: 0.80, width: 0.3, height: 0.03))])
+        frames.regions = [CGRect(x: 0.05, y: 0.18, width: 0.5, height: 0.08)]
+        await s.toggle(); s.handle(.sessionUpdated)
+        overlay.marks = [FocusMark(kind: .stroke, points: [.zero, CGPoint(x: 40, y: 40)], displayID: 1, timestamp: Date())]
+        await say(s)
+        let caption = client.captions.last ?? ""
+        XCTAssertEqual(client.images, 1)
+        let marked = caption.components(separatedBy: "The rest of the screen").first ?? ""
+        XCTAssertTrue(marked.contains("Text inside the user's marks") && marked.contains("Fictional essay due Mar 10"))
+        XCTAssertFalse(marked.contains("Fictional unrelated banner"), "Only what was marked is named as the subject")
+        XCTAssertTrue(caption.contains("Fictional unrelated banner"), "The rest of the screen stays available as context"); s.stop()
+    }
+    func testMarkedLinesFallBackToAnyTouchedLine() {
+        let text = ScreenTextRecognition(lines: [
+            RecognizedScreenLine(text: "A long fictional line with one circled word", region: SourceRegion(x: 0.0, y: 0.5, width: 0.9, height: 0.03)),
+            RecognizedScreenLine(text: "Fictional far line", region: SourceRegion(x: 0.0, y: 0.1, width: 0.2, height: 0.03))])
+        XCTAssertEqual(text.lines(markedBy: [CGRect(x: 0.02, y: 0.49, width: 0.06, height: 0.05)]).map(\.text), ["A long fictional line with one circled word"])
+        XCTAssertTrue(text.lines(markedBy: []).isEmpty)
+        XCTAssertTrue(text.lines(markedBy: [CGRect(x: 0.5, y: 0.9, width: 0.1, height: 0.05)]).isEmpty)
     }
     func testDrawingDuringTheHoldRecapturesSoStrokesRideWithTheTurn() async {
         let s = make(); await s.toggle(); s.handle(.sessionUpdated)
@@ -582,7 +632,8 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         await s.talk(true); XCTAssertTrue(s.drawing); XCTAssertEqual(overlay.drawingCalls.last, true)
         audio.onInput?(Data(count: 9600)); await s.talk(false); await settle()
         XCTAssertFalse(s.drawing); XCTAssertEqual(overlay.drawingCalls.last, false)
-        XCTAssertTrue(client.captions.last?.contains("Nov 3, 2026 · 6:00 PM") == true); XCTAssertTrue(client.captions.last?.contains("untrusted") == true)
+        let screen = client.contexts.last { $0.contains("Nov 3, 2026 · 6:00 PM") }
+        XCTAssertNotNil(screen); XCTAssertTrue(screen?.contains("untrusted") == true)
         XCTAssertEqual(shared?.text, "Fictional kick-off Nov 3, 2026 · 6:00 PM"); s.stop()
     }
     func testCreateWaitsForTheSpokenTurnsTranscriptButReadsDoNot() async throws {

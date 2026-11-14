@@ -21,6 +21,9 @@ struct CalendarProfile: Equatable, Sendable {
     var typicalDayEnd: Int?
     var places: [(name: String, count: Int)] = []
     var busyDays: [(day: Date, count: Int)] = []
+    /// The most repeated event titles in the window, with how often each appears. Evidence for what the
+    /// user's life looks like (courses, work, sport); read only by the background knowledge pass.
+    var commonTitles: [(title: String, count: Int)] = []
     var eventCount = 0
     var complete = true
     var builtAt = Date.distantPast
@@ -64,6 +67,9 @@ struct CalendarProfile: Equatable, Sendable {
             profile.routines.append(.init(title: items.last?.title ?? name, weekdays: weekdays.sorted(), startMinute: median(starts),
                                           durationMinutes: median(minutes), occurrences: starts.count))
         }
+        profile.commonTitles = Dictionary(grouping: events.filter { !key($0.title).isEmpty }) { key($0.title) }
+            .map { (title: String(($0.value.last?.title ?? $0.key).prefix(80)), count: $0.value.count) }
+            .filter { $0.count >= 2 }.sorted { ($0.count, $1.title) > ($1.count, $0.title) }.prefix(40).map { $0 }
         profile.routines.sort { ($0.occurrences, $1.title) > ($1.occurrences, $0.title) }
         profile.routines = Array(profile.routines.prefix(12))
 
@@ -102,6 +108,15 @@ struct CalendarProfile: Equatable, Sendable {
         }
         return best?.minutes
     }
+
+    /// Evidence for the knowledge pass: repeated titles, routines and places. Empty when there is too little to learn from.
+    func evidence(calendar: Calendar = .current) -> String {
+        guard commonTitles.count >= 2 else { return "" }
+        let titles = commonTitles.map { "- \(Self.quoted($0.title)) ×\($0.count)" }.joined(separator: "\n")
+        return "Repeated event titles on the user's own calendars over the last 8 and next 4 weeks:\n" + titles + "\n" + context(calendar: calendar)
+    }
+    /// Changes only when the set of repeated titles changes, so the knowledge pass is not repeated for the same calendar.
+    var evidenceFingerprint: String { PersonalMemoryStore.hash(commonTitles.map { Self.key($0.title) }.sorted().joined(separator: "|")) }
 
     private static func clock(_ minute: Int) -> String { String(format: "%02d:%02d", minute / 60 % 24, minute % 60) }
     private static let weekdayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -156,6 +171,7 @@ extension CalshotModel {
             guard key.hasPrefix(self.calendarProfileOwnerKey) else { return }
             self.calendarProfile = CalendarProfile.build(events: events, now: Date(), complete: complete)
             self.calendarProfileKey = key
+            self.learnFromCalendarProfile()
         }
     }
 }

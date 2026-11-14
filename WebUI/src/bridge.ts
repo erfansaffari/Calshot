@@ -33,6 +33,18 @@ const update = (next: AppState) => {
   listeners.forEach((l) => l());
 };
 window.__calshotReceive = update;
+// Native sends only the top-level keys that changed, so unchanged parts keep their identity.
+window.__calshotPatch = (patch, removed, full) => {
+  const next = (full ? { ...patch } : { ...state, ...patch }) as Record<string, unknown>;
+  for (const key of removed) delete next[key];
+  update(next as unknown as AppState);
+};
+/** Live microphone/speaker levels for the voice glow. Read per animation frame; never React state. */
+export const voiceLevels = { input: 0, output: 0 };
+window.__calshotLevels = (input: number, output: number) => {
+  voiceLevels.input = input;
+  voiceLevels.output = output;
+};
 window.__calshotReply = ({ id, ok, error }) => {
   const pending = requests.get(id);
   if (!pending) return;

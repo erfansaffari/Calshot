@@ -796,7 +796,7 @@ export function SettingsPage({ state }: { state: AppState }) {
               </div>
               <ShortcutControl state={state} target="capture" title="Capture shortcut" description="Select part of your screen from anywhere." />
               <ShortcutControl state={state} target="voice" title="Voice shortcut" description="Hold to talk from anywhere. Tap to end voice." />
-              <div className="settings-row">
+              {s.notchAvailable !== false && <div className="settings-row">
                 <div>
                   <h3>Show Calshot in the notch</h3>
                   <p>
@@ -813,7 +813,7 @@ export function SettingsPage({ state }: { state: AppState }) {
                     void a.run("notchEnabled", { enabled: e.target.checked })
                   }
                 />
-              </div>
+              </div>}
               <div className="settings-row">
                 <div>
                   <h3>Copy captures to clipboard</h3>
@@ -1159,7 +1159,9 @@ export function memorySourceLabel(item: PersonalMemoryItem) {
     case "behavior":
       return "Learned from how you use Calshot";
     case "calendar":
-      return "Learned from your calendar";
+      return (item.confidence ?? 1) >= 0.75 ? "Learned from your calendar" : "Guessed from your calendar";
+    case "screen":
+      return "Guessed from your screen · stays on this Mac";
     case "user":
       return (item.evidenceCount ?? 1) > 1 ? `You said this (${item.evidenceCount} times)` : "You said this";
     default:
@@ -1339,6 +1341,42 @@ function KnowledgeSyncControls({ sync }: { sync: NonNullable<PersonalMemoryState
     </div>
   );
 }
+function ConversationNoteRow({
+  note,
+  token,
+  disabled,
+}: {
+  note: { id: string; at: string; text: string; channel: string };
+  token: string;
+  disabled: boolean;
+}) {
+  const a = useAction();
+  const when = new Date(note.at);
+  return (
+    <div className="personal-memory-row">
+      <p>{note.text}</p>
+      <p className="fine-print personal-memory-source">
+        {Number.isNaN(when.getTime())
+          ? ""
+          : when.toLocaleString(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
+        {note.channel === "voice" ? " · Voice" : " · Typed"}
+      </p>
+      <div className="personal-memory-actions">
+        <button
+          className="button secondary"
+          disabled={a.busy || disabled}
+          onClick={() => void a.run("forgetNote", { token, noteID: note.id })}
+        >
+          Forget
+        </button>
+      </div>
+      <InlineError message={a.error} />
+    </div>
+  );
+}
 export function PersonalMemorySettings({ state }: { state: AppState }) {
   const memory = state.personalMemory;
   const a = useAction();
@@ -1352,8 +1390,9 @@ export function PersonalMemorySettings({ state }: { state: AppState }) {
       <div className="card settings-card">
         <p className="fine-print">
           What Calshot knows about you: what you tell it, what it learns from
-          your conversations and how you react, and patterns in your calendar.
-          It stays on this Mac, separately for each account. Relevant items are
+          your conversations, your screen while you talk to it and how you
+          react, and patterns in your calendar. It stays on this Mac,
+          separately for each account. Relevant items are
           sent to your chosen AI service as context and never authorize changes.
           Edit anything that is wrong; forgetting means it won’t be learned
           again.
@@ -1389,6 +1428,23 @@ export function PersonalMemorySettings({ state }: { state: AppState }) {
               <MemoryRow
                 key={i.id}
                 item={i}
+                token={memory.token}
+                disabled={disabled}
+              />
+            ))}
+          </div>
+        )}
+        {!!memory?.notes?.length && (
+          <div>
+            <h3>Earlier conversations</h3>
+            <p className="fine-print">
+              Short notes Calshot keeps so it remembers what you talked about.
+              They stay on this Mac.
+            </p>
+            {memory.notes.map((note) => (
+              <ConversationNoteRow
+                key={note.id}
+                note={note}
                 token={memory.token}
                 disabled={disabled}
               />

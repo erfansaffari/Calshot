@@ -289,6 +289,72 @@ final class ContextEngineTests: XCTestCase {
         XCTAssertTrue(ContextReflection.parse("not json").isEmpty)
     }
 
+    func testReflectionKeepsCalendarAndScreenConclusionsAsInferences() throws {
+        let store = PersonalMemoryStore(directory: directory)
+        func add(_ text: String, _ basis: String, _ confidence: Double) -> JSONValue {
+            .object(["op": .string("add"), "kind": .string("fact"), "text": .string(text), "memoryID": .null, "confidence": .number(confidence),
+                     "userAskedToForget": .bool(false), "basis": .string(basis)])
+        }
+        let arguments = JSONValue.object(["summary": .string("Asked about a fictional week and added a fictional task."), "operations": .array([
+            add("Is a fictional university student", "calendar", 0.99), add("Works on a fictional compiler project", "screen", 0.95),
+            add("Lives in a fictional town", "said", 0.95), add("Probably likes fictional chess", "conversation", 0.95)])]).jsonString()
+        XCTAssertEqual(ContextReflection.apply(ContextReflection.parse(arguments), to: store), 4)
+        XCTAssertEqual(ContextReflection.summary(arguments), "Asked about a fictional week and added a fictional task.")
+        XCTAssertNil(ContextReflection.summary(JSONValue.object(["summary": .null, "operations": .array([])]).jsonString()))
+        let student = try XCTUnwrap(store.items.first { $0.text == "Is a fictional university student" })
+        XCTAssertEqual(student.source, .calendar); XCTAssertEqual(student.effectiveConfidence, 0.8, accuracy: 0.001)
+        let project = try XCTUnwrap(store.items.first { $0.text == "Works on a fictional compiler project" })
+        XCTAssertEqual(project.source, .screen); XCTAssertEqual(project.effectiveConfidence, 0.7, accuracy: 0.001); XCTAssertNotNil(project.expiresAt)
+        XCTAssertEqual(store.items.first { $0.text == "Lives in a fictional town" }?.source, .user)
+        XCTAssertEqual(store.items.first { $0.text == "Probably likes fictional chess" }?.source, .conversation)
+        XCTAssertFalse(store.outgoingChanges().items.contains { $0.source == .screen }, "Screen knowledge never leaves this device")
+        XCTAssertEqual(store.outgoingChanges().items.count, 3)
+        XCTAssertTrue(MemoryContextBuilder.label(project).contains("inferred from the screen"))
+        let prompt = ContextReflection.prompt(turns: [], knowledge: "", identity: "About the user", calendar: "\"Fictional STAT 230 lecture\" ×12", screen: "Fictional screen")
+        XCTAssertTrue(prompt.contains("×12") && prompt.contains("Fictional screen") && prompt.contains("summary is null"))
+    }
+
+    func testConversationNotesArePersistedBoundedAndForgettable() throws {
+        let store = PersonalMemoryStore(directory: directory), start = Date(timeIntervalSince1970: 1_800_000_000)
+        for index in 0..<(PersonalMemoryStore.noteLimit + 5) {
+            try store.addNote("Fictional conversation number \(index)", channel: "voice", now: start.addingTimeInterval(Double(index) * 3600))
+        }
+        XCTAssertNil(try store.addNote("short", channel: "voice"))
+        let reloaded = PersonalMemoryStore(directory: directory)
+        XCTAssertEqual(reloaded.notes.count, PersonalMemoryStore.noteLimit); XCTAssertNil(reloaded.error)
+        XCTAssertEqual(reloaded.notes.last?.text, "Fictional conversation number \(PersonalMemoryStore.noteLimit + 4)")
+        let block = MemoryContextBuilder.notes(reloaded.notes, characterBudget: 400)
+        XCTAssertTrue(block.contains("number \(PersonalMemoryStore.noteLimit + 4)")); XCTAssertFalse(block.contains("number 5\""))
+        XCTAssertLessThan(block.count, 700)
+        let last = try XCTUnwrap(reloaded.notes.last)
+        try reloaded.removeNote(id: last.id); XCTAssertFalse(reloaded.notes.contains { $0.id == last.id })
+        XCTAssertThrowsError(try reloaded.removeNote(id: last.id))
+        XCTAssertTrue(reloaded.outgoingChanges().isEmpty, "Notes are never synced")
+        try reloaded.clear(confirmed: true); XCTAssertTrue(reloaded.notes.isEmpty)
+    }
+
+    func testIdentityAndCalendarEvidenceDescribeTheUser() throws {
+        let identity = MemoryContextBuilder.identity(name: "Fictional Robin", nameIsFromAccount: true, email: "robin@example.invalid", timeZone: TimeZone(identifier: "America/Toronto")!)
+        XCTAssertTrue(identity.contains("name: \"Fictional Robin\"") && identity.contains("robin@example.invalid") && identity.contains("America/Toronto"))
+        XCTAssertTrue(MemoryContextBuilder.identity(name: "Fictional Mac User", nameIsFromAccount: false, email: "").contains("this Mac's user account"))
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "UTC")!
+        let monday = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 5, hour: 9, minute: 30)))
+        var events: [CalendarEventSnapshot] = []
+        for week in 0..<4 {
+            events.append(event("Fictional STAT 230 lecture", monday.addingTimeInterval(Double(week) * 7 * 86_400), minutes: 50))
+            events.append(event("Fictional CS 246 tutorial", monday.addingTimeInterval(Double(week) * 7 * 86_400 + 86_400), minutes: 50))
+        }
+        events.append(event("Fictional one-off", monday, minutes: 30))
+        let profile = CalendarProfile.build(events: events, now: monday.addingTimeInterval(21 * 86_400), calendar: calendar)
+        XCTAssertEqual(profile.commonTitles.map(\.count), [4, 4])
+        let evidence = profile.evidence(calendar: calendar)
+        XCTAssertTrue(evidence.contains("\"Fictional STAT 230 lecture\" ×4") && evidence.contains("\"Fictional CS 246 tutorial\" ×4"))
+        XCTAssertFalse(evidence.contains("one-off"))
+        let again = CalendarProfile.build(events: events + [event("Fictional single visit", monday, minutes: 30)], now: monday.addingTimeInterval(22 * 86_400), calendar: calendar)
+        XCTAssertEqual(profile.evidenceFingerprint, again.evidenceFingerprint, "A new single event does not repeat the knowledge pass")
+        XCTAssertTrue(CalendarProfile.build(events: [], now: monday).evidence().isEmpty)
+    }
+
     func testSpokenDatesNeverAskForAYearAndUseTheUsualLength() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000) // 2027-01-15
         func draft(_ fields: [String: JSONValue], evidence: String = "") throws -> EventDraft {

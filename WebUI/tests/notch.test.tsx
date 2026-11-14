@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { preview } from "../src/preview";
 import type { AppState } from "../src/types";
 const mock = vi.hoisted(() => ({ state: {} as AppState, command: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("../src/bridge", () => ({ useAppState: () => mock.state, command: mock.command }));
+vi.mock("../src/bridge", () => ({ useAppState: () => mock.state, command: mock.command, voiceLevels: { input: .5, output: 0 } }));
 import NotchApp from "../src/NotchApp";
 beforeEach(() => { mock.state = structuredClone(preview); mock.command.mockClear(); });
 afterEach(cleanup);
@@ -98,9 +98,11 @@ it("holds to talk: press uses the session token, release does not need it", asyn
   expect(mock.command).toHaveBeenCalledWith({ action: "voiceTalk", token: "voice-current", pressed: true });
   expect(mock.command).toHaveBeenCalledWith({ action: "voiceTalk", pressed: false });
 });
-it("shows live voice level while talking and stops with its current session token", async () => {
+it("shows listening while talking and stops with its current session token", async () => {
+  // The level drives only the decorative glow, outside React; the spoken status is the text.
   voiceFixture(); mock.state.voice!.talking = true; render(<NotchApp />);
-  expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe("0.5"); expect(screen.getByText("Listening")).toBeTruthy();
+  expect(screen.getByRole("status").textContent).toBe("Listening");
+  expect(screen.getByRole("button", { name: "Hold to talk" }).getAttribute("aria-pressed")).toBe("true");
   await userEvent.click(screen.getByRole("button", { name: "Stop", exact: true }));
   expect(mock.command).toHaveBeenCalledWith({ action: "stopVoice", token: "voice-current" });
 });

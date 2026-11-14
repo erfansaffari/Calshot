@@ -257,9 +257,13 @@ final class CalshotModel: ObservableObject {
         didSet { if taskUsesNotch && !notchEnabled { taskUsesNotch = false } }
     }
     var notchLauncherController: NotchExperienceController?
+    /// The hover notch (capture bar, quick menu, tasks in the notch) is switched off for now: only the voice island
+    /// shows. Set this to true to bring the notch and its Settings switch back; nothing else needs to change.
+    static var notchAvailable = false
     /// Device-local preference, on by default. Off hides the notch; tasks open in the workspace.
-    @Published var notchEnabled = UserDefaults.standard.object(forKey: "notchEnabled") as? Bool ?? true {
+    @Published var notchEnabled = CalshotModel.notchAvailable && (UserDefaults.standard.object(forKey: "notchEnabled") as? Bool ?? true) {
         didSet {
+            if notchEnabled && !Self.notchAvailable { notchEnabled = false; return }
             guard notchEnabled != oldValue else { return }
             if persistsAISelection { UserDefaults.standard.set(notchEnabled, forKey: "notchEnabled") }
             if voiceSession.active { notchLauncherController?.showVoice(); return }
@@ -356,6 +360,11 @@ final class CalshotModel: ObservableObject {
     var accountSyncTask: Task<Void, Never>?
     var accountSyncTimer: Timer?
     @Published var accountSyncBusy = false
+    /// What the last sync that changed nothing saw. While it still holds, the 30-second sync skips re-hashing
+    /// and merging the whole history on the main thread.
+    var accountSyncUnchangedKey: String?
+    /// Saved changes from history files, newest first, rebuilt only when a history file changes.
+    var calendarHistoryLedgerCache: (key: String, rows: [CalendarActionProposal])?
     @Published var accountSyncStatus = "Not synced yet"
     @Published var accountSyncError: String?
     @Published var accountSyncLastDate: Date?
@@ -644,7 +653,7 @@ final class CalshotModel: ObservableObject {
 
     /// Voice starts with the same history a typed request sees: recent chat turns and recent saved changes.
     /// Shared-friend content is excluded. Untrusted context; it never authorizes or replays a write.
-    func voiceHistoryContext(turnLimit: Int = 30, characterBudget: Int = 8_000) -> String {
+    func voiceHistoryContext(turnLimit: Int = 40, characterBudget: Int = 12_000) -> String {
         let context = (try? ongoingConversationContext(limit: turnLimit, budget: characterBudget)) ?? .object(["error": .string("Earlier conversation is temporarily unavailable. Do not claim there is no history or invent it.")])
         let history = context.jsonString()
         let formatter = ISO8601DateFormatter()
@@ -669,11 +678,31 @@ final class CalshotModel: ObservableObject {
 
     /// Every saved calendar change with a receipt, newest first, across the chat and any unmerged records.
     func calendarChangeLedger() -> [CalendarActionProposal] {
+        func newestFirst(_ rows: [CalendarActionProposal]) -> [CalendarActionProposal] {
+            // Sort positions, not the proposals: moving large structs was the slowest part of every snapshot.
+            // Ties keep their original order, as a stable sort would.
+            let saved = rows.map { $0.receipt?.savedAt ?? .distantPast }
+            return rows.indices.sorted { saved[$0] != saved[$1] ? saved[$0] > saved[$1] : $0 < $1 }.map { rows[$0] }
+        }
+        let store = memoryStore
+        let records = store.listRecords()
+        let key = store.instanceID.uuidString + "|" + String(store.recordsRevision)
+        let history: [CalendarActionProposal]
+        if let cached = calendarHistoryLedgerCache, cached.key == key { history = cached.rows } else {
+            history = newestFirst(records.filter { $0.mergedIntoMainChat != true }.flatMap(\.calendarProposals).filter { $0.isFinished && $0.receipt != nil })
+            calendarHistoryLedgerCache = (key, history)
+        }
+        let current = newestFirst(calendarActions.proposals.filter { $0.isFinished && $0.receipt != nil })
+        // Merge the two newest-first lists; on equal times the current conversation comes first.
+        var merged: [CalendarActionProposal] = []; merged.reserveCapacity(current.count + history.count)
+        var i = 0, j = 0
+        while i < current.count || j < history.count {
+            if j == history.count || (i < current.count && (current[i].receipt?.savedAt ?? .distantPast) >= (history[j].receipt?.savedAt ?? .distantPast)) {
+                merged.append(current[i]); i += 1
+            } else { merged.append(history[j]); j += 1 }
+        }
         var seen = Set<UUID>()
-        let rows = (calendarActions.proposals + memoryStore.listRecords().filter { $0.mergedIntoMainChat != true }.flatMap(\.calendarProposals))
-            .filter { $0.isFinished && $0.receipt != nil }
-            .sorted { ($0.receipt?.savedAt ?? .distantPast) > ($1.receipt?.savedAt ?? .distantPast) }
-        return rows.filter { seen.insert($0.id).inserted }
+        return merged.filter { seen.insert($0.id).inserted }
     }
 
     var memoryDirectoryURL: URL { memoryStore.locationURL }

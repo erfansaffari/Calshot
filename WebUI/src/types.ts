@@ -215,7 +215,7 @@ export interface AgentPermissionsState {
 export interface ShortcutStatus { label: string; isDefault: boolean; error?: string | null }
 export interface VoiceState {
   audioIssue?: "permission" | "devices" | null;
-  token: string; state: string; active: boolean; inputLevel: number; caption: string; userTranscript: string; drawing: boolean;
+  token: string; state: string; active: boolean; inputLevel?: number; caption: string; userTranscript: string; drawing: boolean;
   usage: { seconds: number; estimatedCost: number }; error?: string; needsKey: boolean; needsAcknowledgement: boolean; talking?: boolean; shortcut?: string; outputLevel?: number;
   permissions: { microphone: boolean; screen: boolean }; model: string; voice: string; monthlyCap: number;
 }
@@ -342,6 +342,7 @@ export interface AppState {
     copyCaptures: boolean;
     /** Device-local; on unless the user turned the notch off. */
     notchEnabled?: boolean;
+    notchAvailable?: boolean;
   };
 }
 export interface Command {
@@ -355,6 +356,8 @@ declare global {
       messageHandlers: { calshot: { postMessage: (message: unknown) => void } };
     };
     __calshotReceive?: (state: AppState) => void;
+    __calshotLevels?: (input: number, output: number) => void;
+    __calshotPatch?: (patch: Partial<AppState>, removed: string[], full: boolean) => void;
     __calshotReply?: (reply: {
       id: string;
       ok: boolean;
@@ -385,7 +388,7 @@ export interface PersonalMemoryItem {
   updatedAt: string;
   expiresAt?: string;
   /** Where Calshot learned it. Absent on older items, which the user stated or approved. */
-  source?: "user" | "conversation" | "behavior" | "calendar";
+  source?: "user" | "conversation" | "behavior" | "calendar" | "screen";
   confidence?: number;
   evidenceCount?: number;
   lastSeenAt?: string;
@@ -415,6 +418,8 @@ export interface PersonalMemoryState {
   error?: string | null;
   items: PersonalMemoryItem[];
   pending: PersonalMemoryItem[];
+  /** Calshot's dated notes on earlier conversations, newest first. Kept on this Mac only. */
+  notes?: { id: string; at: string; text: string; channel: string }[];
   token: string;
   /** Account copy in Supabase. The copy on this Mac is always the one Calshot reads. */
   sync?: { available: boolean; enabled: boolean; busy: boolean; status: string; error: string | null; serverReady: boolean };

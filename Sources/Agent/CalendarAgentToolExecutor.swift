@@ -31,7 +31,9 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
     var cancelTaskMutation: ((UUID) -> Void)?
     /// Task-only creation under a saved explicit grant. Returns nil when the user must review the import
     /// (no matching grant or a dated deadline needs its own calendar review). Never approves calendar writes.
-    var commitTaskOnlyImport: ((UUID) async throws -> JSONValue?)?
+    /// Saves the staged tasks under a saved task grant. `true` also accepts tasks whose deadline goes to the calendar;
+    /// the deadline itself is then written under the calendar grant, never the task grant.
+    var commitTaskOnlyImport: ((UUID, Bool) async throws -> JSONValue?)?
     /// Saved calendar grant. Nil keeps every create and update on the existing review path.
     var applyCalendarGrant: ((UUID, String, String, [AgentCalendarGrantRow]) async -> AgentCalendarGrantOutcome)?
     var availableToolNames: Set<String> {
@@ -387,12 +389,23 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 let result = try createTasks(fields)
                 let hasNew = result.saved.arrayValue?.contains { $0.objectValue?["alreadyInTasks"] != .bool(true) } == true
                 guard hasNew else { return JSONValue.object(["tasksSaved": taskImportReceipts?(result.saved) ?? .array([]), "calendar": .string("Already in Tasks. No new calendar writes.")]).jsonString() }
-                if result.proposals.isEmpty, let commitTaskOnlyImport {
-                    // Task-only: a matching saved grant saves immediately; otherwise fall through to the existing review.
-                    if let committed = try await commitTaskOnlyImport(sessionID) {
+                if let commitTaskOnlyImport, result.proposals.isEmpty || (applyCalendarGrant != nil && result.proposals.allSatisfy({ $0.targetDestinationID == result.proposals[0].targetDestinationID && $0.targetDestinationID != nil })) {
+                    // A matching saved task grant saves the tasks immediately; otherwise fall through to the existing review.
+                    if let committed = try await commitTaskOnlyImport(sessionID, !result.proposals.isEmpty) {
                         guard self.sessionID == sessionID else { return #"{"cancelled":true}"# }
                         finishTaskImport?()
-                        return JSONValue.object(["tasksSaved": committed, "calendar": .string("No calendar changes. This was task-only.")]).jsonString()
+                        guard let first = result.proposals.first, let destinationID = first.targetDestinationID else {
+                            return JSONValue.object(["tasksSaved": committed, "calendar": .string("No calendar changes. This was task-only.")]).jsonString()
+                        }
+                        // The tasks are saved. Each deadline is a separate calendar write under the calendar grant, row by row;
+                        // a row that grant does not cover opens the calendar review for that deadline only.
+                        var retained = coordinator.proposals
+                        for index in retained.indices where !retained[index].isFinished { retained[index].isSelected = false }
+                        let rows = result.proposals.map { AgentCalendarGrantRow(proposal: $0, recurring: false, guests: false) }
+                        let calendar = await commitCalendarProposals(name: name, destinationID: destinationID, destinationName: first.targetCalendarName ?? "Calendar",
+                                                                     rows: rows, retained: retained, extraSkipped: [], sessionID: sessionID)
+                        return JSONValue.object(["tasksSaved": committed, "calendar": (try? JSONDecoder().decode(JSONValue.self, from: Data(calendar.utf8))) ?? .string(calendar),
+                            "note": .string("The tasks are saved in Tasks. Their calendar deadlines are separate rows under calendar: only rows listed as saved or added are on the calendar.")]).jsonString()
                     }
                     guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                 }
@@ -919,15 +932,21 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         let failedRows: [JSONValue] = failed.map { row in
             .object(["proposalID": .string(row.proposal.id.uuidString), "title": .string(row.proposal.draft.title), "error": .string(row.message)])
         }
-        var note = "Rows in saved were written immediately; their receipts are the only proof they were saved. Rows in awaitingReview were not saved by the calendar permission. Report each row on its own."
+        // Once the review has returned it is closed. Listing its rows as "awaiting" made the agent announce the review again.
+        let reviewClosed = reviewPayload != nil
+        let reviewed = reviewClosed ? awaiting : []
+        let stillAwaiting = reviewClosed ? [] : awaiting
+        var note = "Rows in saved were written immediately; their receipts are the only proof they were saved. " + (reviewClosed
+            ? "Rows in reviewed went through a review that the user has now finished: it is closed and nothing is waiting in the notch. Report each by its outcome (added, updated, deleted or moved means saved; skipped means the user left it out). Do not mention a review."
+            : "Rows in awaitingReview were not saved by the calendar permission.") + " Report each row on its own."
         if !historyError.isEmpty { note += " Calendar history could not be updated: " + historyError }
         if name == "update_event", review.isEmpty, saved.count == 1, failed.isEmpty {
             return JSONValue.object(["updated": .bool(true), "eventIdentifier": .string(saved[0].receipt?.eventIdentifier ?? ""),
-                "saved": .array(savedRows), "awaitingReview": .array([]), "failed": .array([]), "note": .string(note)]).jsonString()
+                "saved": .array(savedRows), "awaitingReview": .array([]), "reviewed": .array([]), "failed": .array([]), "note": .string(note)]).jsonString()
         }
         if name == "update_event", saved.isEmpty, let payload = reviewPayload?.objectValue {
             var fields = payload
-            fields["saved"] = .array([]); fields["awaitingReview"] = .array(awaiting); fields["note"] = .string(note)
+            fields["saved"] = .array([]); fields["awaitingReview"] = .array(stillAwaiting); fields["reviewed"] = .array(reviewed); fields["note"] = .string(note)
             if !failedRows.isEmpty { fields["failed"] = .array(failedRows) }
             return JSONValue.object(fields).jsonString()
         }
@@ -943,7 +962,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
             else { skipped = (payload["skipped"]?.arrayValue ?? []) }
         }
         return JSONValue.object(["added": .array(added), "failed": .array(failedOut), "skipped": .array(skipped),
-            "saved": .array(savedRows), "awaitingReview": .array(awaiting), "note": .string(note)]).jsonString()
+            "saved": .array(savedRows), "awaitingReview": .array(stillAwaiting), "reviewed": .array(reviewed), "note": .string(note)]).jsonString()
     }
 
     private func awaitApproval(name: String, ids: Set<UUID>, extraSkipped: [CalendarActionProposal] = []) async -> String {

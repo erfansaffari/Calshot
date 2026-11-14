@@ -13,6 +13,23 @@ struct ScreenTextRecognition: Sendable {
     let lines: [RecognizedScreenLine]
     var text: String { lines.map(\.text).joined(separator: "\n") }
 
+    /// The lines the user marked: those mostly inside a drawn region (normalized, top-left origin, like the lines).
+    /// A small mark on part of a long line selects that line, so a circle around one word is never empty.
+    func lines(markedBy regions: [CGRect]) -> [RecognizedScreenLine] {
+        let marks = regions.filter { $0.width > 0 && $0.height > 0 }
+        guard !marks.isEmpty else { return [] }
+        func box(_ line: RecognizedScreenLine) -> CGRect { CGRect(x: line.region.x, y: line.region.y, width: line.region.width, height: line.region.height) }
+        let inside = lines.filter { line in
+            let frame = box(line)
+            return marks.contains { mark in
+                let overlap = mark.intersection(frame)
+                guard !overlap.isNull, frame.width > 0, frame.height > 0 else { return false }
+                return mark.contains(CGPoint(x: frame.midX, y: frame.midY)) || overlap.width * overlap.height >= 0.35 * frame.width * frame.height
+            }
+        }
+        return inside.isEmpty ? lines.filter { line in marks.contains { $0.intersects(box(line)) } } : inside
+    }
+
     func region(for evidence: String) -> SourceRegion? {
         let tokens = evidence.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
         guard !tokens.isEmpty else { return nil }

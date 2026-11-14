@@ -100,6 +100,14 @@ public final class MemoryStore: @unchecked Sendable {
     private let lock = NSLock()
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    /// Decoded records keyed by path, reused while the file's modification date and size are unchanged.
+    /// Snapshots read the history several times a second; decoding every file each time pegged the CPU.
+    private var recordCache: [String: (modified: Date, size: Int, record: MemoryCaptureRecord)] = [:]
+    private var recordsRevisionValue = 0
+    /// Distinguishes stores in caches keyed by `recordsRevision`; an object address can be reused.
+    public let instanceID = UUID()
+    /// Changes whenever `listRecords()` finds a record file added, removed or rewritten.
+    public var recordsRevision: Int { lock.lock(); defer { lock.unlock() }; return recordsRevisionValue }
 
     /// The default location is `~/Library/Application Support/Calshot/Memory`.
     /// A custom directory can be supplied for callers that need an isolated store.
@@ -384,21 +392,41 @@ public final class MemoryStore: @unchecked Sendable {
     public func listRecords() -> [MemoryCaptureRecord] {
         lock.lock()
         defer { lock.unlock() }
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
         guard let files = try? fileManager.contentsOfDirectory(
-            at: directoryURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
-        ) else { return [] }
+            at: directoryURL, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]
+        ) else {
+            if !recordCache.isEmpty { recordsRevisionValue += 1 }
+            recordCache = [:]; return []
+        }
 
-        return files
+        var cache: [String: (modified: Date, size: Int, record: MemoryCaptureRecord)] = [:]
+        let records = files
             .filter { $0.pathExtension.lowercased() == "json" }
             .compactMap { url -> MemoryCaptureRecord? in
+                let values = try? url.resourceValues(forKeys: keys)
+                if let modified = values?.contentModificationDate, let size = values?.fileSize,
+                   let cached = recordCache[url.path], cached.modified == modified, cached.size == size {
+                    cache[url.path] = cached
+                    return cached.record
+                }
                 guard let data = try? Data(contentsOf: url),
                       let record = try? decoder.decode(MemoryCaptureRecord.self, from: data),
                       url.lastPathComponent == metadataURL(for: record.id).lastPathComponent else {
                     return nil
                 }
+                if let modified = values?.contentModificationDate, let size = values?.fileSize {
+                    cache[url.path] = (modified, size, record)
+                }
                 return record
             }
             .sorted { $0.createdAt > $1.createdAt }
+        let unchanged = cache.count == recordCache.count && records.count == cache.count && cache.allSatisfy { path, entry in
+            recordCache[path].map { $0.modified == entry.modified && $0.size == entry.size } ?? false
+        }
+        if !unchanged { recordsRevisionValue += 1 }
+        recordCache = cache
+        return records
     }
 
     /// Loads a record's screenshot. Returns nil if the record or image is missing,
