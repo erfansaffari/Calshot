@@ -4,6 +4,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Catch inside Objective-C, before an exception can unwind any Swift/async frame.
 /// Do not replace these typed operations with a block supplied by Swift.
 @interface VoiceAudioBoundary : NSObject
++ (NSArray<NSDictionary<NSString *, id> *> *)inputDevices;
++ (nullable NSError *)selectInputUID:(NSString *)uid engine:(AVAudioEngine *)engine;
 + (nullable AVAudioInputNode *)inputForEngine:(AVAudioEngine *)engine;
 + (nullable AVAudioFormat *)outputFormatForEngine:(AVAudioEngine *)engine;
 + (nullable NSError *)enableVoiceProcessing:(AVAudioInputNode *)input;

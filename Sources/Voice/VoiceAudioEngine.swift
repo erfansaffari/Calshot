@@ -61,11 +61,12 @@ enum VoicePCM {
 final class VoiceAudioEngine: ObservableObject {
     enum MicrophonePermission: Equatable { case authorized, denied, restricted, notDetermined }
     enum AudioError: Error, Equatable, LocalizedError {
-        case permission(MicrophonePermission), noInputDevice, noOutputDevice, conversion, graph
+        case permission(MicrophonePermission), noInputDevice, selectedInputUnavailable, noOutputDevice, conversion, graph
         var errorDescription: String? {
             switch self {
             case .permission(.restricted): return "Microphone access is restricted on this Mac. Check with the person managing its privacy settings."
             case .permission: return "Allow Microphone for Calshot in System Settings → Privacy & Security → Microphone, then start voice again."
+            case .selectedInputUnavailable: return "The selected microphone is unavailable. Reconnect it or choose another microphone in Settings → Voice."
             case .noInputDevice: return "macOS hasn’t provided a usable microphone. Select the built-in microphone in System Settings → Sound → Input, then retry voice."
             case .noOutputDevice: return "macOS hasn’t provided usable speakers or headphones. Select an output in System Settings → Sound → Output, then retry voice."
             case .conversion: return "Calshot couldn’t read the microphone’s audio format. Check Sound → Input, try another microphone if available, then retry voice."
@@ -73,7 +74,7 @@ final class VoiceAudioEngine: ObservableObject {
             }
         }
         var recovery: String { if case .permission = self { return "permission" }; return "devices" }
-        var canRetryStartup: Bool { if case .permission = self { return false }; return true }
+        var canRetryStartup: Bool { if case .permission = self { return false }; if self == .selectedInputUnavailable { return false }; return true }
     }
     @Published private(set) var isRunning = false
     @Published private(set) var isPlaying = false
@@ -115,11 +116,19 @@ final class VoiceAudioEngine: ObservableObject {
         if microphonePermission == .notDetermined { _ = await AVCaptureDevice.requestAccess(for: .audio) }
         return microphonePermission
     }
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    /// Push-to-talk never needs a voice-processing aggregate device unless the user opts in.
+    var usesVoiceProcessing: Bool { defaults.bool(forKey: "voice.echoCancellation") }
     func start() throws {
         guard !isRunning else { return }
         guard Self.microphonePermission == .authorized else { throw AudioError.permission(Self.microphonePermission) }
         wantedRunning = true
-        do { try buildGraph(voiceProcessing: true); failure = nil } catch {
+        do { try buildGraph(voiceProcessing: usesVoiceProcessing); failure = nil } catch {
+            guard usesVoiceProcessing, error as? AudioError != .selectedInputUnavailable else {
+                teardownGraph(); wantedRunning = false
+                let typed = error as? AudioError ?? .graph; failure = typed; throw typed
+            }
             // Voice processing fails on some device pairs (e.g. 48 kHz mic with 44.1 kHz speakers); capture still works without it.
             audioLog.error("Audio start with voice processing failed: \(Self.describe(error), privacy: .public); retrying without")
             teardownGraph(); wantedRunning = true
@@ -156,10 +165,12 @@ final class VoiceAudioEngine: ObservableObject {
         let graph = AVAudioEngine(), node = AVAudioPlayerNode()
         engine = graph; player = node
         guard let input = VoiceAudioBoundary.input(for: graph) else { throw AudioError.noInputDevice }
-        guard input.inputFormat(forBus: 0).sampleRate > 0, input.inputFormat(forBus: 0).channelCount > 0 else { throw AudioError.noInputDevice }
+        let selectedUID = defaults.string(forKey: "voice.inputUID") ?? ""
+        if VoiceAudioBoundary.selectInputUID(selectedUID, engine: graph) != nil { throw AudioError.selectedInputUnavailable }
         // Some devices do not support voice processing; capture remains available there.
         echoCancellation = false
         if voiceProcessing { try checkAudioOperation(VoiceAudioBoundary.enableVoiceProcessing(input)); echoCancellation = input.isVoiceProcessingEnabled }
+        if voiceProcessing, VoiceAudioBoundary.selectInputUID(selectedUID, engine: graph) != nil { throw AudioError.selectedInputUnavailable }
         // Re-read both formats after enabling voice processing: it can reconfigure the I/O unit.
         let hardware = input.inputFormat(forBus: 0), source = input.outputFormat(forBus: 0)
         guard hardware.sampleRate.isFinite, hardware.sampleRate > 0, hardware.channelCount > 0 else { throw AudioError.noInputDevice }

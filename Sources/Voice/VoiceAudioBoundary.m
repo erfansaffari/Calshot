@@ -1,4 +1,6 @@
 #import "VoiceAudioBoundary.h"
+#import <CoreAudio/CoreAudio.h>
+#import <AudioUnit/AudioUnit.h>
 
 // Never include exception reasons: device/framework diagnostics can contain private data.
 static NSError *AudioException(NSException *exception) {
@@ -7,6 +9,47 @@ static NSError *AudioException(NSException *exception) {
                                      @"exceptionName": exception.name}];
 }
 @implementation VoiceAudioBoundary
++ (NSArray<NSDictionary<NSString *, id> *> *)inputDevices {
+    AudioObjectPropertyAddress address = { kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &address, 0, NULL, &size) != noErr) return @[];
+    NSMutableData *data = [NSMutableData dataWithLength:size];
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, NULL, &size, data.mutableBytes) != noErr) return @[];
+    NSMutableArray *result = [NSMutableArray array];
+    AudioDeviceID *devices = data.mutableBytes;
+    for (NSUInteger index = 0; index < size / sizeof(AudioDeviceID); index++) {
+        AudioDeviceID device = devices[index]; UInt32 streamsSize = 0;
+        AudioObjectPropertyAddress streams = { kAudioDevicePropertyStreams, kAudioObjectPropertyScopeInput, kAudioObjectPropertyElementMain };
+        if (AudioObjectGetPropertyDataSize(device, &streams, 0, NULL, &streamsSize) != noErr || streamsSize == 0) continue;
+        CFStringRef uid = NULL, name = NULL;
+        UInt32 textSize = sizeof(CFStringRef);
+        AudioObjectPropertyAddress property = { kAudioDevicePropertyDeviceUID, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+        OSStatus status = AudioObjectGetPropertyData(device, &property, 0, NULL, &textSize, &uid);
+        property.mSelector = kAudioObjectPropertyName; textSize = sizeof(CFStringRef);
+        if (status == noErr && uid && AudioObjectGetPropertyData(device, &property, 0, NULL, &textSize, &name) == noErr && name) {
+            [result addObject:@{ @"uid": (__bridge NSString *)uid, @"name": (__bridge NSString *)name, @"id": @(device) }];
+        }
+        if (uid) CFRelease(uid); if (name) CFRelease(name);
+    }
+    return result;
+}
++ (NSError *)selectInputUID:(NSString *)uid engine:(AVAudioEngine *)engine {
+    if (uid.length == 0) return nil; // Follow macOS without changing its global default.
+    @try {
+        NSNumber *identifier = nil;
+        for (NSDictionary *device in self.inputDevices) if ([device[@"uid"] isEqual:uid]) { identifier = device[@"id"]; break; }
+        if (!identifier) return [NSError errorWithDomain:@"com.calshot.audio.input" code:1 userInfo:nil];
+        AudioUnit unit = engine.inputNode.audioUnit;
+        if (!unit) return [NSError errorWithDomain:@"com.calshot.audio.input" code:2 userInfo:nil];
+        AudioDeviceID device = identifier.unsignedIntValue;
+        OSStatus status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, sizeof(device));
+        if (status != noErr) return [NSError errorWithDomain:@"com.calshot.audio.input" code:status userInfo:nil];
+        AudioDeviceID actual = kAudioObjectUnknown; UInt32 size = sizeof(actual);
+        status = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &actual, &size);
+        if (status != noErr || actual != device) return [NSError errorWithDomain:@"com.calshot.audio.input" code:3 userInfo:nil];
+        return nil;
+    } @catch (NSException *exception) { return AudioException(exception); }
+}
 + (AVAudioInputNode *)inputForEngine:(AVAudioEngine *)engine {
     @try { return engine.inputNode; }
     @catch (NSException *exception) { return nil; }

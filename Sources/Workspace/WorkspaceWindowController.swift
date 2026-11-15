@@ -95,7 +95,9 @@ final class WorkspaceWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func hide() { window.orderOut(nil) }
+    func windowWillClose(_ notification: Notification) { model?.voiceInput.stopTest() }
+    func windowDidMiniaturize(_ notification: Notification) { model?.voiceInput.stopTest() }
+    func hide() { model?.voiceInput.stopTest(); window.orderOut(nil) }
 
 }
 

@@ -75,6 +75,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         self.isNotch = isNotch; self.model = model; assets = WebWorkspaceAssets(model: model)
         super.init()
 #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--voice-input-preview") && !isNotch { settingsSection = "voice" }
         if ProcessInfo.processInfo.arguments.contains("--sharing-preview") && !isNotch { settingsSection = "friends" }
 #endif
         guard loadsResources else { return }
@@ -101,7 +102,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.publish() }
         }
-        if isNotch {
+        do {
             let levels = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.pushVoiceLevels() }
             }
@@ -125,7 +126,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
     private func pushVoiceLevels() {
         guard ready, let webView else { return }
         let session = model.voiceSession
-        let next = session.active ? session.levels : (input: Float(0), output: Float(0))
+        guard isNotch || (model.workspaceSelection == .settings && settingsSection == "voice") else { return }
+        let next = session.active ? session.levels : (input: model.voiceInput.level, output: Float(0))
         guard abs(next.input - lastLevels.input) > 0.004 || abs(next.output - lastLevels.output) > 0.004 else { return }
         lastLevels = next
         webView.evaluateJavaScript("window.__calshotLevels?.(\(next.input),\(next.output))", completionHandler: nil)
@@ -620,6 +622,25 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 aiContextInspection = try WebWorkspaceState.contextInspection(model)
                 aiContextOwner = contextOwner
             }
+        case "voiceInputRefresh", "voiceInputConfigure", "voiceInputTest", "voiceInputStopTest":
+            let input = model.voiceInput
+            var fields: Set<String> = ["action", "id", "token"]
+            if action == "voiceInputConfigure" { fields.formUnion(["uid", "echoCancellation"]) }
+            guard !isNotch, model.workspaceSelection == .settings, settingsSection == "voice",
+                  Set(body.keys).isSubset(of: fields), body["token"] as? String == input.token else {
+                throw CalendarToolArgumentError("Microphone controls changed. Open Settings → Voice and try again.")
+            }
+            guard !model.voiceSession.active else { throw CalendarToolArgumentError("Stop voice before testing or changing the microphone.") }
+            if action == "voiceInputRefresh" { input.refresh() }
+            else if action == "voiceInputStopTest" { input.stopTest() }
+            else if action == "voiceInputTest" { await input.startTest() }
+            else {
+                guard let uid = body["uid"] as? String, uid.count <= 512,
+                      let raw = body["echoCancellation"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID(), let echo = raw as? Bool else {
+                    throw CalendarToolArgumentError("Choose a connected microphone and an echo cancellation setting.")
+                }
+                try input.configure(uid: uid, echoCancellation: echo)
+            }
         case "voiceTalk":
             // Press is token-bound; release only ends the caller's own held turn, so it stays valid after the press rotates the token.
             guard Set(body.keys).isSubset(of: ["action", "id", "token", "pressed"]), let raw = body["pressed"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID(), let pressed = raw as? Bool else { throw CalendarToolArgumentError("Invalid voice control.") }
@@ -711,6 +732,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             try requireIdle()
             model.cancelCalendarConnection()
             model.accountSyncTask?.cancel(); model.accountSyncTimer?.invalidate()
+            model.voiceInput.stopTest()
             try await model.account.signOut()
             model.accountSyncDevices = [:]; model.accountSyncError = nil; model.accountSyncLastDate = nil
             model.calendarSharing = CalendarSharingState(); model.sharingLoaded = false; model.sharingBusy = false; model.sharingError = nil
@@ -741,6 +763,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
                 guard ["general", "calendars", "friends", "ai", "voice", "privacy"].contains(section) else { throw CalendarToolArgumentError("Unknown settings section.") }
                 settingsSection = section
             }
+            if page != .settings || settingsSection != "voice" { model.voiceInput.stopTest() }
+            else { model.voiceInput.refresh() }
             model.workspaceSelection = page
             if page == .settings && settingsSection == "friends" { Task { await model.refreshSharing() } }
             if page == .tasks { model.loadTasks(); Task { await model.recoverDirectCalendarWrites(); await model.syncTasks() } }

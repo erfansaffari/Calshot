@@ -64,6 +64,7 @@ enum WebWorkspaceState {
             "items": encoded(personal.items.filter { $0.status == .active }), "pending": encoded(personal.items.filter { $0.status == .pendingApproval }), "notes": encoded(Array(personal.notes.suffix(30).reversed())), "token": .string(personal.token),
             "sync": model.knowledgeSyncSnapshot])
         state["voice"] = model.voiceSession.snapshot
+        state["voiceInput"] = model.voiceInput.snapshot
         state["recentChanges"] = model.recentChangesSnapshot()
         state["calendarContentToken"] = .string(model.calendarContentToken.uuidString)
         state["voiceShortcut"] = .string(model.voiceShortcut.label)
@@ -170,7 +171,7 @@ enum WebWorkspaceState {
         }
         if model.account.requiresLogin {
             for key in ["messages", "proposals", "calendars", "accounts", "memory"] { state[key] = .array([]) }
-            state.removeValue(forKey: "voice"); state.removeValue(forKey: "personalMemory"); state.removeValue(forKey: "tasks"); state.removeValue(forKey: "taskImport")
+            state.removeValue(forKey: "voiceInput"); state.removeValue(forKey: "voice"); state.removeValue(forKey: "personalMemory"); state.removeValue(forKey: "tasks"); state.removeValue(forKey: "taskImport")
             for key in ["taskReview", "taskOutcome", "agentPermissions", "recentChanges"] { state.removeValue(forKey: key) }
             for key in ["imageURL", "summary", "question", "agentError", "status", "notice", "agentStatus"] { state.removeValue(forKey: key) }
             state["ocr"] = .string(""); state["streaming"] = .string(""); state["canApprove"] = .bool(false)

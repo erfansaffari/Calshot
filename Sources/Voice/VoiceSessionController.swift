@@ -659,7 +659,7 @@ extension FocusFrameComposer: VoiceFrames {}
         "usage": .object(["seconds": .number((seconds / 10).rounded(.down) * 10), "estimatedCost": .number((cost * 100).rounded() / 100)]),
         "error": error.map(JSONValue.string) ?? .null, "needsKey": .bool(needsKey), "needsAcknowledgement": .bool(needsAcknowledgement),
         "audioIssue": audioIssue.map(JSONValue.string) ?? .null,
-        "permissions": .object(["microphone": .bool(microphone), "screen": .bool(screen)]),
+        "permissions": .object(["microphone": .bool(VoiceAudioEngine.microphonePermission == .authorized), "screen": .bool(screen)]),
         "model": .string(model), "voice": .string(voice), "monthlyCap": .number(cap)
     ]) }
 }
@@ -715,6 +715,7 @@ extension CalshotModel {
         /// First turn of this voice session in the shared chat; shared-friend marking never reaches earlier turns.
         var voiceStart = 0
         session.prepare = { [weak self] in
+            self?.voiceInput.stopTest()
             guard let self, !self.agentIsRunning, !self.agentIsWaitingForApproval, self.agentTaskReview == nil, !self.isSaving, self.agentQuestion == nil, !self.isRecognizing, !self.isCapturing, !self.calendarActions.proposals.contains(where: { !$0.isFinished }) else { throw CalendarToolArgumentError("Finish or skip the current review first.") }
             self.configureCalendarAgent()
             // Voice continues the one ongoing chat, so typed and spoken requests share history and changes.

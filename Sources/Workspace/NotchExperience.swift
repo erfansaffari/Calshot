@@ -8,11 +8,6 @@ private final class NotchPanel: NSPanel {
     override var canBecomeMain: Bool { false }
     var onEscape: (() -> Void)?
     override func cancelOperation(_ sender: Any?) { onEscape?() }
-    override func sendEvent(_ event: NSEvent) {
-        // Focus only on an intentional click. Forward that same click exactly once.
-        if event.type == .leftMouseDown && !isKeyWindow { makeKey() }
-        super.sendEvent(event)
-    }
 }
 
 /// Compact native shell; the embedded React view shares the workspace's validated tools.
@@ -23,9 +18,15 @@ final class NotchExperienceController: ObservableObject {
     private weak var model: CalshotModel?
     @Published private var presentation = NotchPresentationState()
     var isExpanded: Bool { presentation.isExpanded }
+    var panelFrame: NSRect { panel.frame }
     var showsNotification: Bool { presentation.showsNotification }
     @Published private(set) var presentsExpandedContent = false
     private var targetFrame: NSRect?
+    private var positionScheduled = false
+    private var pendingAnimated = true
+    private enum WindowOrder { case front, key, hidden }
+    private var pendingOrder: WindowOrder?
+    private var resignAfterLayout = false
     private var transitionID = UUID()
     @Published private(set) var launcherSize = NSSize(width: 184, height: 24)
     /// The drawn shape. Only this animates; the window jumps to cover the transition.
@@ -105,11 +106,11 @@ final class NotchExperienceController: ObservableObject {
     }
     func showVoice() {
         // Audio/status snapshots must never reopen a panel the pointer just left.
-        refreshActivity(); position(); panel.orderFrontRegardless()
+        refreshActivity(); pendingOrder = .front; position()
     }
     func show() {
         guard model?.notchEnabled != false || model?.voiceSession.active == true else { return hide() }
-        refreshActivity(); position(); panel.orderFrontRegardless()
+        refreshActivity(); pendingOrder = .front; position()
     }
     func showQuickPreview(image: NSImage, recordID: UUID, copiedToClipboard: Bool) {
         guard let model, let record = model.memoryRecords.first(where: { $0.id == recordID }) else { return }
@@ -122,7 +123,7 @@ final class NotchExperienceController: ObservableObject {
     }
     func hide() {
         collapse()
-        panel.orderOut(nil)
+        pendingOrder = .hidden
         position(animated: false)
     }
     func collapse() {
@@ -134,7 +135,8 @@ final class NotchExperienceController: ObservableObject {
         model?.taskUsesNotch = true
         var next = presentation; next.open()
         apply(next)
-        panel.makeKeyAndOrderFront(nil)
+        pendingOrder = .key
+        position()
     }
     func pointerChanged(_ inside: Bool) {
         guard panel.isVisible else { return }
@@ -168,7 +170,8 @@ final class NotchExperienceController: ObservableObject {
         workspace.setNotchExpanded(next.isExpanded)
         if closing {
             workspace.resetNotchPresentation()
-            panel.resignKey()
+            resignAfterLayout = true
+            position()
         }
         if panel.isVisible { position() }
     }
@@ -179,7 +182,28 @@ final class NotchExperienceController: ObservableObject {
         if isExpanded, let current = panel.screen, screens.contains(current) { return current }
         return screens.first(where: { NotchGeometry($0).hasCameraHousing }) ?? screens.first ?? NSScreen.main
     }
+    /// AppKit geometry/focus must run after SwiftUI's button, hover and animation transactions unwind.
+    /// Coalesce onto one main-queue turn and always read the latest desired presentation there.
     private func position(animated: Bool = true) {
+        pendingAnimated = pendingAnimated && animated
+        guard !positionScheduled else { return }
+        positionScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.positionScheduled = false
+            let animated = self.pendingAnimated; self.pendingAnimated = true
+            self.applyPosition(animated: animated)
+            if self.resignAfterLayout { self.resignAfterLayout = false; self.panel.resignKey() }
+            let order = self.pendingOrder; self.pendingOrder = nil
+            switch order {
+            case .front: self.panel.orderFrontRegardless()
+            case .key: self.panel.makeKeyAndOrderFront(nil)
+            case .hidden: self.panel.orderOut(nil)
+            case nil: break
+            }
+        }
+    }
+    private func applyPosition(animated: Bool) {
         guard let screen = targetScreen else { return }
         let geometry = NotchGeometry(screen)
         // Assign only real changes: every published write re-renders the SwiftUI shell, and this runs on each model change.
@@ -200,7 +224,7 @@ final class NotchExperienceController: ObservableObject {
         if isExpanded { presentsExpandedContent = true }
         let shouldAnimate = animated && panel.isVisible && previous != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard shouldAnimate else {
-            panel.setFrame(frame, display: true)
+            panel.setFrame(frame, display: false)
             contentSize = size; visibleSize = size
             if showsWeb { update(\.webSize, size) }
             presentsExpandedContent = isExpanded
@@ -220,11 +244,13 @@ final class NotchExperienceController: ObservableObject {
         withAnimation(spring, completionCriteria: .logicallyComplete) {
             visibleSize = size
         } completion: { [weak self] in
-            guard let self, self.transitionID == id else { return }
-            self.panel.setFrame(frame, display: true)
-            self.contentSize = size
-            if self.isExpanded || self.voiceActivity.map({ !self.showsIsland($0) }) == true { self.update(\.webSize, size) }
-            self.presentsExpandedContent = self.isExpanded
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.transitionID == id else { return }
+                self.panel.setFrame(frame, display: false)
+                self.contentSize = size
+                if self.isExpanded || self.voiceActivity.map({ !self.showsIsland($0) }) == true { self.update(\.webSize, size) }
+                self.presentsExpandedContent = self.isExpanded
+            }
         }
     }
     /// A voice review needs the web controls while the notch is on; with it off, it is an island like the rest.

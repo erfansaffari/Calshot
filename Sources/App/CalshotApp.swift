@@ -48,6 +48,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     let model: CalshotModel = {
 #if DEBUG
         if NSClassFromString("XCTestCase") != nil { return CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("CalshotTestHost-" + UUID().uuidString)), loadsAIConnection: false) }
+        if ProcessInfo.processInfo.arguments.contains("--voice-input-preview") {
+            let model = CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("CalshotInputPreview-" + UUID().uuidString)), loadsAIConnection: false)
+            let audio = PreviewVoiceAudio(); audio.inputLevel = 0.08
+            let input = VoiceInputSettings(defaults: UserDefaults(suiteName: "CalshotInputPreview-" + UUID().uuidString)!, devices: {
+                [.init(uid: "fictional-built-in", name: "Built-in microphone"), .init(uid: "fictional-phone", name: "Avery’s phone microphone — a long input name for compact settings")]
+            }, makeAudio: { audio }, permission: { true }, observesHardware: false)
+            model.voiceInput = input; input.onChange = { [weak model] in model?.objectWillChange.send() }
+            model.workspaceSelection = .settings
+            return model
+        }
         if ProcessInfo.processInfo.arguments.contains("--voice-preview") { return CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("CalshotVoicePreview-" + UUID().uuidString)), loadsAIConnection: false) }
         if ProcessInfo.processInfo.arguments.contains("--tasks-preview") { return CalshotModel.tasksPreviewModel() }
         if ProcessInfo.processInfo.arguments.contains("--sharing-preview") { return CalshotModel.sharingPreviewModel() }
@@ -217,6 +227,11 @@ final class CalshotModel: ObservableObject {
     var voicePreparedRunID: UUID?
     /// Index of this voice session's first turn in the one ongoing chat.
     var voiceFirstTurn = 0
+    lazy var voiceInput: VoiceInputSettings = {
+        let input = VoiceInputSettings()
+        input.onChange = { [weak self] in self?.objectWillChange.send() }
+        return input
+    }()
     lazy var voiceSession = makeVoiceSession()
     var mainChatCache: (key: String, id: UUID)?
     /// The one-time Autonomy default. Off for isolated fixtures (no AI connection), which opt in explicitly.

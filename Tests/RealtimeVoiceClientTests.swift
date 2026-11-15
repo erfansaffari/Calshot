@@ -748,3 +748,59 @@ final class VoiceSilenceTests: XCTestCase {
         session.stop()
     }
 }
+
+
+@MainActor
+final class VoiceInputSettingsTests: XCTestCase {
+    private func defaults() -> UserDefaults { UserDefaults(suiteName: "VoiceInputTests-" + UUID().uuidString)! }
+    func testSelectionPersistsByUIDAndRejectsDisconnectedDevices() throws {
+        let prefs = defaults()
+        var devices = [VoiceInputSettings.Device(uid: "fictional-built-in", name: "Built-in microphone")]
+        let input = VoiceInputSettings(defaults: prefs, devices: { devices }, observesHardware: false)
+        XCTAssertFalse(VoiceAudioEngine(defaults: prefs).usesVoiceProcessing)
+        try input.configure(uid: "fictional-built-in", echoCancellation: true)
+        XCTAssertTrue(VoiceAudioEngine(defaults: prefs).usesVoiceProcessing)
+        XCTAssertEqual(prefs.string(forKey: "voice.inputUID"), "fictional-built-in")
+        devices = []; input.refresh()
+        XCTAssertFalse(input.selectedAvailable)
+        XCTAssertEqual(input.selectedUID, "fictional-built-in", "Unplugging never changes the saved choice")
+        XCTAssertThrowsError(try input.configure(uid: "fictional-unknown", echoCancellation: false))
+    }
+    func testTestUsesOnlyLocalAudioAndStopDiscardsLateCallbacks() async {
+        let audio = PreviewVoiceAudio()
+        let input = VoiceInputSettings(defaults: defaults(), devices: { [.init(uid: "fictional-mic", name: "Microphone")] }, makeAudio: { audio }, permission: { true }, observesHardware: false)
+        await input.startTest()
+        XCTAssertEqual(input.testState, "testing"); XCTAssertTrue(audio.running)
+        let callback = audio.onInput
+        callback?(Data(count: 32))
+        XCTAssertTrue(input.detectedSound); XCTAssertGreaterThan(input.level, 0)
+        XCTAssertNil(input.snapshot.objectValue?["inputLevel"], "Levels never enter React snapshots")
+        input.stopTest(); XCTAssertFalse(audio.running); XCTAssertEqual(input.level, 0)
+        callback?(Data(count: 32)); XCTAssertEqual(input.testState, "cancelled")
+    }
+    func testDeniedPermissionNeverStartsGraph() async {
+        let audio = PreviewVoiceAudio()
+        let input = VoiceInputSettings(defaults: defaults(), devices: { [.init(uid: "fictional-mic", name: "Microphone")] }, makeAudio: { audio }, permission: { false }, observesHardware: false)
+        await input.startTest()
+        XCTAssertEqual(audio.startAttempts, 0); XCTAssertEqual(input.testState, "failed")
+        XCTAssertTrue(input.error?.contains("Microphone") == true)
+    }
+    func testStopWhilePermissionIsPendingCannotReopenMicrophone() async {
+        let audio = PreviewVoiceAudio()
+        var continuation: CheckedContinuation<Bool, Never>?
+        let input = VoiceInputSettings(defaults: defaults(), devices: { [.init(uid: "fictional-mic", name: "Microphone")] }, makeAudio: { audio }, permission: { await withCheckedContinuation { continuation = $0 } }, observesHardware: false)
+        let pending = Task { await input.startTest() }
+        while continuation == nil { await Task.yield() }
+        input.stopTest(); continuation?.resume(returning: true); await pending.value
+        XCTAssertEqual(audio.startAttempts, 0); XCTAssertEqual(input.testState, "cancelled")
+    }
+    func testTestEndsAutomaticallyAndReportsDeviceFailure() async throws {
+        let audio = PreviewVoiceAudio()
+        let input = VoiceInputSettings(defaults: defaults(), devices: { [.init(uid: "fictional-mic", name: "Microphone")] }, makeAudio: { audio }, permission: { true }, duration: .milliseconds(5), observesHardware: false)
+        await input.startTest()
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(input.testState, "finished"); XCTAssertFalse(audio.running)
+        await input.startTest(); audio.onError?(.selectedInputUnavailable)
+        XCTAssertEqual(input.testState, "failed"); XCTAssertFalse(audio.running)
+    }
+}

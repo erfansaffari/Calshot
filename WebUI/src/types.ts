@@ -229,6 +229,7 @@ export interface AppState {
   displayAccessibility?: { reducedTransparency: boolean; increasedContrast: boolean };
   /** Native presentation only; omitted in the full workspace and browser fixtures. */
   notchExpanded?: boolean;
+  voiceInput?: { token: string; devices: { uid: string; name: string }[]; selectedUID: string; selectedAvailable: boolean; echoCancellation: boolean; testState: string; detectedSound: boolean; error?: string | null };
   voice?: VoiceState;
   voiceShortcut?: string;
   /** Native shortcut status. Labels change only after macOS accepts the shortcut. */

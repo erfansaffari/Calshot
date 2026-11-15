@@ -1,3 +1,5 @@
+import { useAction } from "../useAction";
+import { VoiceInputSettings } from "../components/VoiceInputSettings";
 import { GlassAppearanceSettings } from "../components/GlassAppearanceSettings";
 import { MacCalendarConnectionHint } from "../components/ui";
 import { useEffect, useState } from "react";
@@ -29,31 +31,7 @@ import {
   Spinner,
   formatDate,
 } from "../components/ui";
-function useAction() {
-  const [error, setError] = useState(""),
-    [busy, setBusy] = useState(false),
-    [notice, setNotice] = useState("");
-  return {
-    error,
-    busy,
-    notice,
-    run: async (action: string, extra: Record<string, unknown> = {}) => {
-      setBusy(true);
-      setError("");
-      setNotice("");
-      try {
-        await command({ action, ...extra });
-        return true;
-      } catch (e) {
-        setError((e as Error).message);
-        return false;
-      } finally {
-        setBusy(false);
-      }
-    },
-    setNotice,
-  };
-}
+
 function AccountSyncCard({ state }: { state: AppState }) {
   const a = useAction();
   const sync = state.accountSync;
@@ -795,7 +773,8 @@ export function SettingsPage({ state }: { state: AppState }) {
                 </Select>
               </div>
               <ShortcutControl state={state} target="capture" title="Capture shortcut" description="Select part of your screen from anywhere." />
-              <ShortcutControl state={state} target="voice" title="Voice shortcut" description="Hold to talk from anywhere. Tap to end voice." />
+              <VoiceInputSettings state={state} />
+    <ShortcutControl state={state} target="voice" title="Voice shortcut" description="Hold to talk from anywhere. Tap to end voice." />
               {s.notchAvailable !== false && <div className="settings-row">
                 <div>
                   <h3>Show Calshot in the notch</h3>
@@ -1529,6 +1508,7 @@ function VoiceSettings({ state }: { state: AppState }) {
   return <section className="card settings-card voice-settings"><h2>Voice</h2>
     <p>Microphone audio and screen frames are sent to OpenAI. Voice uses paid OpenAI Realtime API billing and requires an OpenAI API key. ChatGPT plan billing does not cover voice. The estimate includes transcription.</p>
     <InlineError message={a.error || v.error}>{v.audioIssue === "devices" && <button className="text-button" onClick={() => void a.run("voiceInputSettings", { token: v.token })}>Open Sound settings</button>}{v.audioIssue === "devices" && !v.active && <button className="text-button" disabled={a.busy} onClick={() => void a.run("startVoice", { token: v.token })}>Retry voice</button>}</InlineError>
+    <VoiceInputSettings state={state} />
     <ShortcutControl state={state} target="voice" title="Voice shortcut" description="Hold to talk from anywhere. Tap to end voice." />
     <label>Model <input value={model} disabled={v.active} onChange={e => setModel(e.target.value)} /></label>
     <label>Voice <select value={voice} disabled={v.active} onChange={e => setVoice(e.target.value)}>{["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"].map(name => <option key={name}>{name}</option>)}</select></label>

@@ -64,3 +64,22 @@ it("offers Sound settings for device failures even when microphone permission is
   await userEvent.click(screen.getByRole("button", { name: "Retry voice" }));
   expect(command).toHaveBeenCalledWith({ action: "startVoice", token: "fixture" });
 });
+
+const voiceInput = { token: "input-fixture", devices: [{ uid: "fictional-mic", name: "Built-in microphone" }], selectedUID: "", selectedAvailable: true, echoCancellation: false, testState: "idle", detectedSound: false };
+it("selects the microphone natively and starts a local test without an agent connection", async () => {
+  render(<SettingsPage state={{ ...preview, settingsSection: "voice", voice, voiceInput }} />);
+  await userEvent.selectOptions(screen.getByLabelText("Input device"), "fictional-mic");
+  expect(command).toHaveBeenCalledWith({ action: "voiceInputConfigure", token: "input-fixture", uid: "fictional-mic", echoCancellation: false });
+  await userEvent.click(screen.getByRole("button", { name: "Test microphone" }));
+  expect(command).toHaveBeenCalledWith({ action: "voiceInputTest", token: "input-fixture" });
+  expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: "startVoice" }));
+  expect(screen.getByRole("meter", { name: "Microphone input level" })).toBeTruthy();
+});
+it("keeps disconnected input errors visible and blocks test and changes during voice", () => {
+  const view = render(<SettingsPage state={{ ...preview, settingsSection: "voice", voice, voiceInput: { ...voiceInput, selectedUID: "missing", selectedAvailable: false } }} />);
+  expect(screen.getByText(/selected microphone is disconnected/i)).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Test microphone" }) as HTMLButtonElement).disabled).toBe(true);
+  view.rerender(<SettingsPage state={{ ...preview, settingsSection: "voice", voice: { ...voice, active: true }, voiceInput }} />);
+  expect((screen.getByLabelText("Input device") as HTMLSelectElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Test microphone" }) as HTMLButtonElement).disabled).toBe(true);
+});

@@ -1623,6 +1623,35 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertNotEqual(NotchActivity.resolve(model, completion: nil).notificationKey(model), key)
     }
 
+    func testNotchWindowGeometryIsDeferredOutsideTheCallingLayoutStack() async {
+        CalshotModel.notchAvailable = true
+        defer { CalshotModel.notchAvailable = false }
+        let model = fixture(); model.notchEnabled = true
+        let controller = NotchExperienceController(model: model)
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+        let before = controller.panelFrame
+        controller.openQuickMenu()
+        XCTAssertEqual(controller.panelFrame, before, "SwiftUI callbacks must not synchronously resize their hosting window")
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+        XCTAssertGreaterThan(controller.panelFrame.height, before.height)
+        controller.hide()
+    }
+    func testMicrophoneBridgeRejectsStaleNotchAndMalformedActionsAndStopsOnNavigation() async throws {
+        let model = fixture(); let audio = PreviewVoiceAudio()
+        let input = VoiceInputSettings(defaults: UserDefaults(suiteName: "InputBridgeTests-" + UUID().uuidString)!, devices: { [.init(uid: "fictional-mic", name: "Microphone")] }, makeAudio: { audio }, permission: { true }, observesHardware: false)
+        model.voiceInput = input
+        let workspace = WebWorkspaceController(model: model, loadsResources: false)
+        let notch = WebWorkspaceController(model: model, loadsResources: false, isNotch: true)
+        try await workspace.handle("navigate", ["page": "settings", "section": "voice"])
+        do { try await workspace.handle("voiceInputTest", ["token": "old"]); XCTFail("Accepted stale action") } catch {}
+        do { try await notch.handle("voiceInputTest", ["token": input.token]); XCTFail("Notch opened a settings test") } catch {}
+        do { try await workspace.handle("voiceInputConfigure", ["token": input.token, "uid": "fictional-mic", "echoCancellation": 1]); XCTFail("Accepted nonboolean") } catch {}
+        try await workspace.handle("voiceInputTest", ["token": input.token])
+        XCTAssertTrue(audio.running)
+        try await workspace.handle("navigate", ["page": "chat"])
+        XCTAssertFalse(audio.running); XCTAssertEqual(input.testState, "cancelled")
+    }
+
     func testNotchWebContentAcceptsTheFirstInactiveClick() {
         let web = WorkspaceWebView(frame: .zero, configuration: WKWebViewConfiguration())
         web.acceptsInactiveClicks = true
