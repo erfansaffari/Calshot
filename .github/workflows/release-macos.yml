@@ -67,7 +67,10 @@ jobs:
           npm --prefix WebUI ci
           npm --prefix WebUI test -- --run
           npm --prefix WebUI run build
-          xcodebuild test -quiet -project Calshot.xcodeproj -scheme Calshot -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+          status=0
+          xcodebuild test -quiet -project Calshot.xcodeproj -scheme Calshot -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO -resultBundlePath build/NativeTests.xcresult || status=$?
+          xcrun xcresulttool get test-results summary --path build/NativeTests.xcresult --format json
+          exit "$status"
       - name: Build release and sign update feed
         env:
           SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
