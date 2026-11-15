@@ -138,26 +138,32 @@ final class VoiceAudioEngine: ObservableObject {
     private func teardownGraph() {
         if let observer { NotificationCenter.default.removeObserver(observer) }; observer = nil
         _ = flush()
-        if hasInputTap { engine?.inputNode.removeTap(onBus: 0) }; hasInputTap = false
-        engine?.stop(); echoCancellation = false
+        if hasInputTap, let engine, let input = VoiceAudioBoundary.input(for: engine) { _ = VoiceAudioBoundary.removeTap(input) }; hasInputTap = false
+        if let engine { _ = VoiceAudioBoundary.stop(engine) }; echoCancellation = false
         engine = nil; player = nil; isRunning = false; inputLevel = 0
     }
     private static func describe(_ error: Error) -> String {
         if let audio = error as? AudioError { return "\(audio)" }
         let ns = error as NSError; return "\(ns.domain) \(ns.code)"
     }
+    /// Swift catch handles NSError, not NSException. The typed Objective-C boundary must catch first.
+    private func checkAudioOperation(_ error: Error?) throws {
+        guard let error else { return }
+        audioLog.error("Audio operation failed: \(Self.describe(error), privacy: .public)")
+        throw AudioError.graph
+    }
     private func buildGraph(voiceProcessing: Bool) throws {
         let graph = AVAudioEngine(), node = AVAudioPlayerNode()
         engine = graph; player = node
-        let input = graph.inputNode
+        guard let input = VoiceAudioBoundary.input(for: graph) else { throw AudioError.noInputDevice }
         guard input.inputFormat(forBus: 0).sampleRate > 0, input.inputFormat(forBus: 0).channelCount > 0 else { throw AudioError.noInputDevice }
         // Some devices do not support voice processing; capture remains available there.
         echoCancellation = false
-        if voiceProcessing { try input.setVoiceProcessingEnabled(true); echoCancellation = input.isVoiceProcessingEnabled }
+        if voiceProcessing { try checkAudioOperation(VoiceAudioBoundary.enableVoiceProcessing(input)); echoCancellation = input.isVoiceProcessingEnabled }
         // Re-read both formats after enabling voice processing: it can reconfigure the I/O unit.
         let hardware = input.inputFormat(forBus: 0), source = input.outputFormat(forBus: 0)
         guard hardware.sampleRate.isFinite, hardware.sampleRate > 0, hardware.channelCount > 0 else { throw AudioError.noInputDevice }
-        let output = graph.outputNode.outputFormat(forBus: 0)
+        guard let output = VoiceAudioBoundary.outputFormat(for: graph) else { throw AudioError.noOutputDevice }
         guard output.sampleRate.isFinite, output.sampleRate > 0, output.channelCount > 0 else { throw AudioError.noOutputDevice }
         audioLog.info("Audio formats: input \(hardware.sampleRate, privacy: .public) Hz/\(hardware.channelCount, privacy: .public) channels; tap \(source.sampleRate, privacy: .public) Hz/\(source.channelCount, privacy: .public) channels; output \(output.sampleRate, privacy: .public) Hz/\(output.channelCount, privacy: .public) channels")
         guard source.sampleRate.isFinite, source.sampleRate > 0, source.channelCount > 0,
@@ -166,11 +172,11 @@ final class VoiceAudioEngine: ObservableObject {
         // Multi-channel inputs (mic arrays, aggregate or call devices) can carry the voice on any channel;
         // mixing all of them avoids sending a silent first channel.
         converter.downmix = true
-        graph.attach(node); graph.connect(node, to: graph.mainMixerNode, format: mono)
+        try checkAudioOperation(VoiceAudioBoundary.connectPlayer(node, engine: graph, format: mono))
         let id = UUID(); generation = id
         // Tap state belongs exclusively to the serial input callback, never to the main actor.
         let pipeline = InputPipeline(converter: converter, outputFormat: mono)
-        input.installTap(onBus: 0, bufferSize: 2048, format: source) { [weak self] buffer, _ in
+        try checkAudioOperation(VoiceAudioBoundary.installTap(input, format: source, callback: { [weak self] buffer, _ in
             let result = pipeline.process(buffer)
             Task { @MainActor [weak self] in
                 guard let self, self.generation == id, self.wantedRunning else { return }
@@ -179,7 +185,7 @@ final class VoiceAudioEngine: ObservableObject {
                 if !self.echoCancellation && self.isPlaying { return }
                 for chunk in result.chunks { self.onInput?(chunk) }
             }
-        }
+        }))
         hasInputTap = true
         observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: graph, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -187,7 +193,7 @@ final class VoiceAudioEngine: ObservableObject {
                 self.rebuild()
             }
         }
-        graph.prepare(); try graph.start(); isRunning = true
+        try checkAudioOperation(VoiceAudioBoundary.start(graph)); isRunning = true
     }
     private func rebuild() {
         guard wantedRunning else { return }
@@ -225,14 +231,13 @@ final class VoiceAudioEngine: ObservableObject {
         }
         itemFrames += Int64(samples.count); queuedFrames += Int64(samples.count)
         let end = queuedFrames, id = playbackGeneration
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+        try checkAudioOperation(VoiceAudioBoundary.scheduleBuffer(buffer, player: player, completion: { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.playbackGeneration == id else { return }
                 self.completedFrames = max(self.completedFrames, end)
                 self.isPlaying = self.completedFrames < self.queuedFrames
             }
-        }
-        if !player.isPlaying { player.play() }
+        }))
         isPlaying = true
     }
     /// Stops immediately, drops queued buffers and returns rendered (not queued) ms for this item.
@@ -244,7 +249,7 @@ final class VoiceAudioEngine: ObservableObject {
             rendered = max(rendered, position.sampleTime - latencyFrames)
         }
         let played = VoicePCM.playedMilliseconds(renderedFrames: rendered, itemStartFrame: itemStart, itemFrames: itemFrames)
-        playbackGeneration = UUID(); player?.stop()
+        playbackGeneration = UUID(); if let player { _ = VoiceAudioBoundary.stopPlayer(player) }
         queuedFrames = 0; completedFrames = 0; itemStart = 0; itemFrames = 0; currentItem = nil; isPlaying = false
         return played
     }
