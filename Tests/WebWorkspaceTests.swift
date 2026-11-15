@@ -538,7 +538,10 @@ final class WebWorkspaceTests: XCTestCase {
         let result = await voice.execute?("get_agenda", args)
         let turn = try XCTUnwrap(model.agentMessages.last)
         XCTAssertEqual(turn.role, "tool"); XCTAssertEqual(turn.toolName, "get_agenda")
-        XCTAssertEqual(turn.arguments, args.jsonString()); XCTAssertEqual(turn.result, result)
+        // JSON object key order is unspecified; compare the recorded values, not serialization order.
+        let recordedArguments = try XCTUnwrap(turn.arguments)
+        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: Data(recordedArguments.utf8)), args)
+        XCTAssertEqual(turn.result, result)
         let record = try XCTUnwrap(model.memoryStore.listRecords().first { $0.id == model.currentMemoryRecordID })
         XCTAssertEqual(record.agentTranscript?.last, turn)
         voice.stop()
