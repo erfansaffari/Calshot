@@ -48,7 +48,7 @@ export function VoiceInputSettings({ state }: { state: AppState }) {
     <div className="settings-row"><span id="voice-echo-label">Echo cancellation</span><button type="button" role="switch" aria-labelledby="voice-echo-label" aria-checked={input.echoCancellation} className={"switch" + (input.echoCancellation ? " is-on" : "")} disabled={locked} onClick={() => configure(input.selectedUID, !input.echoCancellation)}><i /></button></div>
     <p className="fine-print">Off by default for push-to-talk. Turn it on only if Calshot hears its own replies; some phone, headset and virtual devices do not support it.</p>
     <div className="voice-input-actions">
-      <button className="button secondary" disabled={a.busy || Boolean(state.voice?.active) || (!testing && (!input.selectedAvailable || input.devices.length === 0))} onClick={() => void a.run(testing ? "voiceInputStopTest" : "voiceInputTest", { token: input.token })}>{testing ? "Stop microphone test" : "Test microphone"}</button>
+      <button className="button secondary" disabled={Boolean(state.voice?.active) || (!testing && (a.busy || !input.selectedAvailable || input.devices.length === 0))} onClick={() => void a.run(testing ? "voiceInputStopTest" : "voiceInputTest", { token: input.token })}>{testing ? "Stop microphone test" : "Test microphone"}</button>
       <button className="text-button" disabled={locked} onClick={() => void a.run("voiceInputRefresh", { token: input.token })}>Refresh microphones</button>
     </div>
     <InputMeter active={input.testState === "testing"} />

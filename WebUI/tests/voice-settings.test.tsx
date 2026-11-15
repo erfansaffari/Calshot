@@ -83,3 +83,13 @@ it("keeps disconnected input errors visible and blocks test and changes during v
   expect((screen.getByLabelText("Input device") as HTMLSelectElement).disabled).toBe(true);
   expect((screen.getByRole("button", { name: "Test microphone" }) as HTMLButtonElement).disabled).toBe(true);
 });
+it("keeps Stop available while a microphone start request is still pending", async () => {
+  vi.mocked(command).mockImplementationOnce(() => new Promise<void>(() => {}));
+  const view = render(<SettingsPage state={{ ...preview, settingsSection: "voice", voice, voiceInput }} />);
+  await userEvent.click(screen.getByRole("button", { name: "Test microphone" }));
+  view.rerender(<SettingsPage state={{ ...preview, settingsSection: "voice", voice, voiceInput: { ...voiceInput, token: "starting-input", testState: "checking" } }} />);
+  const stop = screen.getByRole("button", { name: "Stop microphone test" }) as HTMLButtonElement;
+  expect(stop.disabled).toBe(false);
+  await userEvent.click(stop);
+  expect(command).toHaveBeenCalledWith({ action: "voiceInputStopTest", token: "starting-input" });
+});
