@@ -25,3 +25,5 @@ Retest push-to-talk with the affected Mac's original input/output device pair an
 The first 1.0.7 release attempt stopped at its native test gate; no installer was published. CI now prints the xcresult summary instead of hiding failure names behind Xcode's quiet output.
 
 A standalone Foundation round trip reproduced the six local memory failures: `.completeFileProtectionUnlessOpen` created a temporary file that then failed to reopen with Cocoa error 257. `.completeFileProtectionUntilFirstUserAuthentication` passed the same write/read check. Personal memory now uses that protection class, retains atomic replacement and owner-only directory/file permissions, and still refuses to reset or overwrite an unreadable existing store. Existing persistence tests cover reopening saved memory and repeated replacements.
+
+After the protection-class fix, the full local native suite passed: **469 passed, 1 skipped, 0 failures** (`build/release-verification/MemoryProtectionFix.xcresult`). This resolves the six local failures listed above. Device-specific crash reproduction and visual-inspection limitations remain unchanged.
