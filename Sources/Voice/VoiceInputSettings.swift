@@ -56,7 +56,6 @@ final class VoiceInputSettings {
         }
     }
     var selectedUID: String { defaults.string(forKey: "voice.inputUID") ?? "" }
-    var echoCancellation: Bool { defaults.bool(forKey: "voice.echoCancellation") }
     var testing: Bool { testState == "checking" || testState == "testing" }
     var level: Float { testState == "testing" ? min(1, max(0, (audio?.inputLevel ?? 0) * 4)) : 0 }
     var selectedAvailable: Bool { selectedUID.isEmpty || devices.contains { $0.uid == selectedUID } }
@@ -64,12 +63,11 @@ final class VoiceInputSettings {
         let next = listDevices().sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         if next != devices { devices = next; token = UUID().uuidString; onChange?() }
     }
-    func configure(uid: String, echoCancellation: Bool) throws {
+    func configure(uid: String) throws {
         guard !testing else { throw CalendarToolArgumentError("Stop the microphone test before changing input.") }
         refresh()
         guard uid.isEmpty || devices.contains(where: { $0.uid == uid }) else { throw CalendarToolArgumentError("That microphone is no longer connected. Refresh the input list.") }
         defaults.set(uid, forKey: "voice.inputUID")
-        defaults.set(echoCancellation, forKey: "voice.echoCancellation")
         error = nil; testState = "idle"; detectedSound = false; token = UUID().uuidString; onChange?()
     }
     func startTest() async {
@@ -95,7 +93,7 @@ final class VoiceInputSettings {
             self.finish("failed", error: issue.localizedDescription)
         }
         do {
-            try await VoiceAudioStartup.start(attempt: { try audio.start() }, shouldContinue: { self.generation == id && self.testing })
+            try await VoiceAudioStartup.start(attempt: { try await audio.start() }, shouldContinue: { self.generation == id && self.testing })
             guard generation == id, testing else { audio.stop(); return }
             testState = "testing"; onChange?()
             timeout = Task { [weak self] in
@@ -118,7 +116,7 @@ final class VoiceInputSettings {
     var snapshot: JSONValue { .object([
         "token": .string(token), "devices": .array(devices.map { .object(["uid": .string($0.uid), "name": .string($0.name)]) }),
         "selectedUID": .string(selectedUID), "selectedAvailable": .bool(selectedAvailable),
-        "echoCancellation": .bool(echoCancellation), "testState": .string(testState), "detectedSound": .bool(detectedSound),
+        "testState": .string(testState), "detectedSound": .bool(detectedSound),
         "error": error.map(JSONValue.string) ?? .null
     ]) }
     deinit {

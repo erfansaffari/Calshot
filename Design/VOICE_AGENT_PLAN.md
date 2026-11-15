@@ -26,7 +26,7 @@ Decisions made by the owner on 2026-10-29:
 Swift owns audio, capture, credentials, the Realtime connection, tool execution and memory. React presents state through the existing snapshot/command bridge.
 
 - `Sources/Voice/RealtimeVoiceClient.swift` — WebSocket transport to the Realtime API: session config, PCM16 audio in/out, image input, function calls, interruption, reconnect, usage accounting. A `RealtimeTransport` protocol lets tests replace the socket.
-- `Sources/Voice/VoiceAudioEngine.swift` — AVAudioEngine microphone capture with voice processing (echo cancellation), resampling to 24 kHz PCM16, playback queue with immediate flush on barge-in, input level metering, device-change handling.
+- `Sources/Voice/VoiceAudioEngine.swift` — Independent AVCaptureSession microphone capture through VoiceMicrophoneCapture, software conversion to 24 kHz PCM16, lazy AVAudioEngine reply playback with immediate flush on interruption, input level metering and device-change handling. The former voice-processing input graph is removed.
 - `Sources/Voice/FocusOverlayController.swift` — borderless non-activating overlay panel per display, stroke capture and animation, pass-through when not drawing, Esc handling.
 - `Sources/Voice/FocusFrameComposer.swift` — captures the active display excluding Calshot's own windows (ScreenCaptureKit), scales to at most 1280 px on the long edge, draws strokes, returns JPEG data plus normalized stroke boxes.
 - `Sources/Voice/VoiceSessionController.swift` — the session state machine (idle → connecting → listening → thinking → speaking → waiting for review → ended/failed), limits, indicator, tool routing into the existing `CalendarAgentToolExecutor`, notch/pop-up presentation.

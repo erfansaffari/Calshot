@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        CAFE00000000000000000007 = {isa = PBXBuildFile; fileRef = CAFE00000000000000000008; };
         CAFE00000000000000000005 = {isa = PBXBuildFile; fileRef = CAFE00000000000000000006; };
         CAFE00000000000000000001 = {isa = PBXBuildFile; fileRef = CAFE00000000000000000002; };
         CAFE00000000000000000003 = {isa = PBXBuildFile; fileRef = CAFE00000000000000000004; };
@@ -96,6 +97,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        CAFE00000000000000000008 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Sources/Voice/VoiceMicrophoneCapture.m; sourceTree = SOURCE_ROOT; };
         CAFE00000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Voice/VoiceInputSettings.swift; sourceTree = SOURCE_ROOT; };
         CAFE00000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Sources/Voice/VoiceAudioBoundary.m; sourceTree = SOURCE_ROOT; };
         CAFE00000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Tests/VoiceAudioBoundaryTests.m; sourceTree = SOURCE_ROOT; };
@@ -201,6 +203,7 @@
 				C49AFEE5793CF85304544B3F /* VoiceAudioEngine.swift */,
                 CAFE00000000000000000002,
                 CAFE00000000000000000006,
+                CAFE00000000000000000008,
                 CAFE00000000000000000004,
 				40146CC37DACA6CB1B55E038 /* FocusOverlayController.swift */,
 				BE66089867DD77D53E9DEA0F /* FocusFrameComposer.swift */,
@@ -553,6 +556,7 @@
 				90DF6323D49B1AE000342C7F /* VoiceAudioEngine.swift in Sources */,
                 CAFE00000000000000000001,
                 CAFE00000000000000000005,
+                CAFE00000000000000000007,
 				D1728034BEF312B46E0B9A4D /* FocusOverlayController.swift in Sources */,
 				65B0B6BCFAE7C5638C128A88 /* FocusFrameComposer.swift in Sources */,
 				882EB43220D0481ECF71D26C /* VoiceSessionController.swift in Sources */,

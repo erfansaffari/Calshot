@@ -65,15 +65,16 @@ it("offers Sound settings for device failures even when microphone permission is
   expect(command).toHaveBeenCalledWith({ action: "startVoice", token: "fixture" });
 });
 
-const voiceInput = { token: "input-fixture", devices: [{ uid: "fictional-mic", name: "Built-in microphone" }], selectedUID: "", selectedAvailable: true, echoCancellation: false, testState: "idle", detectedSound: false };
+const voiceInput = { token: "input-fixture", devices: [{ uid: "fictional-mic", name: "Built-in microphone" }], selectedUID: "", selectedAvailable: true, testState: "idle", detectedSound: false };
 it("selects the microphone natively and starts a local test without an agent connection", async () => {
   render(<SettingsPage state={{ ...preview, settingsSection: "voice", voice, voiceInput }} />);
   await userEvent.selectOptions(screen.getByLabelText("Input device"), "fictional-mic");
-  expect(command).toHaveBeenCalledWith({ action: "voiceInputConfigure", token: "input-fixture", uid: "fictional-mic", echoCancellation: false });
+  expect(command).toHaveBeenCalledWith({ action: "voiceInputConfigure", token: "input-fixture", uid: "fictional-mic" });
   await userEvent.click(screen.getByRole("button", { name: "Test microphone" }));
   expect(command).toHaveBeenCalledWith({ action: "voiceInputTest", token: "input-fixture" });
   expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: "startVoice" }));
   expect(screen.getByRole("meter", { name: "Microphone input level" })).toBeTruthy();
+  expect(screen.queryByRole("switch", { name: "Echo cancellation" })).toBeNull();
 });
 it("keeps disconnected input errors visible and blocks test and changes during voice", () => {
   const view = render(<SettingsPage state={{ ...preview, settingsSection: "voice", voice, voiceInput: { ...voiceInput, selectedUID: "missing", selectedAvailable: false } }} />);

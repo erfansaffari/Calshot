@@ -55,8 +55,7 @@ enum VoicePCM {
     }
 }
 
-/// Main-actor graph ownership. Conversion runs on AVAudioEngine's tap thread; UI/callbacks run on main.
-/// Initialization never prompts or acquires the microphone. Step D must request permission explicitly.
+/// Input is captured independently; output hardware is created only for an actual spoken reply.
 @MainActor
 final class VoiceAudioEngine: ObservableObject {
     enum MicrophonePermission: Equatable { case authorized, denied, restricted, notDetermined }
@@ -79,30 +78,34 @@ final class VoiceAudioEngine: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var isPlaying = false
     @Published private(set) var inputLevel: Float = 0
-    /// Approximate loudness of queued speech (chunk RMS), for the speaking animation; 0 when silent.
+    @Published private(set) var failure: AudioError?
     var outputLevel: Float { isPlaying ? lastOutputLevel : 0 }
     private var lastOutputLevel: Float = 0
-    /// False when the device pair cannot run voice processing; capture then pauses during playback so Calshot does not hear itself.
-    private(set) var echoCancellation = false
-    @Published private(set) var failure: AudioError?
     var onInput: ((Data) -> Void)?
     var onError: ((AudioError) -> Void)?
-    /// A device rebuild flushes queued output. Caller can truncate/cancel the interrupted server item.
     var onPlaybackInterrupted: ((Int) -> Void)?
+    private var capture: (any VoiceMicrophone)?
+    private let makeMicrophone: () -> any VoiceMicrophone
+    private let makePlayback: () throws -> (AVAudioEngine, AVAudioPlayerNode)
+    private let defaults: UserDefaults
+    private let permission: () -> MicrophonePermission
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
-    private var observer: NSObjectProtocol?
-    private var hasInputTap = false
+    private var outputObserver: NSObjectProtocol?
     private var rebuildTask: Task<Void, Never>?
     private var recoveryGeneration = UUID()
     private var generation = UUID()
+    private var startID: UUID?
+    private var startupFailure: AudioError?
+    private var wantedRunning = false
+    private var chunker = VoicePCM.Chunker()
     private var playbackGeneration = UUID()
     private var queuedFrames: Int64 = 0
     private var completedFrames: Int64 = 0
     private var itemStart: Int64 = 0
     private var itemFrames: Int64 = 0
     private var currentItem: String?
-    private var wantedRunning = false
+    var playbackPrepared: Bool { player != nil }
     static var microphonePermission: MicrophonePermission {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: return .authorized
@@ -116,118 +119,109 @@ final class VoiceAudioEngine: ObservableObject {
         if microphonePermission == .notDetermined { _ = await AVCaptureDevice.requestAccess(for: .audio) }
         return microphonePermission
     }
-    private let defaults: UserDefaults
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
-    /// Push-to-talk never needs a voice-processing aggregate device unless the user opts in.
-    var usesVoiceProcessing: Bool { defaults.bool(forKey: "voice.echoCancellation") }
-    func start() throws {
+
+    init(defaults: UserDefaults = .standard, makeMicrophone: (() -> any VoiceMicrophone)? = nil,
+         makePlayback: (() throws -> (AVAudioEngine, AVAudioPlayerNode))? = nil,
+         permission: (() -> MicrophonePermission)? = nil) {
+        self.defaults = defaults; self.permission = permission ?? { Self.microphonePermission }
+        self.makeMicrophone = makeMicrophone ?? { VoiceCaptureInput() }
+        self.makePlayback = makePlayback ?? { try Self.makePlaybackGraph() }
+    }
+    func start() async throws {
         guard !isRunning else { return }
-        guard Self.microphonePermission == .authorized else { throw AudioError.permission(Self.microphonePermission) }
-        wantedRunning = true
-        do { try buildGraph(voiceProcessing: usesVoiceProcessing); failure = nil } catch {
-            guard usesVoiceProcessing, error as? AudioError != .selectedInputUnavailable else {
-                teardownGraph(); wantedRunning = false
-                let typed = error as? AudioError ?? .graph; failure = typed; throw typed
+        guard startID == nil else { throw AudioError.graph }
+        guard permission() == .authorized else { throw AudioError.permission(permission()) }
+        let id = UUID(); generation = id; startID = id; startupFailure = nil
+        wantedRunning = true; chunker = VoicePCM.Chunker()
+        let microphone = makeMicrophone(); capture = microphone
+        defer { if startID == id { startID = nil } }
+        do {
+            try await microphone.start(uid: defaults.string(forKey: "voice.inputUID") ?? "", samples: { [weak self] pcm, level in
+                guard let self, self.generation == id, self.wantedRunning, self.isRunning else { return }
+                self.inputLevel = level
+                // Push-to-talk interrupts playback first; never feed Calshot its own reply.
+                guard !self.isPlaying else { self.chunker = VoicePCM.Chunker(); return }
+                for chunk in self.chunker.append(pcm) { self.onInput?(chunk) }
+            }, failure: { [weak self] issue in
+                guard let self, self.generation == id, self.wantedRunning else { return }
+                if self.startID == id { self.startupFailure = issue }
+                else { self.rebuild() }
+            })
+            try Task.checkCancellation()
+            guard generation == id, wantedRunning else { microphone.stop(); throw CancellationError() }
+            if let startupFailure { throw startupFailure }
+            isRunning = true; failure = nil
+        } catch {
+            microphone.stop()
+            if generation == id {
+                wantedRunning = false; capture = nil; inputLevel = 0; isRunning = false
+                if !(error is CancellationError) { failure = error as? AudioError ?? .graph }
             }
-            // Voice processing fails on some device pairs (e.g. 48 kHz mic with 44.1 kHz speakers); capture still works without it.
-            audioLog.error("Audio start with voice processing failed: \(Self.describe(error), privacy: .public); retrying without")
-            teardownGraph(); wantedRunning = true
-            do { try buildGraph(voiceProcessing: false); failure = nil } catch {
-                audioLog.error("Audio start failed: \(Self.describe(error), privacy: .public)")
-                teardownGraph(); wantedRunning = false
-                let typed = error as? AudioError ?? .graph; failure = typed; throw typed
-            }
+            throw error
         }
     }
     func stop() {
         recoveryGeneration = UUID(); rebuildTask?.cancel(); rebuildTask = nil
-        wantedRunning = false; generation = UUID()
-        teardownGraph()
+        wantedRunning = false; generation = UUID(); startID = nil
+        teardown()
     }
-    private func teardownGraph() {
-        if let observer { NotificationCenter.default.removeObserver(observer) }; observer = nil
+    private func teardown() {
+        capture?.stop(); capture = nil; isRunning = false; inputLevel = 0
         _ = flush()
-        if hasInputTap, let engine, let input = VoiceAudioBoundary.input(for: engine) { _ = VoiceAudioBoundary.removeTap(input) }; hasInputTap = false
-        if let engine { _ = VoiceAudioBoundary.stop(engine) }; echoCancellation = false
-        engine = nil; player = nil; isRunning = false; inputLevel = 0
-    }
-    private static func describe(_ error: Error) -> String {
-        if let audio = error as? AudioError { return "\(audio)" }
-        let ns = error as NSError; return "\(ns.domain) \(ns.code)"
-    }
-    /// Swift catch handles NSError, not NSException. The typed Objective-C boundary must catch first.
-    private func checkAudioOperation(_ error: Error?) throws {
-        guard let error else { return }
-        audioLog.error("Audio operation failed: \(Self.describe(error), privacy: .public)")
-        throw AudioError.graph
-    }
-    private func buildGraph(voiceProcessing: Bool) throws {
-        let graph = AVAudioEngine(), node = AVAudioPlayerNode()
-        engine = graph; player = node
-        guard let input = VoiceAudioBoundary.input(for: graph) else { throw AudioError.noInputDevice }
-        let selectedUID = defaults.string(forKey: "voice.inputUID") ?? ""
-        if VoiceAudioBoundary.selectInputUID(selectedUID, engine: graph) != nil { throw AudioError.selectedInputUnavailable }
-        // Some devices do not support voice processing; capture remains available there.
-        echoCancellation = false
-        if voiceProcessing { try checkAudioOperation(VoiceAudioBoundary.enableVoiceProcessing(input)); echoCancellation = input.isVoiceProcessingEnabled }
-        if voiceProcessing, VoiceAudioBoundary.selectInputUID(selectedUID, engine: graph) != nil { throw AudioError.selectedInputUnavailable }
-        // Re-read both formats after enabling voice processing: it can reconfigure the I/O unit.
-        let hardware = input.inputFormat(forBus: 0), source = input.outputFormat(forBus: 0)
-        guard hardware.sampleRate.isFinite, hardware.sampleRate > 0, hardware.channelCount > 0 else { throw AudioError.noInputDevice }
-        guard let output = VoiceAudioBoundary.outputFormat(for: graph) else { throw AudioError.noOutputDevice }
-        guard output.sampleRate.isFinite, output.sampleRate > 0, output.channelCount > 0 else { throw AudioError.noOutputDevice }
-        audioLog.info("Audio formats: input \(hardware.sampleRate, privacy: .public) Hz/\(hardware.channelCount, privacy: .public) channels; tap \(source.sampleRate, privacy: .public) Hz/\(source.channelCount, privacy: .public) channels; output \(output.sampleRate, privacy: .public) Hz/\(output.channelCount, privacy: .public) channels")
-        guard source.sampleRate.isFinite, source.sampleRate > 0, source.channelCount > 0,
-              let mono = AVAudioFormat(standardFormatWithSampleRate: VoicePCM.sampleRate, channels: 1),
-              let converter = AVAudioConverter(from: source, to: mono) else { throw AudioError.conversion }
-        // Multi-channel inputs (mic arrays, aggregate or call devices) can carry the voice on any channel;
-        // mixing all of them avoids sending a silent first channel.
-        converter.downmix = true
-        try checkAudioOperation(VoiceAudioBoundary.connectPlayer(node, engine: graph, format: mono))
-        let id = UUID(); generation = id
-        // Tap state belongs exclusively to the serial input callback, never to the main actor.
-        let pipeline = InputPipeline(converter: converter, outputFormat: mono)
-        try checkAudioOperation(VoiceAudioBoundary.installTap(input, format: source, callback: { [weak self] buffer, _ in
-            let result = pipeline.process(buffer)
-            Task { @MainActor [weak self] in
-                guard let self, self.generation == id, self.wantedRunning else { return }
-                if result.failed { self.failure = .conversion; self.onError?(.conversion); return }
-                self.inputLevel = result.level
-                if !self.echoCancellation && self.isPlaying { return }
-                for chunk in result.chunks { self.onInput?(chunk) }
-            }
-        }))
-        hasInputTap = true
-        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: graph, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, self.generation == id else { return }
-                self.rebuild()
-            }
-        }
-        try checkAudioOperation(VoiceAudioBoundary.start(graph)); isRunning = true
+        if let outputObserver { NotificationCenter.default.removeObserver(outputObserver) }; outputObserver = nil
+        if let engine { _ = VoiceAudioBoundary.stop(engine) }
+        engine = nil; player = nil; chunker = VoicePCM.Chunker()
     }
     private func rebuild() {
         guard wantedRunning else { return }
         let played = flush(); onPlaybackInterrupted?(played)
-        generation = UUID(); teardownGraph()
+        generation = UUID(); startID = nil; teardown()
         rebuildTask?.cancel()
         let id = UUID(); recoveryGeneration = id
         rebuildTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await VoiceAudioStartup.start(attempt: { try self.start() }, shouldContinue: { self.recoveryGeneration == id })
+                try await VoiceAudioStartup.start(attempt: { try await self.start() }, shouldContinue: { self.recoveryGeneration == id })
             } catch is CancellationError { }
             catch {
                 guard self.recoveryGeneration == id else { return }
-                let typed = error as? AudioError ?? .graph
-                self.failure = typed; self.onError?(typed)
+                let issue = error as? AudioError ?? .graph
+                self.failure = issue; self.onError?(issue)
             }
         }
     }
+    private static func makePlaybackGraph() throws -> (AVAudioEngine, AVAudioPlayerNode) {
+        let graph = AVAudioEngine(), node = AVAudioPlayerNode()
+        do {
+            guard let output = VoiceAudioBoundary.outputFormat(for: graph), output.sampleRate.isFinite,
+                  output.sampleRate > 0, output.channelCount > 0 else { throw AudioError.noOutputDevice }
+            guard let format = AVAudioFormat(standardFormatWithSampleRate: VoicePCM.sampleRate, channels: 1) else { throw AudioError.conversion }
+            if VoiceAudioBoundary.connectPlayer(node, engine: graph, format: format) != nil { throw AudioError.graph }
+            if VoiceAudioBoundary.start(graph) != nil { throw AudioError.graph }
+            return (graph, node)
+        } catch { _ = VoiceAudioBoundary.stop(graph); throw error }
+    }
+    private func checkAudioOperation(_ error: Error?) throws {
+        if error != nil { throw AudioError.graph }
+    }
     /// itemID must be the server's audio item ID. It scopes flush's played-duration result.
     func enqueuePCM16(_ data: Data, itemID: String) throws {
-        guard isRunning, let player, let format = AVAudioFormat(standardFormatWithSampleRate: VoicePCM.sampleRate, channels: 1),
-              data.count % 2 == 0 else { throw AudioError.graph }
+        guard isRunning, data.count % 2 == 0 else { throw AudioError.graph }
+        guard !data.isEmpty else { return }
+        if player == nil {
+            let pair = try makePlayback(); engine = pair.0; player = pair.1
+            let id = generation, outputID = ObjectIdentifier(pair.0)
+            outputObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: pair.0, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, let engine = self.engine, ObjectIdentifier(engine) == outputID, self.generation == id, self.player != nil else { return }
+                    let played = self.flush(); self.onPlaybackInterrupted?(played)
+                    if let observer = self.outputObserver { NotificationCenter.default.removeObserver(observer) }; self.outputObserver = nil
+                    if let engine = self.engine { _ = VoiceAudioBoundary.stop(engine) }
+                    self.engine = nil; self.player = nil
+                }
+            }
+        }
+        guard let player, let format = AVAudioFormat(standardFormatWithSampleRate: VoicePCM.sampleRate, channels: 1) else { throw AudioError.graph }
         let samples = VoicePCM.decode(data)
         guard !samples.isEmpty else { return }
         lastOutputLevel = min(1, VoicePCM.rms(samples) * 4)
@@ -266,23 +260,48 @@ final class VoiceAudioEngine: ObservableObject {
     }
 }
 
-/// AVAudioConverter and chunker are used only by the input tap, which AVAudioEngine serializes.
-private final class InputPipeline {
-    let converter: AVAudioConverter
-    let outputFormat: AVAudioFormat
-    var chunker = VoicePCM.Chunker()
-    init(converter: AVAudioConverter, outputFormat: AVAudioFormat) { self.converter = converter; self.outputFormat = outputFormat }
-    func process(_ input: AVAudioPCMBuffer) -> (chunks: [Data], level: Float, failed: Bool) {
-        let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * VoicePCM.resamplingRatio(from: input.format.sampleRate))) + 64
-        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return ([], 0, true) }
-        var supplied = false
-        var error: NSError?
-        let status = converter.convert(to: output, error: &error) { _, state in
-            if supplied { state.pointee = .noDataNow; return nil }
-            supplied = true; state.pointee = .haveData; return input
+@MainActor
+protocol VoiceMicrophone: AnyObject {
+    func start(uid: String, samples: @escaping @MainActor (Data, Float) -> Void,
+               failure: @escaping @MainActor (VoiceAudioEngine.AudioError) -> Void) async throws
+    func stop()
+}
+
+/// Objective-C calls back on its capture worker. Construct those blocks outside actor isolation,
+/// then explicitly hop to main; an Objective-C delegate must never enter an inferred @MainActor block.
+@MainActor
+final class VoiceCaptureInput: VoiceMicrophone {
+    private let capture = VoiceMicrophoneCapture()
+    func start(uid: String, samples: @escaping @MainActor (Data, Float) -> Void,
+               failure: @escaping @MainActor (VoiceAudioEngine.AudioError) -> Void) async throws {
+        try await Self.open(capture, uid: uid, samples: samples, failure: failure)
+    }
+    func stop() { capture.stop() }
+    private nonisolated static func issue(_ error: NSError) -> VoiceAudioEngine.AudioError {
+        switch error.code {
+        case 1: return .noInputDevice
+        case 2: return .selectedInputUnavailable
+        case 4: return .conversion
+        default: return .graph
         }
-        guard status != .error, error == nil, let pointer = output.floatChannelData?[0] else { return ([], 0, true) }
-        let samples = Array(UnsafeBufferPointer(start: pointer, count: Int(output.frameLength)))
-        return (chunker.append(VoicePCM.encode(samples)), VoicePCM.rms(samples), false)
+    }
+    private nonisolated static func open(_ capture: VoiceMicrophoneCapture, uid: String,
+                                        samples: @escaping @MainActor (Data, Float) -> Void,
+                                        failure: @escaping @MainActor (VoiceAudioEngine.AudioError) -> Void) async throws {
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                capture.start(withUID: uid, samples: { pcm, level in
+                    Task { @MainActor in samples(pcm, level) }
+                }, failure: { error in
+                    let issue = issue(error as NSError)
+                    Task { @MainActor in failure(issue) }
+                }, completion: { error in
+                    if let error { continuation.resume(throwing: issue(error as NSError)) }
+                    else { continuation.resume() }
+                })
+            }
+            try Task.checkCancellation()
+        } onCancel: { capture.stop() }
     }
 }

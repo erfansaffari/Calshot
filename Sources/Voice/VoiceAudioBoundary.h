@@ -5,14 +5,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Do not replace these typed operations with a block supplied by Swift.
 @interface VoiceAudioBoundary : NSObject
 + (NSArray<NSDictionary<NSString *, id> *> *)inputDevices;
-+ (nullable NSError *)selectInputUID:(NSString *)uid engine:(AVAudioEngine *)engine;
-+ (nullable AVAudioInputNode *)inputForEngine:(AVAudioEngine *)engine;
 + (nullable AVAudioFormat *)outputFormatForEngine:(AVAudioEngine *)engine;
-+ (nullable NSError *)enableVoiceProcessing:(AVAudioInputNode *)input;
 + (nullable NSError *)connectPlayer:(AVAudioPlayerNode *)player engine:(AVAudioEngine *)engine format:(AVAudioFormat *)format;
-+ (nullable NSError *)installTap:(AVAudioInputNode *)input format:(AVAudioFormat *)format callback:(AVAudioNodeTapBlock)callback;
 + (nullable NSError *)startEngine:(AVAudioEngine *)engine;
-+ (nullable NSError *)removeTap:(AVAudioInputNode *)input;
 + (nullable NSError *)stopEngine:(AVAudioEngine *)engine;
 + (nullable NSError *)stopPlayer:(AVAudioPlayerNode *)player;
 + (nullable NSError *)scheduleBuffer:(AVAudioPCMBuffer *)buffer player:(AVAudioPlayerNode *)player completion:(AVAudioPlayerNodeCompletionHandler)completion;

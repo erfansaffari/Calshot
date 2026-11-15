@@ -1645,7 +1645,7 @@ final class WebWorkspaceTests: XCTestCase {
         try await workspace.handle("navigate", ["page": "settings", "section": "voice"])
         do { try await workspace.handle("voiceInputTest", ["token": "old"]); XCTFail("Accepted stale action") } catch {}
         do { try await notch.handle("voiceInputTest", ["token": input.token]); XCTFail("Notch opened a settings test") } catch {}
-        do { try await workspace.handle("voiceInputConfigure", ["token": input.token, "uid": "fictional-mic", "echoCancellation": 1]); XCTFail("Accepted nonboolean") } catch {}
+        do { try await workspace.handle("voiceInputConfigure", ["token": input.token, "uid": "fictional-mic", "echoCancellation": 1]); XCTFail("Accepted the removed processing control") } catch {}
         try await workspace.handle("voiceInputTest", ["token": input.token])
         XCTAssertTrue(audio.running)
         try await workspace.handle("navigate", ["page": "chat"])

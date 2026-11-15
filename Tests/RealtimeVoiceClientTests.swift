@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import Calshot
 
 @MainActor
@@ -306,10 +307,14 @@ final class RealtimeVoiceClientTests: XCTestCase {
     func testOptInMicrophoneHardwareCapture() async throws {
         guard ProcessInfo.processInfo.environment["CALSHOT_AUDIO_HARDWARE_CHECK"] == "1" else { throw XCTSkip("Set TEST_RUNNER_CALSHOT_AUDIO_HARDWARE_CHECK=1 to check local hardware.") }
         guard VoiceAudioEngine.microphonePermission == .authorized else { throw XCTSkip("Microphone permission must already be authorized; this test never prompts.") }
-        let audio = VoiceAudioEngine(); var bytes = 0
+        let uid = try XCTUnwrap(AVCaptureDevice.default(for: .audio)?.uniqueID)
+        XCTAssertTrue(VoiceAudioBoundary.inputDevices().contains { ($0["uid"] as? String) == uid }, "Picker UIDs must identify capture devices")
+        let prefs = UserDefaults(suiteName: "MicrophoneHardwareCheck-" + UUID().uuidString)!
+        prefs.set(uid, forKey: "voice.inputUID")
+        let audio = VoiceAudioEngine(defaults: prefs); var bytes = 0
         audio.onInput = { bytes += $0.count }
         defer { audio.stop() }
-        try await VoiceAudioStartup.start(attempt: { try audio.start() }, shouldContinue: { true })
+        try await VoiceAudioStartup.start(attempt: { try await audio.start() }, shouldContinue: { true })
         try await Task.sleep(for: .milliseconds(800))
         XCTAssertTrue(audio.isRunning); XCTAssertGreaterThan(bytes, 0)
         audio.stop(); XCTAssertFalse(audio.isRunning)
@@ -410,6 +415,13 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         let s = make(); defaults.set(0, forKey: "voice.acknowledgementVersion"); await s.toggle()
         XCTAssertTrue(s.needsAcknowledgement); XCTAssertNil(client.configuration)
         s.acknowledge(); await s.toggle(); XCTAssertEqual(s.state, .connecting); s.stop()
+    }
+    func testConnectionAndReconnectNeverReopenAnAlreadyStartedMicrophone() async {
+        let session = make(); await session.toggle()
+        XCTAssertEqual(audio.startAttempts, 1)
+        session.handle(.sessionUpdated); client.onReconnect?(); session.handle(.sessionUpdated)
+        XCTAssertEqual(audio.startAttempts, 1)
+        session.stop()
     }
     func testMicrophoneDeniedBlocksStart() async { let s = make(microphone: false); await s.toggle(); XCTAssertEqual(s.state, .failed); XCTAssertNil(client.configuration) }
     func testAudioStartupWaitsForTransientInputAndUsesBoundedBackoff() async throws {
@@ -757,14 +769,14 @@ final class VoiceInputSettingsTests: XCTestCase {
         let prefs = defaults()
         var devices = [VoiceInputSettings.Device(uid: "fictional-built-in", name: "Built-in microphone")]
         let input = VoiceInputSettings(defaults: prefs, devices: { devices }, observesHardware: false)
-        XCTAssertFalse(VoiceAudioEngine(defaults: prefs).usesVoiceProcessing)
-        try input.configure(uid: "fictional-built-in", echoCancellation: true)
-        XCTAssertTrue(VoiceAudioEngine(defaults: prefs).usesVoiceProcessing)
+        prefs.set(true, forKey: "voice.echoCancellation") // Older preferences must not re-enable the removed engine path.
+        try input.configure(uid: "fictional-built-in")
+        XCTAssertNil(input.snapshot.objectValue?["echoCancellation"])
         XCTAssertEqual(prefs.string(forKey: "voice.inputUID"), "fictional-built-in")
         devices = []; input.refresh()
         XCTAssertFalse(input.selectedAvailable)
         XCTAssertEqual(input.selectedUID, "fictional-built-in", "Unplugging never changes the saved choice")
-        XCTAssertThrowsError(try input.configure(uid: "fictional-unknown", echoCancellation: false))
+        XCTAssertThrowsError(try input.configure(uid: "fictional-unknown"))
     }
     func testTestUsesOnlyLocalAudioAndStopDiscardsLateCallbacks() async {
         let audio = PreviewVoiceAudio()
@@ -802,5 +814,67 @@ final class VoiceInputSettingsTests: XCTestCase {
         XCTAssertEqual(input.testState, "finished"); XCTAssertFalse(audio.running)
         await input.startTest(); audio.onError?(.selectedInputUnavailable)
         XCTAssertEqual(input.testState, "failed"); XCTAssertFalse(audio.running)
+    }
+}
+
+
+@MainActor
+private final class ControlledMicrophone: VoiceMicrophone {
+    var samples: (@MainActor (Data, Float) -> Void)?
+    var failure: (@MainActor (VoiceAudioEngine.AudioError) -> Void)?
+    var starts = 0, stops = 0
+    var uid = ""
+    var running = false
+    var suspendStart = false
+    var continuation: CheckedContinuation<Void, Error>?
+    func start(uid: String, samples: @escaping @MainActor (Data, Float) -> Void,
+               failure: @escaping @MainActor (VoiceAudioEngine.AudioError) -> Void) async throws {
+        starts += 1; self.uid = uid; self.samples = samples; self.failure = failure
+        if suspendStart { try await withCheckedThrowingContinuation { continuation = $0 } }
+        running = true
+    }
+    func stop() { stops += 1; running = false }
+}
+
+@MainActor
+final class IndependentMicrophoneTests: XCTestCase {
+    func testMicrophoneStartAndMeterNeverOpenSpeakerOrLegacyVoiceProcessing() async throws {
+        let mic = ControlledMicrophone(); var playbackStarts = 0, chunks = 0
+        let prefs = UserDefaults(suiteName: "IndependentMic-" + UUID().uuidString)!
+        prefs.set("fictional-selected-mic", forKey: "voice.inputUID")
+        prefs.set(true, forKey: "voice.echoCancellation")
+        let engine = VoiceAudioEngine(defaults: prefs, makeMicrophone: { mic }, makePlayback: {
+            playbackStarts += 1; throw VoiceAudioEngine.AudioError.noOutputDevice
+        }, permission: { .authorized })
+        engine.onInput = { _ in chunks += 1 }
+        try await engine.start()
+        XCTAssertEqual(mic.uid, "fictional-selected-mic"); XCTAssertTrue(mic.running)
+        XCTAssertEqual(playbackStarts, 0); XCTAssertFalse(engine.playbackPrepared)
+        mic.samples?(Data(count: VoicePCM.chunkBytes()), 0.25)
+        XCTAssertEqual(chunks, 1); XCTAssertEqual(engine.inputLevel, 0.25)
+        try engine.enqueuePCM16(Data(), itemID: "empty")
+        XCTAssertThrowsError(try engine.enqueuePCM16(Data(count: 1), itemID: "malformed"))
+        XCTAssertEqual(playbackStarts, 0, "Empty or invalid reply data must not open output hardware")
+        XCTAssertThrowsError(try engine.enqueuePCM16(Data(count: 48), itemID: "fictional-reply"))
+        XCTAssertEqual(playbackStarts, 1); XCTAssertTrue(mic.running, "An output failure must not be part of microphone startup")
+        engine.stop(); XCTAssertFalse(mic.running)
+    }
+    func testStopDuringAsynchronousMicrophoneStartFencesCompletionAndSamples() async {
+        let mic = ControlledMicrophone(); mic.suspendStart = true
+        let engine = VoiceAudioEngine(makeMicrophone: { mic }, permission: { .authorized })
+        var chunks = 0; engine.onInput = { _ in chunks += 1 }
+        let pending = Task { try await engine.start() }
+        while mic.continuation == nil { await Task.yield() }
+        engine.stop(); mic.continuation?.resume()
+        do { try await pending.value; XCTFail("Stopped startup must not succeed") } catch { XCTAssertTrue(error is CancellationError) }
+        mic.samples?(Data(count: VoicePCM.chunkBytes()), 0.5)
+        XCTAssertFalse(engine.isRunning); XCTAssertFalse(mic.running); XCTAssertEqual(chunks, 0)
+        XCTAssertFalse(engine.playbackPrepared)
+    }
+    func testPermissionDenialCannotCreateCaptureOrOutput() async {
+        let mic = ControlledMicrophone()
+        let engine = VoiceAudioEngine(makeMicrophone: { mic }, makePlayback: { XCTFail("Opened speakers without permission"); throw VoiceAudioEngine.AudioError.graph }, permission: { .denied })
+        do { try await engine.start(); XCTFail("Started denied microphone") } catch { XCTAssertEqual(error as? VoiceAudioEngine.AudioError, .permission(.denied)) }
+        XCTAssertEqual(mic.starts, 0)
     }
 }

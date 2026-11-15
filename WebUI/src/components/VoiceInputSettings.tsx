@@ -34,10 +34,10 @@ export function VoiceInputSettings({ state }: { state: AppState }) {
   if (!input) return null;
   const testing = input.testState === "checking" || input.testState === "testing";
   const locked = Boolean(state.voice?.active) || testing || a.busy;
-  const configure = (uid: string, echoCancellation: boolean) => void a.run("voiceInputConfigure", { token: input.token, uid, echoCancellation });
+  const configure = (uid: string) => void a.run("voiceInputConfigure", { token: input.token, uid });
   return <div className="voice-input-settings">
     <h3>Microphone</h3>
-    <div className="settings-row"><span>Input device</span><Select label="Input device" value={input.selectedUID} disabled={locked} onChange={uid => configure(uid, input.echoCancellation)}>
+    <div className="settings-row"><span>Input device</span><Select label="Input device" value={input.selectedUID} disabled={locked} onChange={configure}>
       <option value="">System default</option>
       {!input.selectedAvailable && <option value={input.selectedUID}>Selected microphone (disconnected)</option>}
       {input.devices.map(device => <option key={device.uid} value={device.uid}>{device.name}</option>)}
@@ -45,8 +45,6 @@ export function VoiceInputSettings({ state }: { state: AppState }) {
     <p className="fine-print">Choose the Mac’s built-in microphone to avoid an unavailable phone or headset input. This changes Calshot only.</p>
     {input.devices.length === 0 && <p>No microphones found. Connect an input, then refresh the list.</p>}
     {!input.selectedAvailable && <p role="alert">The selected microphone is disconnected. Reconnect it or choose another input.</p>}
-    <div className="settings-row"><span id="voice-echo-label">Echo cancellation</span><button type="button" role="switch" aria-labelledby="voice-echo-label" aria-checked={input.echoCancellation} className={"switch" + (input.echoCancellation ? " is-on" : "")} disabled={locked} onClick={() => configure(input.selectedUID, !input.echoCancellation)}><i /></button></div>
-    <p className="fine-print">Off by default for push-to-talk. Turn it on only if Calshot hears its own replies; some phone, headset and virtual devices do not support it.</p>
     <div className="voice-input-actions">
       <button className="button secondary" disabled={Boolean(state.voice?.active) || (!testing && (a.busy || !input.selectedAvailable || input.devices.length === 0))} onClick={() => void a.run(testing ? "voiceInputStopTest" : "voiceInputTest", { token: input.token })}>{testing ? "Stop microphone test" : "Test microphone"}</button>
       <button className="text-button" disabled={locked} onClick={() => void a.run("voiceInputRefresh", { token: input.token })}>Refresh microphones</button>

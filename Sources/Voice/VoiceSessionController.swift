@@ -39,7 +39,7 @@ extension VoiceClient {
     var isPlaying: Bool { get }
     var inputLevel: Float { get }
     var outputLevel: Float { get }
-    func start() throws
+    func start() async throws
     func stop()
     func flush() -> Int
     func enqueuePCM16(_ data: Data, itemID: String) throws
@@ -48,13 +48,18 @@ extension VoiceAudioEngine: VoiceAudio {}
 /// Device routing may settle after permission or Bluetooth/USB changes. Rebuild fresh graphs,
 /// yield to Core Audio between attempts, and never retry after the originating session ends.
 @MainActor enum VoiceAudioStartup {
-    static func start(attempt: () throws -> Void, shouldContinue: () -> Bool,
+    static func start(attempt: () async throws -> Void, shouldContinue: () -> Bool,
                       wait: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) async throws {
         let delays: [Duration] = [.milliseconds(200), .milliseconds(400), .milliseconds(800)]
         for index in 0...delays.count {
             try Task.checkCancellation()
             guard shouldContinue() else { throw CancellationError() }
-            do { try attempt(); return }
+            do {
+                try await attempt()
+                try Task.checkCancellation()
+                guard shouldContinue() else { throw CancellationError() }
+                return
+            }
             catch {
                 guard let issue = error as? VoiceAudioEngine.AudioError, issue.canRetryStartup, index < delays.count else { throw error }
                 try await wait(delays[index])
@@ -369,7 +374,7 @@ extension FocusFrameComposer: VoiceFrames {}
         do { try prepare?() } catch { fail(error.localizedDescription); return }
         // The microphone opens with the session so a held first sentence is buffered; nothing is sent until the key is held.
         do {
-            try await VoiceAudioStartup.start(attempt: { try audio.start() }, shouldContinue: { self.generation == id && self.active })
+            try await VoiceAudioStartup.start(attempt: { try await audio.start() }, shouldContinue: { self.generation == id && self.active })
         } catch {
             guard generation == id, active else { return }
             if error is CancellationError { stop(); return }
@@ -524,7 +529,8 @@ extension FocusFrameComposer: VoiceFrames {}
         switch event {
         case .sessionUpdated:
             turnLog.info("connected: talking=\(self.talking, privacy: .public) commitWhenReady=\(self.commitWhenReady, privacy: .public)")
-            do { try audio.start(); state = waitingForReview() ? .waitingForReview : .listening } catch { failAudio(error as? VoiceAudioEngine.AudioError ?? .graph); return }
+            // Capture starts before connecting and survives a transport reconnect; never reopen it here.
+            state = waitingForReview() ? .waitingForReview : .listening
             let wasReconnecting = reconnecting; reconnecting = false
             let restored = history()
             let fallback = wasReconnecting && restored.isEmpty ? summary.suffix(12).joined(separator: "\n") : ""
@@ -830,7 +836,7 @@ extension CalshotModel {
     var outputLevel: Float = 0.5
     var startFailures: [VoiceAudioEngine.AudioError] = []
     var startAttempts = 0
-    func start() throws {
+    func start() async throws {
         startAttempts += 1
         if !startFailures.isEmpty { throw startFailures.removeFirst() }
         running = true

@@ -625,7 +625,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         case "voiceInputRefresh", "voiceInputConfigure", "voiceInputTest", "voiceInputStopTest":
             let input = model.voiceInput
             var fields: Set<String> = ["action", "id", "token"]
-            if action == "voiceInputConfigure" { fields.formUnion(["uid", "echoCancellation"]) }
+            if action == "voiceInputConfigure" { fields.insert("uid") }
             guard !isNotch, model.workspaceSelection == .settings, settingsSection == "voice",
                   Set(body.keys).isSubset(of: fields), body["token"] as? String == input.token else {
                 throw CalendarToolArgumentError("Microphone controls changed. Open Settings → Voice and try again.")
@@ -635,11 +635,10 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             else if action == "voiceInputStopTest" { input.stopTest() }
             else if action == "voiceInputTest" { await input.startTest() }
             else {
-                guard let uid = body["uid"] as? String, uid.count <= 512,
-                      let raw = body["echoCancellation"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID(), let echo = raw as? Bool else {
-                    throw CalendarToolArgumentError("Choose a connected microphone and an echo cancellation setting.")
+                guard let uid = body["uid"] as? String, uid.count <= 512 else {
+                    throw CalendarToolArgumentError("Choose a connected microphone.")
                 }
-                try input.configure(uid: uid, echoCancellation: echo)
+                try input.configure(uid: uid)
             }
         case "voiceTalk":
             // Press is token-bound; release only ends the caller's own held turn, so it stays valid after the press rotates the token.
