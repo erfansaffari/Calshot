@@ -149,8 +149,10 @@ final class PersonalMemoryStore {
         try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        // Keep memory readable throughout the logged-in session, including after atomic replacement.
+        // completeFileProtectionUnlessOpen can create a file that macOS then refuses to reopen.
         // Atomic replacement preserves the previous document on serialization/write failure.
-        try encoder.encode(doc).write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try encoder.encode(doc).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         document = doc; token = UUID().uuidString
     }

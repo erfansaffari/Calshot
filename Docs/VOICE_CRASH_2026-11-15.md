@@ -19,3 +19,9 @@ Retest push-to-talk with the affected Mac's original input/output device pair an
 - Test result: `build/VoiceCrashVerification/Logs/Test/Test-Calshot-2026.11.15_16-35-31--0500.xcresult`.
 - Launched the isolated `--voice-preview --compact-workspace` fixture. Computer Use could not inspect its window (`cgWindowNotFound`), so native visual inspection is incomplete. No browser inspection was performed; this patch has no web presentation changes.
 - The reported macOS 26.6 device configuration has not been reproduced locally. No release was published or installed on the other computer.
+
+## Release follow-up
+
+The first 1.0.7 release attempt stopped at its native test gate; no installer was published. CI now prints the xcresult summary instead of hiding failure names behind Xcode's quiet output.
+
+A standalone Foundation round trip reproduced the six local memory failures: `.completeFileProtectionUnlessOpen` created a temporary file that then failed to reopen with Cocoa error 257. `.completeFileProtectionUntilFirstUserAuthentication` passed the same write/read check. Personal memory now uses that protection class, retains atomic replacement and owner-only directory/file permissions, and still refuses to reset or overwrite an unreadable existing store. Existing persistence tests cover reopening saved memory and repeated replacements.
