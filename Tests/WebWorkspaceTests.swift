@@ -1247,6 +1247,8 @@ final class WebWorkspaceTests: XCTestCase {
     /// The task sync server must accept every reminder lead time the app offers, or one reminder blocks all task sync.
     func testTaskSyncServerAcceptsEveryReminderChoice() throws {
         let migrations = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("supabase/migrations")
+        // The migrations live in the website repository; checkouts without it (CI) cannot compare.
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: migrations.path), "Server migrations are not checked out here.")
         let files = try FileManager.default.contentsOfDirectory(atPath: migrations.path).filter { $0.hasSuffix(".sql") }.sorted()
         let latest = try XCTUnwrap(files.reversed().lazy.compactMap { name -> String? in
             let sql = try? String(contentsOf: migrations.appendingPathComponent(name), encoding: .utf8)
