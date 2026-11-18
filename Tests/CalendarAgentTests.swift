@@ -350,6 +350,29 @@ final class CalendarAgentTests: XCTestCase {
         XCTAssertEqual(agent.transcript.filter { $0.role == "tool" }.count, 8)
         XCTAssertEqual(agent.finalSummary, "The agent reached its step limit.")
     }
+    func testRunMetricsSumProviderUsageAcrossStepsWithoutContent() async throws {
+        let client = ScriptedAgentClient([
+            .init(calls: [.init(name: "get_agenda", callID: "agenda", arguments: #"{"day":"today","timeZone":null}"#)], usage: .init(input: 9000, cachedInput: 6000, output: 40)),
+            .init(text: "Fictional standup at nine.", usage: .init(input: 9500, cachedInput: 9000, output: 12, reasoning: 4))
+        ])
+        let executor = ScriptedAgentExecutor(results: [#"{"events":[]}"#])
+        let agent = CalendarAgent(client: client, executor: executor)
+        var reported: [AgentRunMetrics] = []
+        agent.onRunMetrics = { reported.append($0) }
+        try await agent.start(userMessage: "What's today", imageDataURL: nil)
+        let metrics = try XCTUnwrap(agent.lastRunMetrics)
+        XCTAssertEqual(reported, [metrics])
+        XCTAssertEqual(metrics.steps, 2); XCTAssertEqual(metrics.tools, ["get_agenda"]); XCTAssertEqual(metrics.outcome, "finished")
+        XCTAssertEqual(metrics.usage, .init(input: 18500, cachedInput: 15000, output: 52, reasoning: 4))
+        XCTAssertGreaterThan(metrics.instructionCharacters, 1000)
+        let encoded = String(decoding: try JSONEncoder().encode(metrics), as: UTF8.self)
+        XCTAssertFalse(encoded.contains("Fictional standup") || encoded.contains("What's today"), "Metrics never hold content")
+    }
+    func testResponsesUsageIsDecodedFromTheCompletedResponse() throws {
+        let response = JSONValue.object(["output": .array([]), "usage": .object(["input_tokens": .number(1200), "output_tokens": .number(30),
+            "input_tokens_details": .object(["cached_tokens": .number(1024)]), "output_tokens_details": .object(["reasoning_tokens": .number(8)])])])
+        XCTAssertEqual(try ResponsesCalendarAgentClient.decodeResponse(response).usage, .init(input: 1200, cachedInput: 1024, output: 30, reasoning: 8))
+    }
     func testFriendQuestionUsesReadToolsAndDoesNotReusePrivateHistory() async throws {
         let client = ScriptedAgentClient([
             .init(calls: [.init(name: "list_friends", callID: "friends", arguments: "{}")]),

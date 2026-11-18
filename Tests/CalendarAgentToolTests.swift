@@ -143,13 +143,43 @@ final class CalendarAgentToolTests: XCTestCase {
         // Browsing is not a target choice: several listed events cannot be edited without narrowing first.
         let edit = try decode(await tools.execute(name: "update_event", arguments: .object(["eventIdentifier": .string("chain"), "title": .string("Renamed")]), sessionID: session))
         XCTAssertNotNil(edit["error"])
-        let matched = try decode(await tools.execute(name: "search_events", arguments: .object(range.merging(["query": .string("Stat")]) { $1 }), sessionID: session))
-        XCTAssertTrue(matched["otherEventsInRange"] is NSNull, "A real match does not add the whole range")
+        let longRange: [String: JSONValue] = ["start": .string("2026-10-30T00:00:00Z"), "end": .string("2027-03-30T00:00:00Z")]
+        let matched = try decode(await tools.execute(name: "search_events", arguments: .object(longRange.merging(["query": .string("Stat")]) { $1 }), sessionID: session))
+        XCTAssertTrue(matched["otherEventsInRange"] is NSNull, "A match over a long range does not add the whole range")
+        // "final" can match the wrong event: a thin match in a bounded range also lists the rest, and stays editable.
+        let thin = try decode(await tools.execute(name: "search_events", arguments: .object(range.merging(["query": .string("Stat")]) { $1 }), sessionID: session))
+        XCTAssertEqual((thin["events"] as? [[String: Any]])?.compactMap { $0["title"] as? String }, ["Stat quiz"])
+        let rest = try XCTUnwrap(thin["otherEventsInRange"] as? [String: Any])
+        XCTAssertTrue((rest["meaning"] as? String)?.contains("Only a few events") == true)
+        XCTAssertEqual((rest["events"] as? [[String: Any]])?.count, 2)
+        // That a lone match stays editable after the listing is covered by the focused-search grant test.
 
         await service.configureSearch(failures: ["eventkit:school"])
         let failed = try decode(await tools.execute(name: "search_events", arguments: .object(range.merging(["query": .string("hackathon")]) { $1 }), sessionID: session))
         XCTAssertTrue(failed["otherEventsInRange"] is NSNull, "A failed read cannot be presented as the full range")
         XCTAssertEqual(failed["partial"] as? Bool, true)
+    }
+    func testUpcomingAlertsMergesEventAlertsAndTaskRemindersEarliestFirst() async throws {
+        let service = ToolCalendarService()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var shift = snapshot("shift", title: "Fictional shift"); shift.start = now.addingTimeInterval(2 * 86_400); shift.end = shift.start.addingTimeInterval(3600); shift.alertMinutes = [30]
+        var lecture = snapshot("lecture", title: "Fictional lecture"); lecture.start = now.addingTimeInterval(3 * 3600); lecture.end = lecture.start.addingTimeInterval(3600); lecture.alertMinutes = [10, 1440]
+        await service.configureSearch(events: [shift, lecture])
+        let tools = executor(service, CalendarActionCoordinator(service: service))
+        tools.clock = { now }
+        tools.upcomingTaskReminders = { start, end in
+            let fire = now.addingTimeInterval(3600)
+            return fire > start && fire <= end ? [(fire, .object(["kind": .string("task reminder"), "title": .string("Fictional assignment due tonight")]))] : []
+        }
+        let session = UUID(); tools.activate(sessionID: session)
+        XCTAssertTrue(tools.availableToolNames.contains("upcoming_alerts"))
+        let result = try decode(await tools.execute(name: "upcoming_alerts", arguments: .object(["days": .null]), sessionID: session))
+        let titles = (result["alerts"] as? [[String: Any]])?.compactMap { $0["title"] as? String }
+        XCTAssertEqual(titles, ["Fictional assignment due tonight", "Fictional lecture", "Fictional shift"],
+                       "Today's task reminder comes first; the lecture's day-before alert already passed")
+        XCTAssertEqual(result["partial"] as? Bool, false)
+        let bad = try decode(await tools.execute(name: "upcoming_alerts", arguments: .object(["days": .number(90)]), sessionID: session))
+        XCTAssertNotNil(bad["error"])
     }
     private func networkExecutor(_ service: ToolCalendarService, now: @escaping () -> Date) -> CalendarAgentToolExecutor {
         let tools = CalendarAgentToolExecutor(service: service, coordinator: CalendarActionCoordinator(service: service),

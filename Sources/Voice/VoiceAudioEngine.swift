@@ -5,6 +5,9 @@ private let audioLog = Logger(subsystem: "com.calshot.voice", category: "audio")
 import Combine
 
 /// Pure PCM helpers. Wire format is signed little-endian PCM16, mono, 24 kHz.
+/// Where playback stopped: the audible server item and how many milliseconds of it were heard.
+struct VoicePlaybackStop: Equatable { var item: String?; var playedMilliseconds: Int }
+
 enum VoicePCM {
     static let sampleRate = 24_000.0
     static func encode(_ samples: [Float]) -> Data {
@@ -41,6 +44,14 @@ enum VoicePCM {
                                    sampleRate: Double = sampleRate) -> Int {
         guard sampleRate.isFinite, sampleRate > 0 else { return 0 }
         return Int(Double(min(max(0, renderedFrames - itemStartFrame), max(0, itemFrames))) * 1000 / sampleRate)
+    }
+    /// One server audio item in the playback queue, in queue frames.
+    struct Segment: Equatable { var item: String; var start: Int64; var frames: Int64 }
+    /// The item the speakers were on when playback stopped and how much of it was heard.
+    /// Items queued behind it were not heard at all.
+    static func stop(segments: [Segment], renderedFrames: Int64, sampleRate: Double = sampleRate) -> VoicePlaybackStop {
+        guard let audible = segments.first(where: { $0.start + $0.frames > renderedFrames }) ?? segments.last else { return .init(item: nil, playedMilliseconds: 0) }
+        return .init(item: audible.item, playedMilliseconds: playedMilliseconds(renderedFrames: renderedFrames, itemStartFrame: audible.start, itemFrames: audible.frames, sampleRate: sampleRate))
     }
     struct Chunker {
         private var pending = Data()
@@ -102,9 +113,8 @@ final class VoiceAudioEngine: ObservableObject {
     private var playbackGeneration = UUID()
     private var queuedFrames: Int64 = 0
     private var completedFrames: Int64 = 0
-    private var itemStart: Int64 = 0
-    private var itemFrames: Int64 = 0
-    private var currentItem: String?
+    /// Server audio items queued back to back. A new response's audio waits for the previous one to finish.
+    private var segments: [VoicePCM.Segment] = []
     var playbackPrepared: Bool { player != nil }
     static var microphonePermission: MicrophonePermission {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -174,7 +184,7 @@ final class VoiceAudioEngine: ObservableObject {
     }
     private func rebuild() {
         guard wantedRunning else { return }
-        let played = flush(); onPlaybackInterrupted?(played)
+        let played = flush(); onPlaybackInterrupted?(played.playedMilliseconds)
         generation = UUID(); startID = nil; teardown()
         rebuildTask?.cancel()
         let id = UUID(); recoveryGeneration = id
@@ -214,7 +224,7 @@ final class VoiceAudioEngine: ObservableObject {
             outputObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: pair.0, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, let engine = self.engine, ObjectIdentifier(engine) == outputID, self.generation == id, self.player != nil else { return }
-                    let played = self.flush(); self.onPlaybackInterrupted?(played)
+                    let played = self.flush(); self.onPlaybackInterrupted?(played.playedMilliseconds)
                     if let observer = self.outputObserver { NotificationCenter.default.removeObserver(observer) }; self.outputObserver = nil
                     if let engine = self.engine { _ = VoiceAudioBoundary.stop(engine) }
                     self.engine = nil; self.player = nil
@@ -229,12 +239,11 @@ final class VoiceAudioEngine: ObservableObject {
               let channel = buffer.floatChannelData?[0] else { throw AudioError.conversion }
         buffer.frameLength = AVAudioFrameCount(samples.count)
         samples.withUnsafeBufferPointer { channel.update(from: $0.baseAddress!, count: samples.count) }
-        // Responses are sequential. Flush any prior item's tail before changing the truncation scope.
-        if currentItem != itemID {
-            if isPlaying { _ = flush() }
-            currentItem = itemID; itemStart = queuedFrames; itemFrames = 0
-        }
-        itemFrames += Int64(samples.count); queuedFrames += Int64(samples.count)
+        // Responses are sequential: the answer after a tool call queues behind the words still playing
+        // ("let me check…") instead of cutting them off. Only barge-in or Stop flushes.
+        if segments.last?.item == itemID { segments[segments.count - 1].frames += Int64(samples.count) }
+        else { segments.append(.init(item: itemID, start: queuedFrames, frames: Int64(samples.count))) }
+        queuedFrames += Int64(samples.count)
         let end = queuedFrames, id = playbackGeneration
         try checkAudioOperation(VoiceAudioBoundary.scheduleBuffer(buffer, player: player, completion: { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -245,17 +254,17 @@ final class VoiceAudioEngine: ObservableObject {
         }))
         isPlaying = true
     }
-    /// Stops immediately, drops queued buffers and returns rendered (not queued) ms for this item.
-    @discardableResult func flush() -> Int {
+    /// Stops immediately, drops queued buffers and returns the audible item with its rendered (not queued) ms.
+    @discardableResult func flush() -> VoicePlaybackStop {
         var rendered = completedFrames
         if let player, let time = player.lastRenderTime, let position = player.playerTime(forNodeTime: time) {
             // Render time leads the speakers by the downstream/device latency.
             let latencyFrames = Int64(max(0, player.outputPresentationLatency) * VoicePCM.sampleRate)
             rendered = max(rendered, position.sampleTime - latencyFrames)
         }
-        let played = VoicePCM.playedMilliseconds(renderedFrames: rendered, itemStartFrame: itemStart, itemFrames: itemFrames)
+        let played = VoicePCM.stop(segments: segments, renderedFrames: rendered)
         playbackGeneration = UUID(); if let player { _ = VoiceAudioBoundary.stopPlayer(player) }
-        queuedFrames = 0; completedFrames = 0; itemStart = 0; itemFrames = 0; currentItem = nil; isPlaying = false
+        queuedFrames = 0; completedFrames = 0; segments = []; isPlaying = false
         return played
     }
 }

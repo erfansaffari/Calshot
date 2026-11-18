@@ -98,7 +98,7 @@ enum ContextReflection {
                 // A guess never overrides something the user said.
                 if let replacing, store.items.first(where: { $0.id == replacing })?.source.map({ $0 == .user }) ?? true, source != .user { continue }
                 if let outcome = try? store.learn(kind: kind, text: text, source: source, confidence: confidence, replacing: replacing, now: now),
-                   outcome != .forgottenBefore { changed += 1 }
+                   outcome != .forgottenBefore, outcome != .outdated { changed += 1 }
             case .forget:
                 guard let id = operation.memoryID, let item = store.items.first(where: { $0.id == id }) else { continue }
                 let inferred = item.source != nil && item.source != .user
@@ -115,6 +115,28 @@ extension CalshotModel {
     /// Learns from a finished conversation in the background, through the user's selected AI route.
     /// Never blocks or alters the conversation; failures are silent because nothing the user asked for depends on it.
     /// `screen` is text that was on screen while they talked; `channel` is "voice" or "typed".
+    /// Typed requests in a burst become one learning pass and one note, two minutes after the last of them,
+    /// instead of one model call per request. What the user asks Calshot to remember is saved at once by the
+    /// remember tool and does not wait for this. Turns never cross to another account.
+    func scheduleTypedReflection(_ turns: [(String, String)], delay: TimeInterval = 120) {
+        let owner = account.userID
+        if pendingTypedReflection?.owner != owner { pendingTypedReflection = nil }
+        pendingTypedReflection = (owner, Array(((pendingTypedReflection?.turns ?? []) + turns).suffix(80)))
+        typedReflectionTimer?.cancel()
+        typedReflectionTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.flushTypedReflection()
+        }
+    }
+    /// Runs the waiting typed learning pass now (also before a voice session starts, so it can use the result).
+    func flushTypedReflection() {
+        typedReflectionTimer?.cancel(); typedReflectionTimer = nil
+        guard let pending = pendingTypedReflection else { return }
+        pendingTypedReflection = nil
+        guard pending.owner == account.userID else { return }
+        reflect(on: pending.turns, channel: "typed")
+    }
     func reflect(on turns: [(String, String)], screen: String = "", channel: String = "voice") {
         let spoken = turns.map { (role: $0.0, text: $0.1) }
         guard spoken.contains(where: { $0.role == "user" && $0.text.count >= 12 }) else { return }

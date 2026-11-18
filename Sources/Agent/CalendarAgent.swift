@@ -9,6 +9,9 @@ final class CalendarAgent: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var currentSessionID: UUID?
     @Published private(set) var transcript: [AgentTurn] = []
+    /// The last run's speed and token use. Reported once per run, whatever the outcome.
+    @Published private(set) var lastRunMetrics: AgentRunMetrics?
+    var onRunMetrics: ((AgentRunMetrics) -> Void)?
     private let client: any CalendarAgentModelClient
     private let executor: any CalendarAgentToolExecuting
     private var usesSharedCalendars = false
@@ -68,15 +71,27 @@ final class CalendarAgent: ObservableObject {
         }
         let instructions = Self.instructions + "\n" + personalMemoryContext + Self.memoryContext(memory)
             + "\n" + Self.clockContext() + "\n" + Self.alertContext()
+        let started = Date()
+        var steps = 0, usage = AgentUsage(), tools: [String] = [], firstText: Int?, outcome = "failed"
+        defer {
+            if outcome == "failed", Task.isCancelled || currentSessionID != sessionID { outcome = "stopped" }
+            let metrics = AgentRunMetrics(at: started, steps: steps, tools: tools, usage: usage, instructionCharacters: instructions.count,
+                                          firstTextMilliseconds: firstText, totalMilliseconds: Int(Date().timeIntervalSince(started) * 1000), outcome: outcome)
+            lastRunMetrics = metrics; onRunMetrics?(metrics)
+        }
         for index in 0..<8 {
             try check(sessionID)
             streamingText = ""
             var streamed = ""
+            steps += 1
             let response = try await client.turn(conversation: conversation, imageDataURL: index == 0 ? imageDataURL : nil,
                 instructions: instructions, tools: Self.tools.filter { executor.availableToolNames.contains($0.objectValue?["name"]?.stringValue ?? "") }) { [weak self] delta in
                 guard let self, self.currentSessionID == sessionID, self.isRunning else { return }
+                if firstText == nil { firstText = Int(Date().timeIntervalSince(started) * 1000) }
                 streamed += delta; self.streamingText = streamed; self.status = "Responding"
             }
+            if let reported = response.usage { usage = usage + reported }
+            tools += response.calls.map(\.name)
             try check(sessionID)
             conversation.append(contentsOf: response.output)
             for call in response.calls where !response.output.contains(where: { $0.value.objectValue?["call_id"]?.stringValue == call.callID }) {
@@ -85,7 +100,7 @@ final class CalendarAgent: ObservableObject {
             if !response.text.isEmpty { record(.init(role: "assistant", content: response.text)) }
             streamingText = ""
             guard !response.calls.isEmpty else {
-                finalSummary = response.text; status = "Finished"; return
+                finalSummary = response.text; status = "Finished"; outcome = "finished"; return
             }
             for call in response.calls {
                 try check(sessionID)
@@ -104,13 +119,14 @@ final class CalendarAgent: ObservableObject {
                 // A newer capture owns a different transcript, so its late results are dropped.
                 guard currentSessionID == sessionID else { throw CancellationError() }
                 record(.init(role: "tool", toolName: call.name, result: call.name == "recall" ? "Personal memory retrieved for this run; omitted from history." : result, callID: call.callID))
-                if !isRunning || Task.isCancelled { return }
+                if !isRunning || Task.isCancelled { outcome = "stopped"; return }
                 try check(sessionID)
                 conversation.append(.init(value: .object(["type": .string("function_call_output"), "call_id": .string(call.callID), "output": .string(result)])))
             }
         }
         finalSummary = "The agent reached its step limit."; status = finalSummary
         record(.init(role: "assistant", content: finalSummary))
+        outcome = "stepLimit"
     }
     private static func memoryContext(_ turns: [AgentTurn]) -> String {
         // Reserve space for the user's intent separately: large tool results must not crowd it out.
@@ -134,6 +150,7 @@ final class CalendarAgent: ObservableObject {
         switch name {
         case "list_friends", "search_friend_events": return "Checking shared friend calendars"
         case "get_agenda", "search_events": return "Searching connected calendars"
+        case "upcoming_alerts": return "Checking your reminders"
         case "get_conversation_context": return "Reading earlier conversation"
         case "recent_changes": return "Checking recent changes"
         case "undo_changes": return "Undoing changes"
@@ -146,7 +163,7 @@ final class CalendarAgent: ObservableObject {
         default: return "Waiting for approval"
         }
     }
-    static let toolNames: Set<String> = ["remember", "recall", "forget_memory", "get_conversation_context", "list_tasks", "get_tasks", "get_selected_event_context", "link_event_to_task", "update_tasks", "set_task_completion", "set_task_archived", "create_tasks", "list_friends", "search_friend_events", "get_agenda", "search_events", "recent_changes", "undo_changes", "read_screen_text", "ask_user", "create_events", "update_event", "delete_event", "move_events"]
+    static let toolNames: Set<String> = ["remember", "recall", "forget_memory", "get_conversation_context", "list_tasks", "get_tasks", "get_selected_event_context", "link_event_to_task", "update_tasks", "set_task_completion", "set_task_archived", "create_tasks", "list_friends", "search_friend_events", "get_agenda", "search_events", "recent_changes", "undo_changes", "read_screen_text", "ask_user", "create_events", "update_event", "delete_event", "move_events", "upcoming_alerts"]
     static let screenshotPrompt = "Read the screenshot and prepare calendar actions for every relevant dated item: appointments, meetings, classes, shifts, exams, deadlines, trips, reservations, reminders and other scheduled activities. Follow any user filters. Use visible headings and surrounding context to understand the dates. Include all new items in one review, preserving unresolved details without guessing."
     /// Local wall-clock context. A UTC instant alone makes "tomorrow" wrong in the evening west of Greenwich.
     /// Native setting for ALERTS AND REMINDERS; never authorization.
@@ -182,6 +199,8 @@ final class CalendarAgent: ObservableObject {
     READS AND EVENT TARGETS
     Events with isFree true, including task deadlines, do not reserve work time. An unknown availability flag is not proof of free time. For questions about current events or availability, call search_events in this session before answering; prior memory is not a fresh search. Use the date range the user asked about, with ISO-8601 timestamps including timezone offsets. For a local day, search local midnight through the next local midnight. Match a named event with a targeted query and relevant range before an update or delete, rather than starting with an unrelated broad agenda search.
     The search covers connected readable calendars and returns calendar metadata, including read-only status. Inspect partial, error, truncated, scope and per-calendar errors. If results are truncated, narrow the relevant query or date range when that can answer the request. Do not repeat an identical failed search without a reason. Distinguish no matches from a calendar that could not be checked; incomplete coverage never establishes free time. State the relevant range and incomplete sources plainly. A connection label on another device is not working access here.
+    A near-term schedule snapshot may follow the conversation context. When it covers the day asked about and does not say a calendar could not be read or the list was capped, it is a complete unfiltered agenda for those days: answer from it without a tool call. Otherwise, and before any edit or delete, read live.
+    A filtered search only shows events whose text contains the query words. Never conclude from it that something does not exist or that nothing more specific is scheduled: when the user asks about a kind of event (exams, finals, appointments), also check otherEventsInRange or search the range with related words or with a null query, and match by meaning (a final may be titled "CS 245 Exam").
     For a day's schedule use get_agenda with today, tomorrow or an explicit date. It resolves local midnight boundaries natively using the current clock and includes every event type, including all-day and free/transparent events. For search_events, query is a word filter (all words must appear), never a place for "today", "tomorrow", "my schedule" or other date instructions. An empty filtered search does not establish an empty day. Never call a day empty without a complete unfiltered agenda result for that exact date and timezone. A free event is still part of the user's agenda; free means it does not reserve availability, not that it should be omitted.
     If competing search matches still cannot be distinguished, ask which event before changing one. If a tool requires clarification, follow it rather than retrying the same rejected action. A clearly requested group can use move_events as a batch; update_event and delete_event each target one searched event. Never guess identifiers or override native validation.
     For an explicitly named destination, match returned calendar names together with source/account and writable status. If exactly one eligible calendar matches, pass its calendarIdentifier and do not ask again. Ask only if eligible matches remain ambiguous; if it is unavailable or read-only, explain that and ask for a writable alternative. With no destination specified, pass null for creates to reuse the app destination. Do not perform a search solely to make the user reselect that default.
@@ -208,6 +227,7 @@ final class CalendarAgent: ObservableObject {
     Friend sharing is read-only and one-way. Use list_friends to resolve the current friend account ID, then search_friend_events with an explicit date range for each question about a friend. Ask which person only when the listed identities are ambiguous. Never reuse prior conversation or old tool output as current access or calendar data; recheck each follow-up. Inspect permission, stale, complete, error, truncated and coverage range. Never describe missing, failed, stale or incomplete data as free time. Busy access hides titles: do not infer or search for hidden details. Distinguish the user's calendars from the friend's named shared calendars. Do not suggest editing a friend's events or copying them unless specifically requested; copies to the user's calendar still need normal review and approval.
 
     ALERTS AND REMINDERS
+    For questions about which reminders or alerts are coming (the next, the earliest, today's), call upcoming_alerts and answer from it; it already merges event alerts and task reminders and computes their times. Do not work them out by hand from events and tasks.
     Event alerts are the alerts stored on the calendar event itself (alerts: minutes before the start), so they sync to every device and calendar app; Calshot also shows them in the notch with a sound. Task reminders (reminderMinutes, plus reminderTime HH:mm for a date-only task) are delivered by Calshot on this Mac. Search results show an event's current alerts; null there means the provider did not say.
     The user's words always win: "remind me an hour before" sets exactly that; "no alert" or "no reminder" sets [] or null; "change/remove the alert" is update_event with only alerts (or update_tasks with only the reminder fields). An alerts-only change still goes through update_event and is saved and undoable like any edit.
     When "Calshot chooses alerts" is on (native context says so) and the user did not specify, decide for each new event or task you create, the way a thoughtful assistant would, and mention it in a few words ("with a 10-minute alert"):
@@ -270,7 +290,8 @@ final class CalendarAgent: ObservableObject {
             tool("list_friends", "List current friends who have shared calendars with this account. Returns canonical friend IDs for read-only questions. Always call before asking about a friend.", [:]),
             tool("search_friend_events", "Read a listed friend's shared calendars after checking current server permissions. Explicit ISO dates required, up to 63 days. Inspect per-calendar stale, complete, error and coverage before discussing availability. Never provides writable event targets.", ["friendID": string, "query": nullableString, "start": string, "end": string]),
             tool("get_agenda", "Read all connected readable calendars for one local day, including free and all-day events. Use this for the user's plan/schedule today or tomorrow. Native code resolves the date using the current clock. Inspect partial/errors/truncation before claiming the day is empty. day: today, tomorrow, or YYYY-MM-DD; timeZone: null for the user's current timezone.", ["day": string, "timeZone": nullableString]),
-            tool("search_events", "Search connected readable calendars. query is one to three distinctive words that must all appear in the title, notes or location (any order; punctuation and small typos are tolerated, e.g. blockchain or stat quiz), or null for ALL events in the range. Prefer one distinctive word. If no event contains the words, the result includes otherEventsInRange: every event in the range, so find the one the user means by meaning, place or date (a remembered hackathon may be titled Blockchain Challenge). If the user forgot the name, search with null over the likely range. Never put date instructions such as today/tomorrow or schedule in query; use get_agenda for a day schedule. start/end are ISO-8601 with offsets. Inspect partial/errors/truncation. Omitted dates use 7 days ago through 120 days ahead; at most 120 events.", ["query": nullableString, "start": nullableString, "end": nullableString]),
+            tool("search_events", "Search connected readable calendars. query is one to three distinctive words that must all appear in the title, notes or location (any order; punctuation and small typos are tolerated, e.g. blockchain or stat quiz), or null for ALL events in the range. Prefer one distinctive word. If no event, or only one or two, contain the words (in a range of about two months or less), the result includes otherEventsInRange: every event in the range, so find the one the user means by meaning, place or date (a remembered hackathon may be titled Blockchain Challenge). If the user forgot the name, search with null over the likely range. Never put date instructions such as today/tomorrow or schedule in query; use get_agenda for a day schedule. start/end are ISO-8601 with offsets. Inspect partial/errors/truncation. Omitted dates use 7 days ago through 120 days ahead; at most 120 events.", ["query": nullableString, "start": nullableString, "end": nullableString]),
+            tool("upcoming_alerts", "List upcoming alert moments in time order, computed natively with exact local times: alerts set on calendar events and reminders on tasks. Use it for any question about reminders, alerts or notifications (the next, earliest, or today's). The first row is the earliest. days: 1–31 ahead, null for 7.", ["days": .object(["type": .array([.string("integer"), .string("null")])])]),
             tool("read_screen_text", "Read OCR for the current screenshot, at most 16000 characters.", [:]),
             tool("ask_user", "Ask only for an unanswered choice that blocks progress or a target clarification required by native validation. Do not ask to search, reconfirm the request, reselect a known destination, or fill optional fields. Editable missing details belong in review. Cancel means leave the item untouched.", ["question": string, "choices": .object(["type": .array([.string("array"), .string("null")]), "items": string, "maxItems": .number(6)])]),
             tool("create_events", "Add 1–100 new events together. Clear rows save immediately under the user's saved permission; anything else opens the native review, including unresolved rows with unknown fields left null. Do not ask for a separate chat confirmation first. Use the resolved identifier for an explicitly named calendar; null reuses the app destination.", ["calendarIdentifier": nullableString, "events": .object(["type": .string("array"), "items": object(draft), "maxItems": .number(100)])]),

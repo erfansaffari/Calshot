@@ -1,6 +1,9 @@
 import AppKit
 import Combine
 import Foundation
+import os
+
+private let agentRunLog = Logger(subsystem: "com.calshot.app", category: "agent")
 
 /// One calendar row the executor already validated. Guests and recurrence are native facts, never tool-authored authority.
 struct AgentCalendarGrantRow: Sendable {
@@ -62,6 +65,18 @@ extension CalshotModel {
             case .updated: return "updated"
             case .reinforced: return "alreadyKnown"
             case .forgottenBefore: return "forgotten"
+            case .outdated: return "outdated"
+            }
+        }
+        executor.upcomingTaskReminders = { [weak self] now, end in
+            guard let self else { return [] }
+            let here = CalshotModel.syncDeviceID
+            return self.taskDocument.items.compactMap { task -> (Date, JSONValue)? in
+                guard !task.deleted, !task.completed, let minutes = task.reminderMinutes, let fire = task.reminderFireDate(now: now), fire <= end,
+                      let day = task.dueDate, let due = try? CalshotTask.date(day, time: task.dueTime ?? task.reminderTime, zone: task.timeZone) else { return nil }
+                return (fire, .object(["kind": .string("task reminder"), "title": .string(task.title), "alertAt": .string(CalendarAgentToolExecutor.localStamp(fire)),
+                    "due": .string(task.dueTime == nil ? day + " (date only)" : CalendarAgentToolExecutor.localStamp(due)), "minutesBefore": .number(Double(minutes)),
+                    "deliveredBy": .string(task.reminderDeviceID == here ? "this Mac" : "another device")]))
             }
         }
         executor.forgetMemory = { [weak self] id in
@@ -73,8 +88,10 @@ extension CalshotModel {
             guard let self else { throw CancellationError() }
             if let error = self.personalMemory.error { throw CalendarToolArgumentError(error) }
             // Identity and conversation notes ride along, so "who am I" and "what did we do last week" are answerable.
-            return [self.userIdentityContext, MemoryContextBuilder.build(request: query, items: self.personalMemory.items, withIDs: true),
-                    MemoryContextBuilder.notes(self.personalMemory.notes, characterBudget: 6_000)].filter { !$0.isEmpty }.joined(separator: "\n")
+            let store = self.personalMemory
+            return [self.userIdentityContext, MemoryContextBuilder.build(request: query, items: store.items, withIDs: true),
+                    MemoryContextBuilder.history(store.history, request: query),
+                    MemoryContextBuilder.notes(store.notes, request: query, characterBudget: 6_000)].filter { !$0.isEmpty }.joined(separator: "\n")
         }
         executor.typicalDuration = { [weak self] title in self?.calendarProfile?.typicalDuration(for: title) }
         executor.listFriends = { [weak self] in
@@ -134,10 +151,45 @@ extension CalshotModel {
         }
         let agent = CalendarAgent(client: client, executor: executor)
         calendarAgent = agent
+        if let base = agentPermissionBaseURL {
+            let log = base.deletingLastPathComponent().appendingPathComponent("AgentRuns.jsonl")
+            agent.onRunMetrics = { metrics in
+                agentRunLog.info("run \(metrics.outcome, privacy: .public): \(metrics.steps, privacy: .public) steps, \(metrics.totalMilliseconds, privacy: .public) ms, first text \(metrics.firstTextMilliseconds ?? -1, privacy: .public) ms, input \(metrics.usage.input, privacy: .public) (cached \(metrics.usage.cachedInput, privacy: .public)), output \(metrics.usage.output, privacy: .public), instructions \(metrics.instructionCharacters, privacy: .public) chars")
+                AgentRunLog.append(metrics, to: log)
+            }
+        }
         agent.$streamingText.sink { [weak self] in self?.agentStreamingText = $0 }.store(in: &agentSubscriptions)
         agent.$isRunning.sink { [weak self] value in self?.agentIsRunning = value }.store(in: &agentSubscriptions)
         agent.$status.sink { [weak self] value in self?.agentStatus = value.isEmpty ? nil : value }.store(in: &agentSubscriptions)
         agent.$finalSummary.sink { [weak self] value in self?.agentSummary = value.isEmpty ? nil : value }.store(in: &agentSubscriptions)
+    }
+
+    /// Which calendars and day a schedule snapshot describes. Any calendar change makes it stale.
+    var typedScheduleKey: String {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .current
+        let day = Int(calendar.startOfDay(for: Date()).timeIntervalSince1970)
+        return [calendarContentToken.uuidString, TimeZone.current.identifier, String(day)].joined(separator: "|") + "|" + readableCalendars.map(\.id).sorted().joined(separator: "|")
+    }
+    /// The near-term schedule for a typed request, so "what's on today" needs one model call instead of two.
+    /// A request never waits for calendars: only a background read of unchanged calendars under three minutes old
+    /// is used (edits made outside Calshot are not observed, so the copy must be fresh); otherwise this returns
+    /// nothing, starts a read for next time, and the agent reads live.
+    func typedScheduleContext(now: Date = .now) -> String {
+        guard agentClient == nil else { return "" }
+        if let cached = typedScheduleSnapshot, cached.key == typedScheduleKey, now.timeIntervalSince(cached.at) < Self.typedScheduleMaxAge, !cached.text.isEmpty { return "\n" + cached.text }
+        refreshTypedSchedule(); return ""
+    }
+    static let typedScheduleMaxAge: TimeInterval = 180
+    func refreshTypedSchedule() {
+        guard agentClient == nil, typedScheduleRefresh == nil, let executor = agentToolExecutor else { return }
+        let key = typedScheduleKey
+        if let cached = typedScheduleSnapshot, cached.key == key, Date().timeIntervalSince(cached.at) < 60 { return }
+        typedScheduleRefresh = Task { [weak self] in
+            let text = await executor.scheduleSnapshot()
+            guard let self else { return }
+            self.typedScheduleRefresh = nil
+            if self.typedScheduleKey == key { self.typedScheduleSnapshot = (key, Date(), text) }
+        }
     }
 
     func analyzeWithCalendarAgent(_ cgImage: CGImage, sessionID: UUID) async {
@@ -286,11 +338,12 @@ extension CalshotModel {
             let imageURL = try image.map(ResponsesCalendarAgentClient.imageDataURL)
             analyzedWithOpenAI = agentClient == nil
             lastAnalysisProvider = agentClient == nil ? "Calendar agent + Vision OCR" : "Offline calendar agent demo"
-            try await agent.start(userMessage: prompt, imageDataURL: imageURL, memory: memory, personalMemoryContext: personalMemoryContext(for: prompt), sessionID: sessionID)
+            try await agent.start(userMessage: prompt, imageDataURL: imageURL, memory: memory, personalMemoryContext: personalMemoryContext(for: prompt) + typedScheduleContext(), sessionID: sessionID)
+            refreshTypedSchedule()
             guard currentCaptureSessionID == sessionID else { return }
             // A typed request teaches Calshot too; a screenshot run does not (its content is not the user's words).
             if agentClient == nil, agentTypedRunID == sessionID, image == nil, executor.memorySuggestionsBlocked != true {
-                reflect(on: [("user", prompt)] + agent.transcript.filter { $0.role == "assistant" && $0.toolName == nil }.compactMap { turn in turn.content.map { ("assistant", $0) } }, channel: "typed")
+                scheduleTypedReflection([("user", prompt)] + agent.transcript.filter { $0.role == "assistant" && $0.toolName == nil }.compactMap { turn in turn.content.map { ("assistant", $0) } })
             }
             lastCaptureSummary = "\(calendarActions.addedCount) added · \(calendarActions.updatedCount) changed · \(calendarActions.deletedCount) removed · \(calendarActions.movedCount) moved"
         } catch is CancellationError { }

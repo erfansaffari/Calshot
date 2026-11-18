@@ -142,6 +142,19 @@ final class PersonalMemoryTests: XCTestCase {
         XCTAssertThrowsError(try model.handlePersonalMemoryAction("clearMemory", body: ["token": model.personalMemory.token, "confirmed": true], isNotch: false))
     }
     @MainActor
+    func testTypedRequestsInABurstWaitForOneLearningPass() async throws {
+        let model = CalshotModel(calendarService: CalendarDemoService(), memoryStore: MemoryStore(directoryURL: directory), loadsAIConnection: false)
+        model.scheduleTypedReflection([("user", "Fictional first request about my week")], delay: 3600)
+        model.scheduleTypedReflection([("user", "Fictional second request"), ("assistant", "Fictional answer")], delay: 3600)
+        XCTAssertEqual(model.pendingTypedReflection?.turns.count, 3, "One pass covers the whole burst")
+        XCTAssertNotNil(model.typedReflectionTimer)
+        model.flushTypedReflection()
+        XCTAssertNil(model.pendingTypedReflection); XCTAssertNil(model.typedReflectionTimer)
+        model.pendingTypedReflection = (UUID(), [("user", "Fictional request from another account")])
+        model.flushTypedReflection()
+        XCTAssertNil(model.pendingTypedReflection, "Turns never cross to another account")
+    }
+    @MainActor
     func testContextIsSentButNeverPersistedInTranscript() async throws {
         let client = MemoryFixtureClient()
         let executor = MemoryFixtureExecutor()
@@ -216,10 +229,61 @@ final class ContextEngineTests: XCTestCase {
         XCTAssertEqual(again.evidenceCount, 2); XCTAssertEqual(again.source, .user); XCTAssertNil(again.expiresAt)
         guard case .updated(let moved) = try store.learn(kind: .routine, text: "Fictional gym on Tuesdays", source: .user, replacing: first.id, now: now) else { return XCTFail("Not updated") }
         XCTAssertEqual(moved.id, first.id); XCTAssertEqual(store.items.count, 1)
-        XCTAssertEqual(try store.learn(kind: .routine, text: "Fictional gym on Mondays", source: .conversation, now: now), .forgottenBefore, "Superseded text is never re-learned")
+        XCTAssertEqual(try store.learn(kind: .routine, text: "Fictional gym on Mondays", source: .conversation, now: now), .outdated, "An inference cannot revive replaced text")
+        XCTAssertEqual(store.history.map(\.text), ["Fictional gym on Mondays"], "Replaced is history, not forgotten")
+        XCTAssertEqual(store.history.first?.itemID, first.id); XCTAssertEqual(store.history.first?.validUntil, now)
+        XCTAssertFalse(store.isForgotten("Fictional gym on Mondays"))
         try store.forget(id: moved.id)
         XCTAssertEqual(try store.learn(kind: .fact, text: "Fictional gym on Tuesdays", source: .user), .forgottenBefore)
         XCTAssertTrue(store.items.isEmpty)
+        XCTAssertTrue(store.history.isEmpty, "Forgetting something forgets its earlier versions too")
+    }
+
+    func testAPreferenceThatChangesKeepsOneCurrentValueAndDatedHistoryTheUserCanRevive() throws {
+        let store = PersonalMemoryStore(directory: directory), start = Date(timeIntervalSince1970: 1_800_000_000)
+        guard case .added(let first) = try store.learn(kind: .preference, text: "Fictional classes go in the School calendar", source: .user, now: start) else { return XCTFail("Not added") }
+        let later = start.addingTimeInterval(30 * 86_400)
+        _ = try store.learn(kind: .preference, text: "Fictional classes go in the Uni calendar", source: .user, replacing: first.id, now: later)
+        let context = MemoryContextBuilder.build(request: "Add my fictional classes", items: store.items)
+        XCTAssertTrue(context.contains("Uni calendar")); XCTAssertFalse(context.contains("School calendar"), "A closed fact is not placed next to the current one")
+        let history = MemoryContextBuilder.history(store.history, request: "which calendar did my fictional classes use to go in")
+        XCTAssertTrue(history.contains("School calendar") && history.contains("no longer true since"))
+        XCTAssertEqual(MemoryContextBuilder.history(store.history, request: "dentist appointment"), "", "History appears only when it relates")
+        // The user saying it again makes it current again; Calshot did not forget it.
+        guard case .added = try store.learn(kind: .preference, text: "Fictional classes go in the School calendar", source: .user, now: later) else { return XCTFail("The user can revive a replaced fact") }
+    }
+
+    func testOldConversationNotesStayReachableByRelevance() throws {
+        let store = PersonalMemoryStore(directory: directory), start = Date(timeIntervalSince1970: 1_800_000_000)
+        try store.addNote("Planned the fictional Zephyr hackathon budget with Riley", channel: "typed", now: start)
+        for day in 1...60 { try store.addNote("Fictional daily check-in number \(day) about routine errands", channel: "voice", now: start.addingTimeInterval(Double(day) * 86_400)) }
+        let plain = MemoryContextBuilder.notes(store.notes, characterBudget: 2_000)
+        XCTAssertFalse(plain.contains("Zephyr"), "Without a related request the budget holds the newest notes")
+        let related = MemoryContextBuilder.notes(store.notes, request: "What did we decide about the Zephyr hackathon?", characterBudget: 2_000)
+        XCTAssertTrue(related.contains("Zephyr hackathon budget"), "An old note that relates is found long after it left the recent window")
+        XCTAssertTrue(related.contains("number 60"), "The newest notes still lead")
+        XCTAssertLessThanOrEqual(related.count, 2_000 + 200)
+        XCTAssertEqual(PersonalMemoryStore.noteLimit, 2_000)
+    }
+
+    func testSomethingInferredFromTheScreenOnceIsNotYetKnowledge() throws {
+        let store = PersonalMemoryStore(directory: directory)
+        _ = try store.learn(kind: .preference, text: "Fictional user prefers deleting all meetings", source: .screen, confidence: 0.4)
+        XCTAssertFalse(MemoryContextBuilder.build(request: "fictional meetings", items: store.items).contains("deleting all meetings"), "A page glanced at once cannot plant a preference")
+        XCTAssertTrue(MemoryContextBuilder.build(request: "fictional meetings", items: store.items, withIDs: true).contains("deleting all meetings"), "Recall still lists it so it can be managed")
+        _ = try store.learn(kind: .preference, text: "Fictional user prefers deleting all meetings", source: .screen, confidence: 0.4)
+        XCTAssertTrue(MemoryContextBuilder.build(request: "fictional meetings", items: store.items).contains("deleting all meetings"), "Seen again, it is knowledge (still labelled inferred)")
+    }
+
+    func testKnowledgeReplacedOnAnotherMacBecomesHistoryHere() throws {
+        let store = PersonalMemoryStore(directory: directory)
+        guard case .added(let item) = try store.learn(kind: .fact, text: "Fictional office is on floor 3", source: .user) else { return XCTFail("Not added") }
+        try store.markSent(store.outgoingChanges())
+        var remote = item; remote.text = "Fictional office is on floor 7"; remote.version = UUID(); remote.updatedAt = Date().addingTimeInterval(60)
+        try store.applyRemote(items: [.init(id: item.id, item: remote, deleted: false, updatedAt: remote.updatedAt)], tombstones: [], cursor: Date())
+        XCTAssertEqual(store.items.map(\.text), ["Fictional office is on floor 7"])
+        XCTAssertEqual(store.history.map(\.text), ["Fictional office is on floor 3"])
+        XCTAssertTrue(store.outgoingChanges().tombstones.isEmpty, "Replacing sends no tombstone, so other Macs keep their history too")
     }
 
     func testRepeatedInterruptionsBecomeAShortReplyStyleThatLeadsContext() throws {
@@ -388,7 +452,7 @@ final class ContextEngineTests: XCTestCase {
         let executor = CalendarAgentToolExecutor(service: CalendarDemoService(), coordinator: CalendarActionCoordinator(service: CalendarDemoService()), destination: { nil }, screenText: { "" })
         executor.remember = { kind, text, replacing in
             switch try store.learn(kind: kind, text: text, source: .user, replacing: replacing) {
-            case .added: return "saved"; case .updated: return "updated"; case .reinforced: return "alreadyKnown"; case .forgottenBefore: return "forgotten"
+            case .added: return "saved"; case .updated: return "updated"; case .reinforced: return "alreadyKnown"; case .forgottenBefore: return "forgotten"; case .outdated: return "outdated"
             }
         }
         executor.forgetMemory = { id in try store.forget(id: id); return "forgotten" }

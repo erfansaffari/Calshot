@@ -51,6 +51,8 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         return names
     }
     var createTasks: (([String: JSONValue]) throws -> (saved: JSONValue, proposals: [CalendarActionProposal]))?
+    /// Task reminders that fire in (now, end]: fire time and its row. Native task state, never tool input.
+    var upcomingTaskReminders: ((Date, Date) -> [(Date, JSONValue)])?
     var listFriends: (() async throws -> JSONValue)?
     var searchFriend: (([String: JSONValue]) async throws -> JSONValue)?
     private let service: any CalendarDestinationService
@@ -188,6 +190,50 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
             cursor = next
         }
         return (events, complete)
+    }
+    static func localStamp(_ date: Date) -> String {
+        let format = DateFormatter(); format.locale = Locale(identifier: "en_US_POSIX"); format.timeZone = .current; format.dateFormat = "EEE yyyy-MM-dd HH:mm"
+        return format.string(from: date)
+    }
+    /// Every alert moment from now through `days` ahead, earliest first: event alerts (start minus each alert on the
+    /// event, as the notch plans them) and task reminders. Read-only; the model never computes these times itself.
+    func upcomingAlerts(days: Int) async -> String {
+        let now = clock(), end = now.addingTimeInterval(Double(days) * 86_400)
+        var rows: [(Date, JSONValue)] = [], unread: [String] = [], capped = false
+        // The same calendars search_events reads.
+        let calendars = searchDestinations?() ?? ((try? currentDestination()).map { [.init(id: $0.id, title: $0.name, provider: .apple, isReadOnly: false)] } ?? [])
+        if !calendars.isEmpty {
+            // An alert fires before its event, so read events that start up to a week past the window.
+            let (outcomes, _) = await readCalendars(calendars, query: nil, start: now, end: end.addingTimeInterval(7 * 86_400))
+            var events: [CalendarEventSnapshot] = []
+            for (index, outcome) in outcomes {
+                switch outcome {
+                case .success(let found): events += found; capped = capped || found.count >= CalendarSearchMatch.resultLimit
+                case .failure: unread.append(calendars[index].title)
+                }
+            }
+            var seen = Set<String>()
+            for event in events where !CalshotAlertPlanner.isTaskDeadline(event) {
+                for lead in event.alertMinutes ?? [] {
+                    let fire = event.start.addingTimeInterval(-Double(lead) * 60)
+                    guard fire > now, fire <= end else { continue }
+                    // The same invitation can appear in two calendars; one alert is enough.
+                    guard seen.insert((event.externalEventIdentifier ?? event.eventIdentifier) + "|\(Int(event.start.timeIntervalSince1970))|\(lead)").inserted else { continue }
+                    rows.append((fire, .object(["kind": .string("event alert"), "title": .string(event.title.isEmpty ? "Untitled event" : event.title),
+                        "alertAt": .string(Self.localStamp(fire)), "eventStart": .string(event.isAllDay ? "all day " + String(Self.localStamp(event.start).prefix(14)) : Self.localStamp(event.start)),
+                        "minutesBefore": .number(Double(lead)), "calendar": .string(event.calendarName)])))
+                }
+            }
+        }
+        rows += upcomingTaskReminders?(now, end) ?? []
+        let sorted = rows.sorted { $0.0 < $1.0 }
+        return JSONValue.object([
+            "from": .string(Self.localStamp(now)), "until": .string(Self.localStamp(end)), "timeZone": .string(TimeZone.current.identifier),
+            "alerts": .array(sorted.prefix(40).map(\.1)),
+            "truncated": .bool(capped || sorted.count > 40), "partial": .bool(!unread.isEmpty),
+            "unreadCalendars": .array(unread.map(JSONValue.string)),
+            "meaning": .string("Every upcoming alert moment in time order, earliest first: alerts on calendar events and task reminders. Alerts that already fired are not listed. If partial or truncated, say the list may be incomplete.")
+        ]).jsonString()
     }
     /// Compact near-term schedule for voice context, so simple questions need no tool call. Data, never instructions:
     /// edits still search first. States plainly when a calendar failed or a list was capped.
@@ -447,6 +493,14 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 let text = await screenText()
                 guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
                 return JSONValue.object(["text": .string(String(text.prefix(16_000))), "truncated": .bool(text.count > 16_000)]).jsonString()
+            case "upcoming_alerts":
+                try CalendarToolDraftMapper.keys(fields, allowed: ["days"])
+                var days = 7
+                if let value = fields["days"], value != .null {
+                    guard case .number(let number) = value, number == number.rounded(), (1...31).contains(Int(number)) else { throw CalendarToolArgumentError("days must be a whole number from 1 to 31, or null.") }
+                    days = Int(number)
+                }
+                return await upcomingAlerts(days: days)
             case "get_agenda":
                 try CalendarToolDraftMapper.keys(fields, allowed: ["day", "timeZone"])
                 let day = try CalendarToolDraftMapper.string(fields, "day", required: true, limit: 10) ?? ""
@@ -524,14 +578,20 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 // A forgotten or differently worded name must not end the search. With no word match and no
                 // failed calendar, the native side lists the whole range so the model can find it by meaning or date.
                 var fallback: JSONValue = .null
-                if filtered, limited.isEmpty, failed == 0 {
+                // A word can match the wrong event ("final" matches "Final exam period" but not "CS 245 Exam"), so a
+                // thin result over a bounded range also lists the rest of the range.
+                let thin = !limited.isEmpty && limited.count <= 2 && end.timeIntervalSince(start) <= 62 * 86_400
+                if filtered, failed == 0, limited.isEmpty || thin {
                     let browse = await execute(name: "search_events", arguments: .object([
                         "query": .null, "start": .string(ISO8601DateFormatter().string(from: start)), "end": .string(ISO8601DateFormatter().string(from: end))
                     ]), sessionID: sessionID)
                     guard let all = try? JSONDecoder().decode(JSONValue.self, from: Data(browse.utf8)).objectValue else { return browse }
                     if all["cancelled"] != nil { return browse }
+                    // Listing the range is not a target choice: one complete match stays the target it was.
+                    if limited.count == 1, !truncated, let only = limited.first { ambiguousTargets.remove(only.0.eventIdentifier) }
                     fallback = .object(["events": all["events"] ?? .array([]), "truncated": all["truncated"] ?? .bool(false), "partial": all["partial"] ?? .bool(false),
-                        "meaning": .string("No event contains those words, so these are all events in the same range. Find the one the user means by meaning, place or date. If several could fit, name them and ask; never claim the event does not exist while this list is truncated or partial.")])
+                        "meaning": .string((thin ? "Only a few events contain those words, so these are all events in the same range: check whether the user means one of them instead or as well (a final may be titled \"CS 245 Exam\")." : "No event contains those words, so these are all events in the same range.")
+                            + " Find the one the user means by meaning, place or date. If several could fit, name them and ask; never claim an event does not exist while this list is truncated or partial.")])
                 }
                 let compact = limited.count > 40
                 return JSONValue.object(["query": query.map(JSONValue.string) ?? .null, "otherEventsInRange": fallback,

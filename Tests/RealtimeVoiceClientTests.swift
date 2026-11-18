@@ -42,7 +42,7 @@ final class RealtimeVoiceClientTests: XCTestCase {
         XCTAssertTrue(input?["turn_detection"] is NSNull)
         fake.emit(["type": RealtimeWire.sessionUpdated.rawValue]); await settle { client.state == .ready }
         try await client.interrupt(); XCTAssertFalse(fake.sent.contains { $0["type"] as? String == "response.cancel" }, "Nothing to cancel when idle")
-        var flushed = 0; client.flushAudio = { flushed += 1; return 250 }
+        var flushed = 0; client.flushAudio = { flushed += 1; return .init(item: "fictional-item", playedMilliseconds: 250) }
         try await client.requestResponse(); fake.emit(["type": "response.created"])
         fake.emit(["type": "response.output_audio.delta", "item_id": "fictional-item", "delta": "AAA="])
         await settle { client.state == .responding && client.audioOutputSeconds > 0 }
@@ -143,10 +143,33 @@ final class RealtimeVoiceClientTests: XCTestCase {
         XCTAssertEqual(fake.sent[2]["type"] as? String, RealtimeWire.responseCreate.rawValue)
         client.disconnect()
     }
+    func testAnswerAfterAToolQueuesBehindSpeechAndBargeInTruncatesOnlyWhatWasHeard() async throws {
+        let fake = FakeRealtimeTransport(), client = await ready(fake)
+        var audioEvents = 0
+        client.isAudioPlaying = { true }
+        client.flushAudio = { .init(item: "fictional-preamble", playedMilliseconds: 120) }
+        client.onEvent = { if case .audio = $0 { audioEvents += 1 } }
+        fake.emit(["type": RealtimeWire.audioDelta.rawValue, "item_id": "fictional-preamble", "content_index": 0, "delta": "AAA="])
+        fake.emit(["type": RealtimeWire.audioDelta.rawValue, "item_id": "fictional-answer", "content_index": 1, "delta": "AAA="])
+        await settle { audioEvents == 2 }
+        fake.emit(["type": RealtimeWire.speechStarted.rawValue])
+        await settle { fake.sent.count == 4 }
+        let truncates = fake.sent.filter { $0["type"] as? String == RealtimeWire.truncate.rawValue }
+        XCTAssertEqual(truncates.map { $0["item_id"] as? String }, ["fictional-preamble", "fictional-answer"])
+        XCTAssertEqual(truncates.map { $0["audio_end_ms"] as? Int }, [120, 0], "The queued answer was never heard")
+        XCTAssertEqual(truncates.map { $0["content_index"] as? Int }, [0, 1])
+    }
+    func testPlaybackStopNamesTheAudibleQueuedItem() {
+        let queue = [VoicePCM.Segment(item: "first", start: 0, frames: 2400), .init(item: "second", start: 2400, frames: 4800)]
+        XCTAssertEqual(VoicePCM.stop(segments: queue, renderedFrames: 1200), .init(item: "first", playedMilliseconds: 50))
+        XCTAssertEqual(VoicePCM.stop(segments: queue, renderedFrames: 3600), .init(item: "second", playedMilliseconds: 50))
+        XCTAssertEqual(VoicePCM.stop(segments: queue, renderedFrames: 9000), .init(item: "second", playedMilliseconds: 200))
+        XCTAssertEqual(VoicePCM.stop(segments: [], renderedFrames: 100), .init(item: nil, playedMilliseconds: 0))
+    }
     func testBargeInFlushesAndTruncatesRenderedDuration() async throws {
         let fake = FakeRealtimeTransport(), client = await ready(fake)
         var flushed = 0, audioEvents = 0
-        client.isAudioPlaying = { true }; client.flushAudio = { flushed += 1; return 347 }
+        client.isAudioPlaying = { true }; client.flushAudio = { flushed += 1; return .init(item: "fictional-item", playedMilliseconds: 347) }
         client.onEvent = { if case .audio = $0 { audioEvents += 1 } }
         fake.emit(["type": RealtimeWire.audioDelta.rawValue, "item_id": "fictional-item", "content_index": 2, "delta": "AAA="])
         await settle { audioEvents == 1 }
@@ -322,7 +345,7 @@ final class RealtimeVoiceClientTests: XCTestCase {
     func testAudioEngineInitializationAndStopArePassiveAndIdempotent() {
         let audio = VoiceAudioEngine()
         XCTAssertFalse(audio.isRunning); XCTAssertFalse(audio.isPlaying)
-        audio.stop(); audio.stop(); XCTAssertEqual(audio.flush(), 0)
+        audio.stop(); audio.stop(); XCTAssertEqual(audio.flush(), .init(item: nil, playedMilliseconds: 0))
     }
 }
 
@@ -503,6 +526,19 @@ final class VoiceSessionIntegrationTests: XCTestCase {
         XCTAssertEqual(client.commits, 1); XCTAssertEqual(client.responses, 1)
         XCTAssertEqual(client.images, 0, "Without drawing, the screen travels as text; the image is sent on demand")
         XCTAssertTrue(client.contexts.contains { $0.contains("as text only") && $0.contains("look_at_screen") }); s.stop()
+    }
+    func testAnUnchangedScreenIsNamedInOneLineInsteadOfResent() async {
+        let s = make()
+        frames.text = ScreenTextRecognition(lines: [RecognizedScreenLine(text: "Fictional syllabus week 3", region: SourceRegion(x: 0, y: 0, width: 1, height: 0.1))])
+        await s.toggle(); s.handle(.sessionUpdated)
+        await say(s); await say(s)
+        let screens = client.contexts.filter { $0.contains("screen") && $0.contains("look_at_screen") }
+        XCTAssertEqual(screens.count, 2)
+        XCTAssertTrue(screens[0].contains("Fictional syllabus week 3"))
+        XCTAssertTrue(screens[1].contains("same text as at your previous turn") && !screens[1].contains("Fictional syllabus"), "The model already holds that text")
+        frames.text = ScreenTextRecognition(lines: [RecognizedScreenLine(text: "Fictional syllabus week 4", region: SourceRegion(x: 0, y: 0, width: 1, height: 0.1))])
+        await say(s)
+        XCTAssertTrue(client.contexts.last { $0.contains("look_at_screen") }?.contains("Fictional syllabus week 4") == true, "A changed screen is sent in full"); s.stop()
     }
     func testLookAtScreenSendsTheTurnsFrameWithItsToolResult() async {
         let s = make(); var ran: [String] = []; s.execute = { name, _ in ran.append(name); return "{}" }

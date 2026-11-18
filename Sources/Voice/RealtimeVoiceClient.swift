@@ -215,9 +215,9 @@ final class RealtimeVoiceClient: ObservableObject {
     var estimatedCost: Double { prices.estimate(tokens) }
     var onEvent: ((RealtimeVoiceEvent) -> Void)?
     var onReconnect: (() -> Void)?
-    /// Wire to the audio engine. flush returns played milliseconds for the current item.
+    /// Wire to the audio engine. flush returns the audible item and its played milliseconds.
     var isAudioPlaying: () -> Bool = { false }
-    var flushAudio: () -> Int = { 0 }
+    var flushAudio: () -> VoicePlaybackStop = { .init(item: nil, playedMilliseconds: 0) }
     private let key: () throws -> String
     private let factory: @MainActor () -> RealtimeTransport
     private let sleep: (Double) async throws -> Void
@@ -225,7 +225,8 @@ final class RealtimeVoiceClient: ObservableObject {
     private var transport: RealtimeTransport?
     private var run: Task<Void, Never>?
     private var generation = UUID()
-    private var currentAudio: (String, Int)?
+    /// Assistant audio items in playback order since playback was last idle or flushed.
+    private var audioItems: [(item: String, index: Int)] = []
     private var seenResponses = Set<String>()
     private var outstandingTools = Set<String>()
     private var responseInFlight = false
@@ -264,7 +265,7 @@ final class RealtimeVoiceClient: ObservableObject {
                 } catch {
                     guard self.generation == id, !Task.isCancelled else { return }
                     self.transport?.close(); self.transport = nil
-                    _ = self.flushAudio(); self.currentAudio = nil; self.pendingCalls = []; self.outstandingTools = []; self.responseInFlight = false; self.responsePending = false
+                    _ = self.flushAudio(); self.audioItems = []; self.pendingCalls = []; self.outstandingTools = []; self.responseInFlight = false; self.responsePending = false
                     if case .failed = self.state { return }
                     let failure = error as? RealtimeConnectionError ?? .unavailable
                     if failure == .authentication || failure == .quota || self.reconnectAttempt == 3 {
@@ -279,7 +280,7 @@ final class RealtimeVoiceClient: ObservableObject {
     }
     func disconnect() {
         generation = UUID(); run?.cancel(); run = nil; transport?.close(); transport = nil
-        _ = flushAudio(); currentAudio = nil; pendingCalls = []; outstandingTools = []; responseInFlight = false; responsePending = false; suppressAudio = false; state = .disconnected
+        _ = flushAudio(); audioItems = []; pendingCalls = []; outstandingTools = []; responseInFlight = false; responsePending = false; suppressAudio = false; state = .disconnected
     }
     private func session(_ c: Configuration) -> [String: Any] {
         let turnDetection: Any = c.pushToTalk ? NSNull() : ["type": "server_vad", "create_response": c.automaticResponse, "interrupt_response": false] as [String: Any]
@@ -358,16 +359,27 @@ final class RealtimeVoiceClient: ObservableObject {
     func interrupt() async throws {
         guard state == .ready || state == .responding else { return }
         let played = flushAudio()
-        guard responseInFlight || currentAudio != nil else { return }
+        guard responseInFlight || !audioItems.isEmpty else { return }
         suppressAudio = true; pendingCalls = []
         if responseInFlight { try await send(.cancel) }
-        if let (item, index) = currentAudio { try await send(.truncate, ["item_id": item, "content_index": index, "audio_end_ms": max(0, played)]) }
-        currentAudio = nil
+        try await truncateUnheard(played)
+    }
+    /// Keeps the model's memory to what the user heard: the audible item ends where playback stopped,
+    /// and items still queued behind it (never played) are truncated to nothing.
+    private func truncateUnheard(_ stop: VoicePlaybackStop) async throws {
+        let items = audioItems; audioItems = []
+        guard !items.isEmpty else { return }
+        let start = stop.item.flatMap { heard in items.firstIndex { $0.item == heard } } ?? items.count - 1
+        for (offset, entry) in items[start...].enumerated() {
+            try await send(.truncate, ["item_id": entry.item, "content_index": entry.index, "audio_end_ms": offset == 0 ? max(0, stop.playedMilliseconds) : 0])
+        }
     }
     private func handle(_ event: RealtimeVoiceEvent) async throws {
         switch event {
         case .sessionUpdated: state = .ready
-        case .responseCreated: responseInFlight = true; state = .responding; suppressAudio = false; pendingCalls = []
+        case .responseCreated:
+            responseInFlight = true; state = .responding; suppressAudio = false; pendingCalls = []
+            if !isAudioPlaying() { audioItems = [] }
         case .functionCall:
             // Arguments-done also arrives for cancelled responses. Deliver tools only after
             // the response is completed, never from an interrupted partial call.
@@ -375,14 +387,12 @@ final class RealtimeVoiceClient: ObservableObject {
             return
         case .audio(let item, let index, let data):
             guard !suppressAudio else { return }
-            currentAudio = (item, index); audioOutputSeconds += Double(data.count) / 48000
+            if audioItems.last?.item != item { audioItems.append((item, index)) }
+            audioOutputSeconds += Double(data.count) / 48000
         case .speechStarted where isAudioPlaying():
             let played = flushAudio(); suppressAudio = true; pendingCalls = []
             try await send(.cancel)
-            if let (item, index) = currentAudio {
-                try await send(.truncate, ["item_id": item, "content_index": index, "audio_end_ms": max(0, played)])
-            }
-            currentAudio = nil
+            try await truncateUnheard(played)
         case .responseDone(let id, let status, let usage):
             let fresh = id.isEmpty || seenResponses.insert(id).inserted
             guard fresh else { return }

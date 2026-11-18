@@ -365,6 +365,9 @@ final class CalshotModel: ObservableObject {
     @Published var lastCaptureSummary = "No capture yet"
     let calendarService: any CalendarDestinationService
     var personalMemoryCache: PersonalMemoryStore?
+    /// Near-term schedule read in the background for typed requests (see typedScheduleContext).
+    var typedScheduleSnapshot: (key: String, at: Date, text: String)?
+    var typedScheduleRefresh: Task<Void, Never>?
     /// Learned from the user's own calendars; rebuilt when calendars change or it is older than 30 minutes.
     var calendarProfile: CalendarProfile?
     var calendarProfileKey: String?
@@ -379,6 +382,9 @@ final class CalshotModel: ObservableObject {
     @Published var knowledgeSyncUnavailable = false
     /// Post-conversation reflection runs one at a time; a newer one waits for the previous to finish.
     var reflectionTask: Task<Void, Never>?
+    /// Typed turns waiting for one learning pass, with the account they belong to (see scheduleTypedReflection).
+    var pendingTypedReflection: (owner: UUID?, turns: [(String, String)])?
+    var typedReflectionTimer: Task<Void, Never>?
     var memoryStore: MemoryStore
     var activeLocalAccountID: UUID?
     var accountMemoryRoot: MemoryStore
@@ -529,6 +535,7 @@ final class CalshotModel: ObservableObject {
     func openPanel() {
         if workspaceWindowController == nil { workspaceWindowController = WorkspaceWindowController(model: self) }
         workspaceWindowController?.show()
+        refreshTypedSchedule() // a typed request soon after opening usually needs today's schedule
     }
 
     func presentTask(compact: Bool = false) {

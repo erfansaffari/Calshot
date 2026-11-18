@@ -45,6 +45,20 @@ struct BehaviorSignals: Codable, Equatable, Sendable {
     }
 }
 
+/// A version of knowledge that is no longer current because a newer statement replaced it. Kept on this device
+/// as history (what used to be true, and when), never sent to the account copy and never ranked into requests.
+/// Replacing is not forgetting: forgotten text is tombstoned instead.
+struct MemoryHistoryEntry: Codable, Identifiable, Equatable, Sendable {
+    var id = UUID()
+    /// The current item that replaced this text.
+    var itemID: UUID
+    var kind: MemoryItem.Kind
+    var text: String
+    var source: MemoryItem.Source?
+    var validFrom: Date
+    var validUntil: Date
+}
+
 /// A short dated note of one finished conversation, so later sessions know what was discussed and done.
 /// Kept on this device only; context, never authorization.
 struct ConversationNote: Codable, Identifiable, Equatable, Sendable {
@@ -66,6 +80,8 @@ final class PersonalMemoryStore {
         var sync: SyncState?
         /// Newest last. Never synced.
         var notes: [ConversationNote]?
+        /// Replaced versions of knowledge, oldest first. Never synced.
+        var history: [MemoryHistoryEntry]?
     }
     /// What this device has sent to and read from the account copy. Never synced itself.
     struct SyncState: Codable, Equatable {
@@ -96,7 +112,11 @@ final class PersonalMemoryStore {
     var items: [MemoryItem] { document.items }
     var signals: BehaviorSignals { document.signals ?? BehaviorSignals() }
     var notes: [ConversationNote] { document.notes ?? [] }
-    static let noteLimit = 200
+    var history: [MemoryHistoryEntry] { document.history ?? [] }
+    /// Notes are episodic memory: an old conversation is how "what did we decide in March" is answered,
+    /// so they are retrieved by relevance and kept long. Only past this many does the oldest go.
+    static let noteLimit = 2_000
+    static let historyLimit = 1_000
     /// Records what one conversation was about. The oldest notes fall off past the limit.
     @discardableResult
     func addNote(_ text: String, channel: String, now: Date = .now) throws -> ConversationNote? {
@@ -126,7 +146,7 @@ final class PersonalMemoryStore {
     func isForgotten(_ text: String) -> Bool { document.tombstones.contains { $0.normalizedTextHash == Self.hash(text) } }
     private func validate(_ doc: Document) throws {
         guard (1...Self.schemaVersion).contains(doc.schemaVersion), doc.items.count <= 500, Set(doc.items.map(\.id)).count == doc.items.count,
-              (doc.notes ?? []).count <= Self.noteLimit else { throw CalendarToolArgumentError("Unsupported or invalid memory document (maximum 500 items).") }
+              (doc.notes ?? []).count <= Self.noteLimit, (doc.history ?? []).count <= Self.historyLimit else { throw CalendarToolArgumentError("Unsupported or invalid memory document (maximum 500 items).") }
         var keys = Set<String>()
         for item in doc.items {
             guard item.ownerID == ownerID, item.text == item.text.trimmingCharacters(in: .whitespacesAndNewlines), (1...500).contains(item.text.count),
@@ -166,9 +186,11 @@ final class PersonalMemoryStore {
     func suggest(kind: MemoryItem.Kind, text: String, sourceReference: String? = nil) throws -> MemoryItem {
         try add(kind: kind, text: text, origin: .suggested, sourceReference: sourceReference)
     }
-    enum LearnOutcome: Equatable { case added(MemoryItem), reinforced(MemoryItem), updated(MemoryItem), forgottenBefore }
+    /// `outdated`: an inference repeated text that a newer statement replaced; it stays history.
+    enum LearnOutcome: Equatable { case added(MemoryItem), reinforced(MemoryItem), updated(MemoryItem), forgottenBefore, outdated }
     /// Adds knowledge as active at once, or reinforces the same knowledge already held (any kind).
-    /// `replacing` supersedes an older item: its text is tombstoned so retained history cannot bring it back.
+    /// `replacing` supersedes an older item: the item keeps its id and takes the new text, and the old text becomes
+    /// dated history. Only the user saying replaced text again makes it current; an inference cannot revive it.
     /// Inferred, low-confidence knowledge expires unless it is seen again. Never re-creates forgotten text.
     @discardableResult
     func learn(kind: MemoryItem.Kind, text: String, source: MemoryItem.Source, confidence: Double? = nil, replacing: UUID? = nil,
@@ -176,6 +198,8 @@ final class PersonalMemoryStore {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (1...500).contains(clean.count) else { throw CalendarToolArgumentError("Memory text must be 1–500 characters.") }
         if isForgotten(clean) { return .forgottenBefore }
+        if source != .user, !items.contains(where: { Self.normalize($0.text) == Self.normalize(clean) }),
+           history.contains(where: { Self.normalize($0.text) == Self.normalize(clean) }) { return .outdated }
         let base = min(1, max(0.1, confidence ?? (source == .user ? 0.95 : 0.6)))
         func expiry(_ value: Double) -> Date? { source == .user || (value >= 0.75 && source != .screen) ? nil : now.addingTimeInterval(90 * 86_400) }
         var doc = document
@@ -188,13 +212,13 @@ final class PersonalMemoryStore {
             item.expiresAt = item.source == .user ? nil : expiry(item.effectiveConfidence).map { max($0, item.expiresAt ?? $0) }
             doc.items[index] = item
             if let replacing, replacing != item.id, let old = doc.items.firstIndex(where: { $0.id == replacing }) {
-                doc.tombstones.append(.init(normalizedTextHash: Self.hash(doc.items[old].text), forgottenAt: now)); doc.items.remove(at: old)
+                Self.close(doc.items[old], replacedBy: item.id, at: now, in: &doc); doc.items.remove(at: old)
             }
             try save(doc); return .reinforced(item)
         }
         if let replacing, let index = doc.items.firstIndex(where: { $0.id == replacing }) {
             var item = doc.items[index]
-            doc.tombstones.append(.init(normalizedTextHash: Self.hash(item.text), forgottenAt: now))
+            Self.close(item, replacedBy: item.id, at: now, in: &doc)
             item.text = clean; item.kind = kind; item.version = UUID(); item.updatedAt = now; item.lastSeenAt = now
             item.source = source == .user || item.source == .user ? .user : source
             item.origin = item.source == .user ? .explicit : .learned; item.status = .active
@@ -216,11 +240,21 @@ final class PersonalMemoryStore {
                               source: source, confidence: base, evidenceCount: 1, lastSeenAt: now)
         doc.items.append(item); try save(doc); return .added(item)
     }
+    /// Records the text an item had until now as dated history. A text already in history is not repeated.
+    private static func close(_ item: MemoryItem, replacedBy id: UUID, at now: Date, in doc: inout Document) {
+        var history = doc.history ?? []
+        // The text became current when it was first saved, or when it last replaced an earlier version.
+        let from = history.last(where: { $0.itemID == item.id })?.validUntil ?? item.createdAt
+        history.removeAll { normalize($0.text) == normalize(item.text) }
+        history.append(.init(itemID: id, kind: item.kind, text: item.text, source: item.source, validFrom: min(from, now), validUntil: now))
+        doc.history = Array(history.suffix(historyLimit))
+    }
     /// Forgets one item by id (agent tools and the reflection pass). Tombstoned so it is never re-learned.
+    /// Its earlier versions go with it: forgetting something forgets its history too.
     @discardableResult
     func forget(id: UUID, now: Date = .now) throws -> MemoryItem {
         guard let item = items.first(where: { $0.id == id }) else { throw CalendarToolArgumentError("That memory isn’t saved. Use an id from recall.") }
-        var doc = document; doc.items.removeAll { $0.id == id }
+        var doc = document; doc.items.removeAll { $0.id == id }; doc.history?.removeAll { $0.itemID == id }
         doc.tombstones.append(.init(normalizedTextHash: Self.hash(item.text), forgottenAt: now))
         try save(doc); return item
     }
@@ -256,7 +290,7 @@ final class PersonalMemoryStore {
         guard let item = items.first(where: { $0.id == id && $0.version == expectedVersion }) else { throw CalendarToolArgumentError("This memory changed. Use the latest version and try again.") }
         guard forget || item.status == .pendingApproval else { throw CalendarToolArgumentError("Only a pending suggestion can be rejected.") }
         var doc = document; doc.items.removeAll { $0.id == id }
-        if forget { doc.tombstones.append(.init(normalizedTextHash: Self.hash(item.text), forgottenAt: .now)) }
+        if forget { doc.tombstones.append(.init(normalizedTextHash: Self.hash(item.text), forgottenAt: .now)); doc.history?.removeAll { $0.itemID == id } }
         try save(doc)
     }
     // MARK: Account sync (server-readable copy in Supabase; this file stays the fast, authoritative local copy)
@@ -314,7 +348,11 @@ final class PersonalMemoryStore {
                 sync.pendingDeletes[doc.items[twin].id] = Date(); sync.known[doc.items[twin].id] = nil
                 doc.items.remove(at: twin)
             }
-            if let index = doc.items.firstIndex(where: { $0.id == item.id }) { doc.items[index] = item }
+            if let index = doc.items.firstIndex(where: { $0.id == item.id }) {
+                // Another Mac replaced this knowledge: keep what it said here as history.
+                if Self.normalize(doc.items[index].text) != Self.normalize(item.text) { Self.close(doc.items[index], replacedBy: item.id, at: item.updatedAt, in: &doc) }
+                doc.items[index] = item
+            }
             else { guard doc.items.count < 500 else { continue }; doc.items.append(item) }
             sync.known[row.id] = item.version; changed += 1
         }
@@ -329,7 +367,7 @@ final class PersonalMemoryStore {
         guard confirmed else { throw CalendarToolArgumentError("Confirm forgetting all personal memories first.") }
         var doc = document
         doc.tombstones += doc.items.map { .init(normalizedTextHash: Self.hash($0.text), forgottenAt: .now) }
-        doc.items = []; doc.signals = nil; doc.notes = nil; try save(doc)
+        doc.items = []; doc.signals = nil; doc.notes = nil; doc.history = nil; try save(doc)
     }
 }
 
@@ -349,7 +387,7 @@ extension CalshotModel {
     func personalMemoryContext(for request: String, relevantOnly: Bool = false, characterBudget: Int = 6_000) -> String {
         let knowledge = MemoryContextBuilder.build(request: request, items: personalMemory.items, characterBudget: relevantOnly ? 2_000 : characterBudget, relevantOnly: relevantOnly)
         guard !relevantOnly else { return knowledge }
-        return [userIdentityContext, knowledge, calendarProfileContext ?? "", MemoryContextBuilder.notes(personalMemory.notes)].filter { !$0.isEmpty }.joined(separator: "\n")
+        return [userIdentityContext, knowledge, calendarProfileContext ?? "", MemoryContextBuilder.notes(personalMemory.notes, request: request)].filter { !$0.isEmpty }.joined(separator: "\n")
     }
     /// The account's display name, else the name of this Mac's user account.
     var userIdentityContext: String {

@@ -35,7 +35,7 @@ The context engine turns signals into a small, ranked, *current* picture of the 
 | Source | How it is captured | Example knowledge |
 | --- | --- | --- |
 | What the user says | `remember` / `forget_memory` tools during the conversation; saved immediately, visible in Settings | "Calls the gym session 'leg day'", "Prefers meetings after 10" |
-| Conversation reflection | after a voice session (or typed run with ≥2 turns), one model pass proposes add / reinforce / update / forget operations; native code applies them with dedupe and tombstones | "Has a sister named Mina", "Is studying for the GMAT" |
+| Conversation reflection | after a voice session, or two minutes after the last of a burst of typed requests (one pass for the burst), one model pass proposes add / reinforce / update / forget operations; native code applies them with dedupe and tombstones | "Has a sister named Mina", "Is studying for the GMAT" |
 | Behavior | native counters, no model: interruptions while Calshot speaks, repeated corrections, cancelled actions, time of day of use | "Keep spoken replies to one sentence" (after interruptions) |
 | Calendar | native profile over the last 8 weeks and next 4 weeks of the user's own calendars | routines (weekday + time), typical durations per kind of event, usual day start/end, frequent places, busy days ahead |
 
@@ -46,7 +46,7 @@ Added 2026-11-13:
 | Identity | account display name and email, else the Mac user name; sent with every request | "name: …" |
 | Calendar conclusions | the reflection reads the calendar profile; a separate pass runs when the set of repeated titles changes (at most once a day) | "Is a university student, likely statistics and computer science" |
 | Screen | text recognized on screen during a voice session is evidence for the end-of-session reflection; source `screen`, confidence ≤ 0.7, expires unless seen again, never synced | "Is working on a compiler project" |
-| Conversation notes | each reflection writes a 1–3 sentence dated note of the conversation (200 kept, device-only, forgettable in Settings → Memory) | "Asked about Monday and added a task to text Martin, due 9:00" |
+| Conversation notes | each reflection writes a 1–3 sentence dated note of the conversation (2,000 kept, device-only, forgettable in Settings → Memory; requests carry the newest plus those related to the request) | "Asked about Monday and added a task to text Martin, due 9:00" |
 
 Reflection now also runs after typed requests (not screenshot runs). Chat turns are timestamped, and history includes clipped results of what Calshot did.
 
@@ -54,7 +54,7 @@ Reflection now also runs after typed requests (not screenshot runs). Chat turns 
 
 Each item has kind (`preference`, `fact`, `person`, `routine`, `style`, `goal`), text, **source** (`user`, `conversation`, `behavior`, `calendar`), **confidence**, **evidence count**, last seen, optional expiry, and `supersedes` when it replaced an older item. Rules:
 
-- *Invalidate, don't silently overwrite*: an update keeps a tombstone of the old text so a forgotten or corrected fact is never re-learned from retained history.
+- *Invalidate, don't silently overwrite*: an update keeps the old text as dated history on this device (when it was true, shown only by `recall`, never synced) and an inference cannot revive it; only the user saying it again makes it current. A forgotten fact is tombstoned and never re-learned. See [AGENT_ARCHITECTURE.md](AGENT_ARCHITECTURE.md).
 - Learned items are active immediately but are always visible, editable and forgettable in Settings → Memory, with their source.
 - Repetition reinforces (evidence count, confidence); contradiction supersedes; low-confidence inferred items expire if never reinforced.
 - Memory is context, never authority: it never grants a write, never fills a date the user did not give, and shared-friend calendar content never enters it.

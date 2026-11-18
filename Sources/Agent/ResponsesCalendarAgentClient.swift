@@ -148,7 +148,8 @@ final class ResponsesCalendarAgentClient: CalendarAgentModelClient {
                 }
             }
         }
-        return .init(output: outputs.map { AgentMessage(value: $0) }, calls: calls, text: text.joined(separator: "\n"))
+        return .init(output: outputs.map { AgentMessage(value: $0) }, calls: calls, text: text.joined(separator: "\n"),
+                     usage: AgentUsage(responses: response.objectValue?["usage"]))
     }
     static func imageDataURL(_ image: CGImage) throws -> String {
         let scale = min(1.0, 3000.0 / Double(max(image.width, image.height)))
