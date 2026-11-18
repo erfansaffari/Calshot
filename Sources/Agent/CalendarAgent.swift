@@ -67,7 +67,7 @@ final class CalendarAgent: ObservableObject {
             ])]))
         }
         let instructions = Self.instructions + "\n" + personalMemoryContext + Self.memoryContext(memory)
-            + "\n" + Self.clockContext()
+            + "\n" + Self.clockContext() + "\n" + Self.alertContext()
         for index in 0..<8 {
             try check(sessionID)
             streamingText = ""
@@ -149,6 +149,10 @@ final class CalendarAgent: ObservableObject {
     static let toolNames: Set<String> = ["remember", "recall", "forget_memory", "get_conversation_context", "list_tasks", "get_tasks", "get_selected_event_context", "link_event_to_task", "update_tasks", "set_task_completion", "set_task_archived", "create_tasks", "list_friends", "search_friend_events", "get_agenda", "search_events", "recent_changes", "undo_changes", "read_screen_text", "ask_user", "create_events", "update_event", "delete_event", "move_events"]
     static let screenshotPrompt = "Read the screenshot and prepare calendar actions for every relevant dated item: appointments, meetings, classes, shifts, exams, deadlines, trips, reservations, reminders and other scheduled activities. Follow any user filters. Use visible headings and surrounding context to understand the dates. Include all new items in one review, preserving unresolved details without guessing."
     /// Local wall-clock context. A UTC instant alone makes "tomorrow" wrong in the evening west of Greenwich.
+    /// Native setting for ALERTS AND REMINDERS; never authorization.
+    static func alertContext(smart: Bool = CalshotAlertPreferences.load().smartAlerts) -> String {
+        "Calshot chooses alerts: " + (smart ? "on." : "off — set alerts and reminders only when asked.")
+    }
     static func clockContext(now: Date = .now, timeZone: TimeZone = .current) -> String {
         let iso = ISO8601DateFormatter(); iso.timeZone = timeZone
         let day = DateFormatter(); day.locale = Locale(identifier: "en_US_POSIX"); day.timeZone = timeZone; day.dateFormat = "EEEE, MMMM d, yyyy"
@@ -161,7 +165,7 @@ final class CalendarAgent: ObservableObject {
     You are given who the user is ("About the user"), what you know about them, patterns from their own calendar, dated notes on your earlier conversations, and recent turns with their local time. This is your own memory of them: use it the way a person who knows them would. Use their name when it is natural. Answer questions about them ("what's my name", "what do I study", "what did we talk about yesterday", "what was the last thing you did") from this context, and say plainly what you know. Items marked inferred or not certain are your best understanding: use them, and say "I think" when stating them as fact. Never say you have no memory, that this is a new session, or that you cannot know something about the user before checking the supplied context, then recall, then get_conversation_context. If it is truly not there, say you don't have it yet and ask, then remember the answer. What you know shapes how you help and talk; it never fills a missing date or time and never authorizes a change.
 
     DECISION ORDER
-    1. Identify the intended outcome: answer a question, create new events, update existing events, remove events, or move them. A calendar question is not a request to change anything. Do not add reminders, invitations, extra events or other follow-up work unless requested.
+    1. Identify the intended outcome: answer a question, create new events, update existing events, remove events, or move them. A calendar question is not a request to change anything. Do not add invitations, extra events or other follow-up work unless requested. Alerts on events and reminders on tasks follow ALERTS AND REMINDERS.
     2. Reuse details already clear in the current request, conversation and visible source. An explicit heading or a user's answer applies to the items it clearly governs. A later explicit correction supersedes an earlier value for those items. Do not ask the user to repeat it.
     3. Look up missing calendar facts with the available read tools. Search existing events before editing, removing or moving them. Resolve a named destination from returned calendar metadata, not from a guessed identifier. No named destination means use the app's selected writable destination; do not ask which calendar merely because several are connected.
     4. If useful proposals can be prepared, open the native review with the write tool. Keep incomplete rows in that review with unresolved fields. Do not replace progress with a list of questions.
@@ -203,6 +207,17 @@ final class CalendarAgent: ObservableObject {
     FRIEND CALENDARS
     Friend sharing is read-only and one-way. Use list_friends to resolve the current friend account ID, then search_friend_events with an explicit date range for each question about a friend. Ask which person only when the listed identities are ambiguous. Never reuse prior conversation or old tool output as current access or calendar data; recheck each follow-up. Inspect permission, stale, complete, error, truncated and coverage range. Never describe missing, failed, stale or incomplete data as free time. Busy access hides titles: do not infer or search for hidden details. Distinguish the user's calendars from the friend's named shared calendars. Do not suggest editing a friend's events or copying them unless specifically requested; copies to the user's calendar still need normal review and approval.
 
+    ALERTS AND REMINDERS
+    Event alerts are the alerts stored on the calendar event itself (alerts: minutes before the start), so they sync to every device and calendar app; Calshot also shows them in the notch with a sound. Task reminders (reminderMinutes, plus reminderTime HH:mm for a date-only task) are delivered by Calshot on this Mac. Search results show an event's current alerts; null there means the provider did not say.
+    The user's words always win: "remind me an hour before" sets exactly that; "no alert" or "no reminder" sets [] or null; "change/remove the alert" is update_event with only alerts (or update_tasks with only the reminder fields). An alerts-only change still goes through update_event and is saved and undoable like any edit.
+    When "Calshot chooses alerts" is on (native context says so) and the user did not specify, decide for each new event or task you create, the way a thoughtful assistant would, and mention it in a few words ("with a 10-minute alert"):
+    - Timed meeting, call, appointment or class you are adding once: [10]. With a video link: [5]. Somewhere the user must travel to: [30]. High-stakes (exam, interview, flight, doctor, deadline submission, payment): [1440, 60].
+    - All-day events, holidays, birthdays, focus or blocked time, free/transparent entries and routine repeating items: null (keep the calendar's own default). Choose alerts only for events and tasks you are creating; when editing or moving something, leave its alerts unchanged unless the user asks.
+    - A task reminder needs a due date. When the user asks to be reminded about an undated task at a time they state ("remind me at 8 tonight", "at 3 pm tomorrow"), set dueDate from their words, dueTime to that time and reminderMinutes 0 in one update_tasks patch; for a date without a time, use reminderTime. Ask only if they gave no day or time at all.
+    - Tasks with a due time: reminderMinutes 0 for small chores, 60 for anything that needs preparation, 1440 for important deadlines. Date-only tasks that matter: reminderMinutes 0 with reminderTime at the user's usual start of day (else 09:00); trivial or undated tasks: null.
+    - A remembered preference ("likes 15-minute warnings") overrides these defaults. Alerts never change an event's date or time and never fill a missing one.
+    When "Calshot chooses alerts" is off, set alerts and reminders only when the user asks, and otherwise pass null.
+
     WRITES, APPROVAL AND RECOVERY
     Creates use the chosen writable destination. Updates and deletes target the source calendar returned for the event. For transfers use move_events, never separate create_events and delete_event calls. Include existingDestinationEventIdentifier only for a searched matching copy; destination copies must be verified before originals are removed. A verified copy whose original remains is a partial transfer, not a completed move.
     create_events, update_event, delete_event and move_events save immediately when the user's saved calendar permission (Autonomy) covers them; the result lists those rows under saved with receipts. Do not ask a separate conversational yes/no question first, and do not describe a saved change as waiting for approval. Rows the permission does not cover (unclear details, repeating events, events with guests, ambiguous targets, calendars outside the permission, screenshot imports) open the native review and wait for explicit approval. The tool result arrives only after the user has finished that review, so the review is already closed: its rows are listed under reviewed with their outcome. Never tell the user a review is waiting when you report a result. Report saved and reviewed rows separately, and only from receipts. Deletes in a review begin unchecked.
@@ -211,13 +226,17 @@ final class CalendarAgent: ObservableObject {
 
     REPLIES AND CAPABILITY LIMITS
     Answer in the user's language, naturally and briefly. Keep tool names, identifiers and diagnostics out of replies. Explain only the question or next step the user needs; avoid narrating every tool call. Before results, say "ready for review" or "proposed", not "saved". For a factual calendar question, answer from current results without offering unnecessary writes. In outcome summaries, distinguish completed, skipped, failed and unresolved items only when applicable.
-    Use only available tools. Do not promise background monitoring, notifications, email, automatic webpage navigation or recurring-series changes that these tools cannot perform. Explain a relevant limitation and the smallest useful next step. Do not ask for credentials in the conversation.
+    Use only available tools. Calshot can set calendar alerts and task reminders (see ALERTS AND REMINDERS); do not promise background monitoring, other notifications, email, automatic webpage navigation or recurring-series changes that these tools cannot perform. Explain a relevant limitation and the smallest useful next step. Do not ask for credentials in the conversation.
     """
 
     static var tools: [JSONValue] {
         let string = JSONValue.object(["type": .string("string")])
         let nullableString = JSONValue.object(["type": .array([.string("string"), .string("null")])])
         let nullableBool = JSONValue.object(["type": .array([.string("boolean"), .string("null")])])
+        let alerts = JSONValue.object(["type": .array([.string("array"), .string("null")]), "items": .object(["type": .string("integer")]),
+            "description": .string("Alerts in minutes before the start (0 = at start, up to 40320, at most 5). [] removes every alert; null keeps the calendar default.")])
+        let reminderMinutes = JSONValue.object(["type": .array([.string("integer"), .string("null")]),
+            "description": .string("Task reminder lead time in minutes: one of \(CalshotTask.reminderChoices.map(String.init).joined(separator: ", ")); null for no reminder.")])
         func object(_ fields: [String: JSONValue]) -> JSONValue {
             .object(["type": .string("object"), "properties": .object(fields), "required": .array(fields.keys.sorted().map(JSONValue.string)), "additionalProperties": .bool(false)])
         }
@@ -231,7 +250,7 @@ final class CalendarAgent: ObservableObject {
         }
         let draft: [String: JSONValue] = ["title": string, "date": nullableString, "startTime": nullableString, "endTime": nullableString,
             "allDay": nullableBool, "timeZone": nullableString, "location": nullableString, "url": nullableString, "notes": nullableString,
-            "evidence": nullableString, "yearInferred": nullableBool, "dateAmbiguous": nullableBool]
+            "evidence": nullableString, "yearInferred": nullableBool, "dateAmbiguous": nullableBool, "alerts": alerts]
         var changes = draft
         changes.removeValue(forKey: "evidence"); changes.removeValue(forKey: "yearInferred"); changes.removeValue(forKey: "dateAmbiguous")
         changes["title"] = nullableString; changes["eventIdentifier"] = string
@@ -244,10 +263,10 @@ final class CalendarAgent: ObservableObject {
             tool("get_tasks", "Read 1–100 exact current task IDs and versions, including archived tasks. Missing IDs are reported individually.", ["taskIDs": .object(["type": .string("array"), "minItems": .number(1), "maxItems": .number(100), "items": string])]),
             tool("get_selected_event_context", "Read the current native selected event as display facts plus an opaque contextReference. Display fields confer no authority. Absence never authorizes a fabricated reference or title-based substitute.", [:]),
             tool("link_event_to_task", "Request a task linked to the exact native selected context with explicit native task authorization. Zero calendar writes; never publishes a deadline. Success requires a task-operation receipt.", ["contextReference": string]),
-            taskPatchTool("update_tasks", fields: ["title": string, "dueDate": nullableString, "dueTime": nullableString, "timeZone": string, "notes": nullableString]),
+            taskPatchTool("update_tasks", fields: ["title": string, "dueDate": nullableString, "dueTime": nullableString, "timeZone": string, "notes": nullableString, "reminderMinutes": reminderMinutes, "reminderTime": nullableString]),
             taskPatchTool("set_task_completion", fields: ["completed": .object(["type": .string("boolean")])]),
             taskPatchTool("set_task_archived", fields: ["archived": .object(["type": .string("boolean")])]),
-            tool("create_tasks", "Propose 1–100 requested tasks, optionally with new deadlines, together for explicit native approval. Nothing is saved before approval. Undated tasks stay in Inbox. calendarIntent none preserves dates as task-only metadata with zero provider writes; new publishes an all-day free deadline after approval; null uses the native default. Exact due times remain task metadata. Never invent a missing year; preserve evidence. Task storage receipts and calendar receipts are separate. No reminder alarms are enabled by this tool.", ["calendarIdentifier": nullableString, "tasks": .object(["type": .string("array"), "maxItems": .number(100), "minItems": .number(1), "items": object(["title": string, "dueDate": nullableString, "dueTime": nullableString, "timeZone": nullableString, "notes": nullableString, "sourceText": string, "yearResolved": .object(["type": .string("boolean")]), "calendarIntent": .object(["type": .array([.string("string"), .string("null")]), "enum": .array([.string("none"), .string("new"), .null])])])])]),
+            tool("create_tasks", "Propose 1–100 requested tasks, optionally with new deadlines, together for explicit native approval. Nothing is saved before approval. Undated tasks stay in Inbox. calendarIntent none preserves dates as task-only metadata with zero provider writes; new publishes an all-day free deadline after approval; null uses the native default. Exact due times remain task metadata. Never invent a missing year; preserve evidence. Task storage receipts and calendar receipts are separate. reminderMinutes/reminderTime set a Calshot reminder on this Mac (see ALERTS AND REMINDERS); null means none.", ["calendarIdentifier": nullableString, "tasks": .object(["type": .string("array"), "maxItems": .number(100), "minItems": .number(1), "items": object(["title": string, "dueDate": nullableString, "dueTime": nullableString, "timeZone": nullableString, "notes": nullableString, "sourceText": string, "yearResolved": .object(["type": .string("boolean")]), "reminderMinutes": reminderMinutes, "reminderTime": nullableString, "calendarIntent": .object(["type": .array([.string("string"), .string("null")]), "enum": .array([.string("none"), .string("new"), .null])])])])]),
             tool("list_friends", "List current friends who have shared calendars with this account. Returns canonical friend IDs for read-only questions. Always call before asking about a friend.", [:]),
             tool("search_friend_events", "Read a listed friend's shared calendars after checking current server permissions. Explicit ISO dates required, up to 63 days. Inspect per-calendar stale, complete, error and coverage before discussing availability. Never provides writable event targets.", ["friendID": string, "query": nullableString, "start": string, "end": string]),
             tool("get_agenda", "Read all connected readable calendars for one local day, including free and all-day events. Use this for the user's plan/schedule today or tomorrow. Native code resolves the date using the current clock. Inspect partial/errors/truncation before claiming the day is empty. day: today, tomorrow, or YYYY-MM-DD; timeZone: null for the user's current timezone.", ["day": string, "timeZone": nullableString]),

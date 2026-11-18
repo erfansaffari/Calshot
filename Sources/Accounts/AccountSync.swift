@@ -24,6 +24,12 @@ struct AccountSyncResponse: Decodable {
     var payload: AccountSyncDocument
     var displayName: String
 }
+/// Which synced documents changed on the server: the account and task list revisions, and a knowledge change counter.
+struct SyncRevisions: Codable, Equatable {
+    var account: Int
+    var tasks: Int
+    var knowledge: Int
+}
 struct AccountSyncBaseline: Codable {
     var hashes: [String: String] = [:]
     var preferences: [String: JSONValue] = [:]
@@ -79,9 +85,14 @@ enum AccountSyncMerge {
             if let cloud = remote.history[key] {
                 let cloudHash = try cloud.syncHash()
                 if changed && cloudHash != hash {
-                    if previous == nil || cloudHash != previous {
-                        let fork = try fork(record); result.history[fork.id.uuidString] = fork
-                    } else { result.history[key] = record.accountSyncCopy() }
+                    if previous != nil && cloudHash == previous { result.history[key] = record.accountSyncCopy() }
+                    else if record.isMainChat == true && cloud.isMainChat == true {
+                        // The one ongoing chat is never forked: a second copy would become a competing main chat.
+                        result.history[key] = MemoryStore.unitedMainChat(record.accountSyncCopy(), adding: cloud)
+                    } else if record.mergedIntoMainChat == true {
+                        // Already folded into the main chat and hidden; a fork would only duplicate it.
+                        result.history[key] = record.accountSyncCopy()
+                    } else { let fork = try fork(record); result.history[fork.id.uuidString] = fork }
                 }
             } else { result.history[key] = record.accountSyncCopy() }
         }
@@ -94,6 +105,8 @@ enum AccountSyncMerge {
         var object = try JSONSerialization.jsonObject(with: encoder.encode(record.accountSyncCopy())) as! [String: Any]
         object["id"] = UUID().uuidString
         object["analysisProvider"] = "Recovered concurrent edit"
+        // A fork is an ordinary earlier conversation: it is folded into the main chat, never a second main chat.
+        object["isMainChat"] = nil
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(MemoryCaptureRecord.self, from: JSONSerialization.data(withJSONObject: object))
     }
@@ -110,31 +123,87 @@ extension CalshotModel {
             await self?.syncAccount()
         }
     }
+    /// How often the server's revisions are re-checked when Realtime is quiet (it may have dropped).
+    static let syncRevisionsCheckInterval: TimeInterval = 300
     func startAccountSync() {
         accountSyncTimer?.invalidate()
+        resetSyncRevisions()
+        if let user = account.userID {
+            account.watchSyncRevisions(user: user) { [weak self] revisions in self?.receiveSyncRevisions(revisions) }
+        }
+        // Every 30 seconds local work is checked; documents are downloaded only when the server's revision moved
+        // (Realtime, or a check every five minutes) or something here changed.
         accountSyncTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.syncAccount(); await self?.syncTasks(); await self?.syncMacCalendars() }
+            Task { @MainActor in
+                guard let self else { return }
+                if self.syncRevisionsCheckedAt.map({ Date().timeIntervalSince($0) >= Self.syncRevisionsCheckInterval }) ?? true { await self.refreshSyncRevisions() }
+                await self.syncAccount()
+                if self.tasksNeedSync { await self.syncTasks() }
+                await self.syncMacCalendars()
+            }
             Task { @MainActor in await self?.syncPersonalKnowledge() }
             // A slow history sync must not starve sharing metadata or an existing publication.
             Task { @MainActor in await self?.syncSharedCalendars() }
         }
-        scheduleAccountSync()
+        Task { [weak self] in await self?.refreshSyncRevisions(); self?.scheduleAccountSync() }
         Task { [weak self] in await self?.syncTasks() }
         Task { [weak self] in await self?.syncSharedCalendars() }
         Task { [weak self] in await self?.syncPersonalKnowledge() }
     }
+    private func accountCall<T: Decodable>(_ name: String, body: JSONValue, user: UUID) async throws -> T {
+        guard let accountRPC else { return try await account.syncRPC(name, body: body, user: user) }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(T.self, from: JSONEncoder().encode(try await accountRPC(name, body, user)))
+    }
+    func resetSyncRevisions() {
+        account.stopWatchingSyncRevisions()
+        accountSyncCache = nil; syncRevisions = nil; syncRevisionsCheckedAt = nil; taskSyncSeenRevision = nil; macCalendarUploads = [:]; macCalendarCheckedAt = [:]
+    }
+    /// Reads the server's revisions (a few bytes). If the server doesn't offer them yet, they stay unknown and
+    /// every pass downloads, as before.
+    func refreshSyncRevisions() async {
+        guard let user = account.userID, activeLocalAccountID == user else { return }
+        syncRevisionsCheckedAt = .now
+        await account.refreshSyncRevisionsAuth()
+        guard let revisions: SyncRevisions = try? await accountCall("read_sync_revisions", body: .object([:]), user: user),
+              account.userID == user else { syncRevisions = nil; return }
+        receiveSyncRevisions(revisions)
+    }
+    func receiveSyncRevisions(_ revisions: SyncRevisions) {
+        let previous = syncRevisions
+        syncRevisions = revisions; syncRevisionsCheckedAt = .now
+        if accountSyncCache?.response.revision != revisions.account { scheduleAccountSync() }
+        if taskSyncSeenRevision != revisions.tasks { Task { [weak self] in await self?.syncTasks() } }
+        if let previous, previous.knowledge != revisions.knowledge { Task { [weak self] in await self?.syncPersonalKnowledge() } }
+    }
+    /// Local task edits not yet on the server, an earlier failure, or a newer server list.
+    var tasksNeedSync: Bool {
+        guard let seen = taskSyncSeenRevision, let server = syncRevisions?.tasks, taskError == nil, !taskConflict else { return true }
+        let doc = taskDocument
+        let local = doc.items.count != doc.baseline.count || doc.items.contains { doc.baseline[$0.id.uuidString] != $0.version }
+        return local || seen != server
+    }
     func syncAccount() async {
         guard !softwareUpdates.installing else { return }
         guard let user = account.userID, activeLocalAccountID == user, !accountSyncBusy else { return }
-        guard !agentIsRunning, !isSaving, !isCapturing, !isRecognizing, !calendarAccountIsConnecting else {
+        // Voice writes chat turns continuously; syncing mid-session would race them, so it waits for the session to end.
+        guard !agentIsRunning, voiceRunID == nil, !isSaving, !isCapturing, !isRecognizing, !calendarAccountIsConnecting else {
             accountSyncStatus = "Sync will continue when the current task finishes."; return
         }
         let store = memoryStore
         accountSyncBusy = true; accountSyncError = nil
         defer { accountSyncBusy = false }
         do {
-            let response: AccountSyncResponse = try await account.syncRPC("read_account_state", body: .object([:]), user: user)
-            guard account.userID == user, memoryStore === store, !agentIsRunning, !isSaving, !isCapturing, !isRecognizing else { return }
+            // The server still holds what this Mac last read or wrote: merge against that copy instead of downloading it.
+            let response: AccountSyncResponse
+            if let cache = accountSyncCache, cache.user == user, let server = syncRevisions?.account, server == cache.response.revision {
+                response = cache.response
+            } else {
+                response = try await accountCall("read_account_state", body: .object([:]), user: user)
+                guard account.userID == user else { return }
+                accountSyncCache = (user, response)
+            }
+            guard account.userID == user, memoryStore === store, !agentIsRunning, voiceRunID == nil, !isSaving, !isCapturing, !isRecognizing else { return }
             let baselineKey = "calshot.sync.baseline." + user.uuidString
             let localRecords = store.listRecords()
             let localPreferences: [String: JSONValue] = ["appearance": .string(appearanceMode.rawValue), "sidebarExpanded": .bool(sidebarExpanded)]
@@ -169,9 +238,20 @@ extension CalshotModel {
             let wrote = try encoder.encode(document) != encoder.encode(response.payload)
             if wrote {
                 let payload = try JSONDecoder().decode(JSONValue.self, from: encoder.encode(document))
-                let _: Int = try await account.syncRPC("write_account_state", body: .object(["document": payload, "expected_revision": .number(Double(response.revision))]), user: user)
+                let revision: Int = try await accountCall("write_account_state", body: .object(["document": payload, "expected_revision": .number(Double(response.revision))]), user: user)
+                accountSyncCache = (user, AccountSyncResponse(revision: revision, payload: document, displayName: response.displayName))
+                if let server = syncRevisions?.account, server < revision { syncRevisions?.account = revision }
+                // The server now holds `document`. Record it as the baseline for every record whose local copy is what
+                // was written, before anything below can stop this pass; otherwise the next pass would see the local
+                // record and the server both "changed" and fork it. Records still waiting for a remote version keep
+                // their old baseline, so that version is applied next time instead of being overwritten.
+                let written = AccountSyncBaseline(hashes: try document.history.reduce(into: [:]) { hashes, entry in
+                    let hash = try entry.value.syncHash()
+                    if localHashes[entry.key] == hash { hashes[entry.key] = hash } else if let old = baseline.hashes[entry.key] { hashes[entry.key] = old }
+                }, preferences: document.preferences.filter { localPreferences[$0.key] == $0.value }.merging(baseline.preferences) { new, _ in new })
+                UserDefaults.standard.set(try JSONEncoder().encode(written), forKey: baselineKey)
             }
-            guard account.userID == user, memoryStore === store, !agentIsRunning, !isSaving, !isCapturing, !isRecognizing else { return }
+            guard account.userID == user, memoryStore === store, !agentIsRunning, voiceRunID == nil, !isSaving, !isCapturing, !isRecognizing else { return }
             let latestHashes = try Dictionary(uniqueKeysWithValues: store.listRecords().map { ($0.id.uuidString, try $0.syncHash()) })
             guard latestHashes == localHashes, appearanceMode.rawValue == localPreferences["appearance"]?.stringValue,
                   sidebarExpanded == localPreferences["sidebarExpanded"]?.boolValue else {
@@ -189,7 +269,14 @@ extension CalshotModel {
             accountSyncDevices = document.devices; accountDisplayName = response.displayName
             accountSyncLastDate = .now; accountSyncStatus = "Up to date · Screenshots stay on this Mac"
         } catch is CancellationError { }
-        catch { guard account.userID == user else { return }; accountSyncError = error.localizedDescription; accountSyncStatus = "Not synced · Local changes are kept" }
+        catch {
+            guard account.userID == user else { return }
+            // The cached copy was older than the server (Realtime missed a change): read it and merge again.
+            if accountSyncCache != nil, error.localizedDescription.contains("changed during sync") {
+                accountSyncCache = nil; syncRevisions = nil; scheduleAccountSync(); return
+            }
+            accountSyncError = error.localizedDescription; accountSyncStatus = "Not synced · Local changes are kept"
+        }
     }
     static var syncDeviceID: String {
         if let value = UserDefaults.standard.string(forKey: "calshot.sync.deviceID") { return value }
@@ -306,10 +393,12 @@ extension CalshotModel {
             let iso = ISO8601DateFormatter(); iso.formatOptions.insert(.withFractionalSeconds)
             let start = Calendar.current.startOfDay(for: Date()).addingTimeInterval(-7 * 86400), end = Calendar.current.startOfDay(for: Date()).addingTimeInterval(55 * 86400)
             var failedUploads: [UUID: (UUID, String)] = [:]
+            var uploaded = false
             for mirror in macCalendarMirrors where mirror.enabled {
                 guard account.userID == user, !agentIsRunning, !isSaving, !isCapturing, !isRecognizing else { return }
                 let synced = mirror.syncedAt.flatMap { iso.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) }
-                if !force, mirror.error == nil, let synced, Date().timeIntervalSince(synced) < 60 { continue }
+                if !force, mirror.error == nil, let synced, Date().timeIntervalSince(max(synced, macCalendarCheckedAt[mirror.id] ?? synced)) < 60 { continue }
+                macCalendarCheckedAt[mirror.id] = .now
                 var body: [String: JSONValue] = ["mirror": .string(mirror.id.uuidString), "version": .string(mirror.generation.uuidString), "starts": .string(ISO8601DateFormatter().string(from: start)), "ends": .string(ISO8601DateFormatter().string(from: end)), "items": .array([])]
                 do {
                     guard let calendar = readableCalendars.first(where: { MacCalendarSnapshot.key($0.id) == mirror.sourceKey && !$0.id.hasPrefix("unavailable:") }) else { throw CalendarToolArgumentError("This calendar is unavailable on the Mac. Check Calendar access, or stop syncing it.") }
@@ -319,20 +408,29 @@ extension CalshotModel {
                     guard try JSONEncoder().encode(body["items"]!).count <= 900_000 else { throw CalendarToolArgumentError("This calendar is too large to sync completely. The previous web copy is kept.") }
                 } catch is CancellationError { return }
                 catch { body["failure"] = .string(error.localizedDescription); body["items"] = .array([]) }
+                // The same events as the last upload: send them again only every 15 minutes, so the web copy's
+                // "updated" time stays fresh without re-sending an unchanged calendar every minute.
+                let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+                let hash = SHA256.hash(data: try encoder.encode(body["items"] ?? .null) + Data((body["failure"]?.stringValue ?? "").utf8)).map { String(format: "%02x", $0) }.joined()
+                if !force, mirror.error == nil, let last = macCalendarUploads[mirror.id], last.generation == mirror.generation, last.hash == hash,
+                   Date().timeIntervalSince(last.at) < 900 { continue }
                 do {
                     _ = try await macCalendarCall("write_mac_calendar_snapshot", .object(body), user: user)
+                    uploaded = true
+                    macCalendarUploads[mirror.id] = body["failure"] == nil ? (mirror.generation, hash, .now) : nil
                 } catch is CancellationError { return }
                 catch {
                     let message = error.localizedDescription
                     failedUploads[mirror.id] = (mirror.generation, message)
                     body["failure"] = .string(message); body["items"] = .array([])
+                    macCalendarUploads[mirror.id] = nil; uploaded = true
                     // Persist the failure beside this calendar, then continue the batch.
                     do { _ = try await macCalendarCall("write_mac_calendar_snapshot", .object(body), user: user) }
                     catch is CancellationError { return }
                     catch { /* The local row still shows the failure if the network is down. */ }
                 }
             }
-            try await refreshMacCalendarChoices(user: user)
+            if uploaded { try await refreshMacCalendarChoices(user: user) }
             for index in macCalendarMirrors.indices {
                 let row = macCalendarMirrors[index]
                 if row.enabled, let (version, message) = failedUploads[row.id], row.generation == version { macCalendarMirrors[index].error = message; macCalendarMirrors[index].complete = false }

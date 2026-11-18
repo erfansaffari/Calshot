@@ -158,6 +158,18 @@ enum WebWorkspaceState {
         if let email = model.chatGPTAccount?.email { settings["chatGPTEmail"] = .string(email) }
         if let error = model.chatGPTConnectionError { settings["chatGPTError"] = .string(error) }
         state["settings"] = .object(settings)
+        let alerts = model.alertCenter
+        state["notifications"] = .object([
+            "enabled": .bool(alerts.preferences.enabled), "sound": .bool(alerts.preferences.sound), "spoken": .bool(alerts.preferences.spoken),
+            "smartAlerts": .bool(alerts.preferences.smartAlerts), "systemPermission": .string(alerts.systemPermission),
+            "voiceReady": .bool(alerts.voiceReady),
+            "error": alerts.readError.map(JSONValue.string) ?? .null,
+            "lastRefresh": alerts.lastRefresh.map { .string(Self.iso.string(from: $0)) } ?? .null,
+            "upcoming": .array(alerts.upcoming.map { alert in .object([
+                "id": .string(alert.id), "kind": .string(alert.kind.rawValue), "title": .string(String(alert.title.prefix(180))),
+                "start": .string(Self.iso.string(from: alert.start)), "fireAt": .string(Self.iso.string(from: alert.fireAt)),
+                "lead": .number(Double(alert.leadMinutes)), "calendarName": alert.calendarName.map(JSONValue.string) ?? .null,
+                "snoozed": .bool(alert.snoozed), "join": .bool(alert.joinURL != nil)]) })])
         state["displayAccessibility"] = .object([
             "reducedTransparency": .bool(NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency),
             "increasedContrast": .bool(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)])
@@ -171,7 +183,7 @@ enum WebWorkspaceState {
         }
         if model.account.requiresLogin {
             for key in ["messages", "proposals", "calendars", "accounts", "memory"] { state[key] = .array([]) }
-            state.removeValue(forKey: "voiceInput"); state.removeValue(forKey: "voice"); state.removeValue(forKey: "personalMemory"); state.removeValue(forKey: "tasks"); state.removeValue(forKey: "taskImport")
+            state.removeValue(forKey: "notifications"); state.removeValue(forKey: "voiceInput"); state.removeValue(forKey: "voice"); state.removeValue(forKey: "personalMemory"); state.removeValue(forKey: "tasks"); state.removeValue(forKey: "taskImport")
             for key in ["taskReview", "taskOutcome", "agentPermissions", "recentChanges"] { state.removeValue(forKey: key) }
             for key in ["imageURL", "summary", "question", "agentError", "status", "notice", "agentStatus"] { state.removeValue(forKey: key) }
             state["ocr"] = .string(""); state["streaming"] = .string(""); state["canApprove"] = .bool(false)

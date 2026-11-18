@@ -191,10 +191,53 @@ final class DAVResponse: NSObject, XMLParserDelegate {
 struct ICS {
     struct Component {
         var lines: [String]
-        func line(_ key: String) -> String? { lines.first { $0.split(separator: ":", maxSplits: 1).first?.split(separator: ";").first?.uppercased() == key } }
+        private static func key(_ line: String) -> String? { line.split(separator: ":", maxSplits: 1).first?.split(separator: ";").first?.uppercased() }
+        /// Indices of the event's own properties, outside nested components such as VALARM.
+        private var topLevel: [Int] {
+            var depth = 0, result: [Int] = []
+            for (index, line) in lines.enumerated() {
+                let upper = line.uppercased()
+                if index > 0, upper.hasPrefix("BEGIN:") { depth += 1; continue }
+                if index < lines.count - 1, upper.hasPrefix("END:"), depth > 0 { depth -= 1; continue }
+                if depth == 0 { result.append(index) }
+            }
+            return result
+        }
+        func line(_ key: String) -> String? { topLevel.lazy.map { lines[$0] }.first { Self.key($0) == key } }
         func has(_ key: String) -> Bool { line(key) != nil }
         func value(_ key: String) -> String? { line(key).flatMap { $0.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).last.map(String.init) } }
-        mutating func set(_ key: String, _ value: String?) { lines.removeAll { $0.split(separator: ":", maxSplits: 1).first?.split(separator: ";").first?.uppercased() == key }; if let value { lines.insert(value, at: max(1, lines.count - 1)) } }
+        mutating func set(_ key: String, _ value: String?) {
+            let remove = Set(topLevel.filter { Self.key(lines[$0]) == key })
+            lines = lines.enumerated().filter { !remove.contains($0.offset) }.map(\.element)
+            if let value { lines.insert(value, at: max(1, lines.count - 1)) }
+        }
+        /// VALARM blocks as line ranges.
+        private var alarms: [Range<Int>] {
+            var result: [Range<Int>] = [], start: Int?
+            for (index, line) in lines.enumerated() {
+                if line.uppercased() == "BEGIN:VALARM" { start = index }
+                if line.uppercased() == "END:VALARM", let begin = start { result.append(begin..<(index + 1)); start = nil }
+            }
+            return result
+        }
+        /// Minutes before the start for an alarm relative to the start; nil for fixed-date or end-relative alarms.
+        private func relativeMinutes(_ range: Range<Int>) -> Int? {
+            guard let trigger = lines[range].first(where: { Self.key($0) == "TRIGGER" }) else { return nil }
+            let parts = trigger.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            let parameters = parts[0].uppercased()
+            guard parts.count == 2, !parameters.contains("VALUE=DATE-TIME"), !parameters.contains("RELATED=END") else { return nil }
+            return EventAlerts.minutes(trigger: String(parts[1]))
+        }
+        var alertMinutes: [Int] {
+            Array(Set(alarms.compactMap(relativeMinutes).filter { (EventAlerts.minimumMinutes...EventAlerts.maximumMinutes).contains($0) })).sorted()
+        }
+        /// Replaces the alerts relative to the start; fixed-date and end-relative alarms set elsewhere are kept.
+        mutating func setAlerts(_ minutes: [Int]) {
+            let remove = Set(alarms.filter { relativeMinutes($0) != nil }.flatMap { Array($0) })
+            lines = lines.enumerated().filter { !remove.contains($0.offset) }.map(\.element)
+            let added = minutes.flatMap { ["BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Reminder", "TRIGGER:" + EventAlerts.trigger($0), "UID:" + UUID().uuidString, "END:VALARM"] }
+            lines.insert(contentsOf: added, at: max(1, lines.count - 1))
+        }
         static func parseDate(_ line: String) throws -> Date {
             let parts = line.split(separator: ":", maxSplits: 1); guard parts.count == 2 else { throw CalendarDestinationError.invalidDraft("invalid iCloud date") }
             let raw = String(parts[1]); let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -243,6 +286,7 @@ struct ICS {
             if let modified = line("LAST-MODIFIED"), modified.hasSuffix("Z") {
                 result.modifiedAt = try? Self.parseDate(modified)
             }
+            result.alertMinutes = alertMinutes
             return result
         }
     }
@@ -262,9 +306,9 @@ struct ICS {
     var text: String { lines.map(Self.fold).joined(separator: "\r\n") + "\r\n" }
     static func new(_ draft: EventDraft) throws -> String {
         var document = ICS("BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Calshot//Calendar Agent//EN\nBEGIN:VEVENT\nUID:\(draft.id.uuidString)\nEND:VEVENT\nEND:VCALENDAR")
-        try document.change(draft, recurrence: "", deleting: false); return document.text
+        try document.change(draft, recurrence: "", deleting: false, creating: true); return document.text
     }
-    mutating func change(_ draft: EventDraft, recurrence: String, deleting: Bool) throws {
+    mutating func change(_ draft: EventDraft, recurrence: String, deleting: Bool, creating: Bool = false) throws {
         guard CalendarDraftValidation.issues(draft).isEmpty, let start = draft.startDate, let end = draft.endDate, let master = events.first(where: { !$0.has("RECURRENCE-ID") }) else { throw CalendarDestinationError.invalidDraft("cannot change this iCloud event") }
         let index = events.firstIndex { Self.sameRecurrence($0.line("RECURRENCE-ID") ?? "", recurrence) }
         var event = index.map { events[$0] } ?? master
@@ -295,6 +339,10 @@ struct ICS {
             if fields.contains("location") { event.set("LOCATION", draft.location.map { "LOCATION:" + Self.escape($0) }) }
             if fields.contains("url") { event.set("URL", draft.url.map { "URL:" + $0.absoluteString }) }
             if fields.contains("notes") { event.set("DESCRIPTION", draft.notes.map { "DESCRIPTION:" + Self.escape($0) }) }
+            // A new event takes its alerts from the draft; an update only when alerts changed.
+            if let alerts = draft.alertMinutes, creating || fields.contains("alerts") {
+                event.setAlerts(try EventAlerts.normalized(alerts))
+            }
         }
         if let index { lines.replaceSubrange(ranges[index], with: event.lines) }
         else if let end = lines.lastIndex(of: "END:VCALENDAR") { lines.insert(contentsOf: event.lines, at: end) }

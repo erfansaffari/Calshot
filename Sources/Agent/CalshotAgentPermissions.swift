@@ -394,7 +394,7 @@ actor AgentPermissionStore {
         case .taskComplete: return ["completed"]
         case .taskArchive: return ["deleted"]
         case .taskReorder: return ["rank"]
-        case .calendarCreate, .calendarEdit: return ["title", "startDate", "endDate", "isAllDay", "timeZoneIdentifier", "location", "url", "notes"]
+        case .calendarCreate, .calendarEdit: return ["title", "startDate", "endDate", "isAllDay", "timeZoneIdentifier", "location", "url", "notes", "alerts"]
         case .calendarDelete: return ["delete"]
         case .calendarMove: return ["destination"]
         }

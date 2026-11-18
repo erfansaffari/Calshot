@@ -170,6 +170,14 @@ public final class MemoryStore: @unchecked Sendable {
             let url = metadataURL(for: remote.id)
             if let data = try? Data(contentsOf: url), let local = try? decoder.decode(MemoryCaptureRecord.self, from: data) {
                 if try local.syncHash() == remote.syncHash() { continue }
+                // The local main chat keeps its tool calls and turn times; only what the other Mac added is taken.
+                if local.isMainChat == true, remote.isMainChat == true {
+                    let united = Self.unitedMainChat(local, adding: remote)
+                    if united.agentTranscript != local.agentTranscript || united.calendarProposals.map(\.id) != local.calendarProposals.map(\.id) {
+                        try encoder.encode(united).write(to: url, options: .atomic)
+                    }
+                    continue
+                }
                 copy = MemoryCaptureRecord(id: copy.id, createdAt: copy.createdAt, screenshotFileName: local.screenshotFileName, imageFormat: local.imageFormat,
                     event: copy.event, recognizedText: copy.recognizedText, analysisProvider: copy.analysisProvider,
                     savedToCalendarAt: copy.savedToCalendarAt, savedCalendarName: copy.savedCalendarName, calendarEventIdentifier: copy.calendarEventIdentifier,
@@ -278,7 +286,12 @@ public final class MemoryStore: @unchecked Sendable {
     /// receipts. Unfinished reviews from old sessions are not carried over. Source records stay on disk, hidden.
     public func mainChat() throws -> MemoryCaptureRecord {
         let records = listRecords().sorted { $0.createdAt < $1.createdAt }
-        var main = records.first { $0.isMainChat == true }
+        // Copies of the main chat (from an older sync conflict) share its creation date. Prefer the original, then the
+        // fullest, so the choice never flips between launches; the others are united into it below.
+        var main = records.filter { $0.isMainChat == true }.min { a, b in
+            let rank = { (r: MemoryCaptureRecord) in (r.analysisProvider == Self.recoveredProvider ? 1 : 0, r.createdAt, -(r.agentTranscript?.count ?? 0), r.id.uuidString) }
+            return rank(a) < rank(b)
+        }
         if main == nil {
             let created = MemoryCaptureRecord(id: UUID(), createdAt: records.first?.createdAt ?? .now, screenshotFileName: "", imageFormat: .png,
                 event: nil, recognizedText: nil, analysisProvider: "Calendar agent", savedToCalendarAt: nil,
@@ -290,25 +303,94 @@ public final class MemoryStore: @unchecked Sendable {
             main = created
         }
         guard let main else { throw MemoryStoreError.unsupportedImageFormat }
-        let pending = records.filter { $0.id != main.id && $0.mergedIntoMainChat != true }
-        guard !pending.isEmpty else { return main }
+        // Copies of this chat (a second main chat, or a sync-conflict fork of it, which keeps its creation date),
+        // merged before or not, are duplicates: once their turns and saved changes are united here they are deleted,
+        // so they stop syncing. Forks of other conversations are earlier conversations like any other.
+        let copies = records.filter { $0.id != main.id && ($0.isMainChat == true || ($0.analysisProvider == Self.recoveredProvider && $0.createdAt == main.createdAt)) }
+        let copyIDs = Set(copies.map(\.id))
+        // Separate earlier conversations are appended once and kept on disk, hidden.
+        let pending = records.filter { $0.id != main.id && !copyIDs.contains($0.id) && $0.mergedIntoMainChat != true }
+        let repeatedChanges = Set(main.calendarProposals.map(\.id)).count != main.calendarProposals.count
+        guard !pending.isEmpty || !copies.isEmpty || repeatedChanges else { return main }
         let turns = pending.flatMap { $0.agentTranscript ?? [] }
-        let changes = pending.flatMap { $0.calendarProposals.filter { $0.isFinished && $0.receipt != nil } }
+        let changes = (copies + pending).flatMap { $0.calendarProposals.filter { $0.isFinished && $0.receipt != nil } }
         let updated = try updateRecord(id: main.id) { record in
-            record.agentTranscript = Array(((record.agentTranscript ?? []) + turns).suffix(Self.mainChatTurnLimit))
+            var transcript = record.agentTranscript ?? []
+            if !copies.isEmpty {
+                transcript = Self.removingRepeatedTurns(transcript)
+                for copy in copies { transcript = Self.unitedTranscript(transcript, adding: copy.agentTranscript ?? []) }
+            }
+            record.agentTranscript = Array((transcript + turns).suffix(Self.mainChatTurnLimit))
             record.proposals = Self.mergedChanges(existing: record.proposals ?? [], incoming: changes)
         }
         for record in pending {
             _ = try updateRecord(id: record.id) { $0.mergedIntoMainChat = true; $0.isMainChat = nil }
         }
+        for copy in copies {
+            // Not a main chat any more, so deleting it never cascades to the conversations merged into this one.
+            _ = try updateRecord(id: copy.id) { $0.isMainChat = nil }
+            try deleteRecord(id: copy.id)
+        }
         return updated ?? main
+    }
+
+    static let recoveredProvider = "Recovered concurrent edit"
+
+    /// Conversation text identity for merging copies: tool calls and system rows have none and are never matched.
+    private static func turnKey(_ turn: AgentTurn) -> String? {
+        guard turn.toolName == nil, turn.role == "user" || turn.role == "assistant", let content = turn.content else { return nil }
+        return turn.role + "\u{1f}" + content
+    }
+
+    /// `base` plus each conversation turn of `other` whose text `base` does not already hold, once, placed right
+    /// after the turn it followed in `other` so the conversation keeps its order. Copies made by earlier conflicts
+    /// repeat themselves, so a repeated text is never added again. Synced copies carry no tool calls, so those are
+    /// never added from `other`.
+    static func unitedTranscript(_ base: [AgentTurn], adding other: [AgentTurn]) -> [AgentTurn] {
+        var seen = Set(base.compactMap(turnKey))
+        var result = base
+        var insertAt = result.count
+        for turn in other {
+            guard let key = turnKey(turn) else { continue }
+            if seen.insert(key).inserted {
+                result.insert(turn, at: insertAt); insertAt += 1
+            } else if let index = result.firstIndex(where: { turnKey($0) == key }) {
+                // Tool calls recorded after the anchor stay with it.
+                var next = index + 1
+                while next < result.count, turnKey(result[next]) == nil { next += 1 }
+                insertAt = next
+            }
+        }
+        return result
+    }
+
+    /// Repairs a main chat that earlier sync conflicts filled with re-appended copies of itself: a later untimed
+    /// conversation turn identical to an earlier one is dropped. Timed turns and tool calls are always kept.
+    static func removingRepeatedTurns(_ turns: [AgentTurn]) -> [AgentTurn] {
+        var seen = Set<String>()
+        return turns.filter { turn in
+            guard let key = turnKey(turn) else { return true }
+            defer { seen.insert(key) }
+            return turn.at != nil || !seen.contains(key)
+        }
+    }
+
+    /// The main chat as it was on two Macs: this Mac's turns, then the other's turns it lacks, and both change ledgers.
+    static func unitedMainChat(_ local: MemoryCaptureRecord, adding other: MemoryCaptureRecord) -> MemoryCaptureRecord {
+        var record = local
+        record.agentTranscript = Array(unitedTranscript(local.agentTranscript ?? [], adding: other.agentTranscript ?? []).suffix(mainChatTurnLimit))
+        record.proposals = mergedChanges(existing: other.calendarProposals, incoming: local.calendarProposals)
+        return record
     }
 
     /// Ledger merge for the main chat: rows are replaced by id, new rows appended, and only the oldest finished
     /// changes beyond the limit are dropped. Unfinished rows are never dropped.
     static func mergedChanges(existing: [CalendarActionProposal], incoming: [CalendarActionProposal]) -> [CalendarActionProposal] {
-        let ids = Set(incoming.map(\.id))
-        var rows = existing.filter { !ids.contains($0.id) } + incoming
+        // One row per id, the latest version winning; copies of a chat bring the same rows many times.
+        var latest: [UUID: CalendarActionProposal] = [:]
+        for row in existing + incoming { latest[row.id] = row }
+        var placed = Set<UUID>()
+        var rows = (existing + incoming).compactMap { row in placed.insert(row.id).inserted ? latest[row.id] : nil }
         let finished = rows.filter(\.isFinished).sorted { ($0.receipt?.savedAt ?? .distantPast) < ($1.receipt?.savedAt ?? .distantPast) }
         if finished.count > mainChatChangeLimit {
             let dropped = Set(finished.prefix(finished.count - mainChatChangeLimit).map(\.id))

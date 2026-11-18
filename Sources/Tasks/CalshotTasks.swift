@@ -129,9 +129,10 @@ struct CalshotTask: Codable, Identifiable {
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.count <= 500, notes.count <= 8000,
               TimeZone(identifier: timeZone) != nil, rank >= 0, rank < 10000 else { throw CalendarToolArgumentError("Enter a title up to 500 characters and valid task details.") }
         if let day = dueDate { _ = try Self.date(day, time: dueTime, zone: timeZone) }
-        else if dueTime != nil || reminderMinutes != nil { throw CalendarToolArgumentError("Choose a due date before adding a time or reminder.") }
+        else if dueTime != nil || reminderMinutes != nil { throw CalendarToolArgumentError("Add a due date to set a time or reminder.") }
         if let minutes = reminderMinutes {
-            guard [0, 60, 1440].contains(minutes), dueTime != nil || reminderTime != nil else { throw CalendarToolArgumentError("Choose a reminder time for this date-only task.") }
+            guard Self.reminderChoices.contains(minutes) else { throw CalendarToolArgumentError("Choose a listed reminder.") }
+            guard dueTime != nil || reminderTime != nil else { throw CalendarToolArgumentError("Choose a reminder time for this date-only task.") }
             _ = try Self.date(dueDate!, time: dueTime ?? reminderTime, zone: timeZone)
         }
     }
@@ -250,6 +251,7 @@ extension CalshotModel {
         taskSessionID = UUID(); taskSyncBusy = false
         taskReminderWork?.cancel(); taskReminderGeneration = UUID()
         taskImport = nil; taskDocument = .init(); taskDataReady = false; taskError = nil; taskConflict = false; taskReminderError = nil
+        alertCenter.reset()
         let session = taskSessionID
         guard account.enabled else { return }
         let center = taskReminderCenter
@@ -451,7 +453,8 @@ extension CalshotModel {
         if changed { try persistTasks(doc) }
     }
     func syncTasks(keepBoth: Bool = false) async {
-        guard let owner = account.userID, activeLocalAccountID == owner, taskDataReady, !taskSyncBusy, !agentIsRunning, !isSaving else { return }
+        // A voice session can change tasks at any moment, so sync waits until it ends, as it does for a typed run.
+        guard let owner = account.userID, activeLocalAccountID == owner, taskDataReady, !taskSyncBusy, !agentIsRunning, voiceRunID == nil, !isSaving else { return }
         let store = taskStore; let token = tasksToken; let session = taskSessionID; taskSyncBusy = true
         defer { if taskSessionID == session { taskSyncBusy = false } }
         do {
@@ -459,7 +462,7 @@ extension CalshotModel {
             let remote = try JSONDecoder.taskState.decode(CalshotTaskCloud.self, from: JSONEncoder().encode(remoteData))
             guard remote.protocol_version == 2 else { throw CalendarToolArgumentError("Update required: task sync protocol 2 is unavailable.") }
             guard remote.revision >= 0, remote.items.count <= 1000, Set(remote.items.map(\.id)).count == remote.items.count else { throw CalendarToolArgumentError("The synced task list could not be validated.") }
-            guard taskSessionID == session, account.userID == owner, taskStore.url == store.url, tasksToken == token, !agentIsRunning, !isSaving else { return }
+            guard taskSessionID == session, account.userID == owner, taskStore.url == store.url, tasksToken == token, !agentIsRunning, voiceRunID == nil, !isSaving else { return }
             var merged = taskDocument.items
             let remoteIDs = Set(remote.items.map(\.id))
             // With saved server state, a synced task missing remotely and unchanged here was deleted elsewhere.
@@ -487,15 +490,19 @@ extension CalshotModel {
             let data = try CalshotTaskStore.encoder.encode(merged)
             let encodedRemote = try CalshotTaskStore.encoder.encode(remote.items.sorted { $0.id.uuidString < $1.id.uuidString })
             let mergedData = try CalshotTaskStore.encoder.encode(merged.sorted { $0.id.uuidString < $1.id.uuidString })
+            var seenRevision = remote.revision
             if mergedData != encodedRemote {
-                let _ = try await taskStateRPC("write_task_state_v2", body: .object(["protocol_version": .number(2), "items": try JSONDecoder().decode(JSONValue.self, from: data), "expected_revision": .number(Double(remote.revision))]), owner: owner)
+                let written = try await taskStateRPC("write_task_state_v2", body: .object(["protocol_version": .number(2), "items": try JSONDecoder().decode(JSONValue.self, from: data), "expected_revision": .number(Double(remote.revision))]), owner: owner)
+                seenRevision = written.numberValue.map { Int($0) } ?? remote.revision + 1
             }
-            guard taskSessionID == session, account.userID == owner, taskStore.url == store.url, tasksToken == token, !agentIsRunning, !isSaving else { return }
+            guard taskSessionID == session, account.userID == owner, taskStore.url == store.url, tasksToken == token, !agentIsRunning, voiceRunID == nil, !isSaving else { return }
             let doc = CalshotTaskDocument(items: merged, baseline: Dictionary(uniqueKeysWithValues: merged.map { ($0.id.uuidString, $0.version) }), operations: taskDocument.operations)
-            try persistTasks(doc); taskError = nil; taskConflict = false
+            try persistTasks(doc); taskError = nil; taskConflict = false; taskSyncSeenRevision = seenRevision
         } catch is CancellationError {} catch {
             if taskSessionID == session, account.userID == owner {
-                let message = error.localizedDescription
+                // The account error already says local data is kept; say it once.
+                let message = error.localizedDescription.replacingOccurrences(of: " Your local data is kept.", with: "")
+                    .trimmingCharacters(in: CharacterSet(charactersIn: ". "))
                 let compatibilityError = ["protocol", "function", "update required", "unavailable", "404"].contains { message.lowercased().contains($0) }
                 taskError = (compatibilityError ? "Update needed to sync tasks: " : "Tasks not synced: ") + message + ". Local changes are kept."
             }
@@ -514,7 +521,8 @@ extension CalshotModel {
             let pending = await center.pendingReminderIdentifiers()
             guard self.account.userID == owner, self.tasksToken == token, self.taskReminderGeneration == generation, !Task.isCancelled else { return }
             center.removeReminders(pending.filter { $0.hasPrefix(CalshotTask.reminderPrefix) })
-            let active = tasks.filter { !$0.deleted && !$0.completed && $0.reminderMinutes != nil && $0.reminderDeviceID == Self.syncDeviceID }
+            // A reminder Calshot already showed in the notch is never handed back to macOS.
+            let active = tasks.filter { !$0.deleted && !$0.completed && $0.reminderMinutes != nil && $0.reminderDeviceID == Self.syncDeviceID && !self.alertCenter.showedReminder(for: $0) }
             guard !active.isEmpty else { self.taskReminderError = nil; return }
             let allowed = await center.remindersAllowed()
             guard self.account.userID == owner, self.tasksToken == token, self.taskReminderGeneration == generation, !Task.isCancelled else { return }
@@ -554,6 +562,21 @@ extension UNUserNotificationCenter: TaskReminderCenter {
 
 extension CalshotTask {
     static let reminderPrefix = "calshot.task."
+    /// Lead times a task reminder may use, in minutes before the due time (or the reminder time of a date-only task).
+    static let reminderChoices = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080]
+    /// Used for a date-only task when the agent sets a reminder without a time.
+    static let defaultReminderTime = "09:00"
+    /// Keeps reminder fields consistent: none without a date, a time for a date-only task, and this Mac as the
+    /// device that delivers a reminder set or changed here (`deviceID` nil keeps the current one).
+    mutating func normalizeReminder(deviceID: String?) {
+        guard dueDate != nil, reminderMinutes != nil else { reminderMinutes = nil; reminderTime = nil; reminderDeviceID = nil; return }
+        if dueTime != nil { reminderTime = nil } else if reminderTime == nil { reminderTime = Self.defaultReminderTime }
+        if let deviceID { reminderDeviceID = deviceID }
+    }
+    static func reminderLabel(_ minutes: Int?) -> String {
+        guard let minutes else { return "None" }
+        return minutes == 0 ? "At due time" : EventAlerts.label(minutes)
+    }
     /// When the Mac reminder fires: the due time (or the chosen reminder time for a date-only task)
     /// minus the chosen lead time, in the task's time zone. Nil when there is none or it has passed.
     func reminderFireDate(now: Date = .now) -> Date? {
@@ -561,8 +584,8 @@ extension CalshotTask {
               let time = dueTime ?? reminderTime,
               let due = try? CalshotTask.date(day, time: time, zone: timeZone) else { return nil }
         var cal = Calendar(identifier: .gregorian); cal.timeZone = zone
-        // "1 day before" keeps the same clock time across a daylight-saving change.
-        let fire = minutes == 1440 ? cal.date(byAdding: .day, value: -1, to: due) : due.addingTimeInterval(-Double(minutes * 60))
+        // Whole days before keep the same clock time across a daylight-saving change.
+        let fire = minutes > 0 && minutes % 1440 == 0 ? cal.date(byAdding: .day, value: -minutes / 1440, to: due) : due.addingTimeInterval(-Double(minutes * 60))
         guard let fire, fire > now else { return nil }
         return fire
     }
@@ -582,7 +605,7 @@ extension CalshotTask {
         var cal = Calendar(identifier: .gregorian); cal.timeZone = zone
         var components = cal.dateComponents([.year, .month, .day, .hour, .minute], from: fire); components.timeZone = zone
         let content = UNMutableNotificationContent()
-        content.title = title; content.body = reminderBody(locale: locale); content.sound = .default
+        content.title = title; content.body = reminderBody(locale: locale); content.sound = CalshotAlertSound.notificationSound(enabled: CalshotAlertPreferences.load().sound)
         content.threadIdentifier = "calshot.tasks"
         content.userInfo = ["taskID": id.uuidString]
         return UNNotificationRequest(identifier: Self.reminderPrefix + owner.uuidString + "." + generation.uuidString + "." + id.uuidString,
@@ -604,7 +627,7 @@ extension CalshotModel {
         var doc = taskDocument, proposals: [CalendarActionProposal] = [], saved: [JSONValue] = []
         for row in rows {
             guard let f = row.objectValue else { throw CalendarToolArgumentError("Each task must be an object.") }
-            try CalendarToolDraftMapper.keys(f, allowed: ["title", "dueDate", "dueTime", "timeZone", "notes", "sourceText", "yearResolved", "calendarIntent"])
+            try CalendarToolDraftMapper.keys(f, allowed: ["title", "dueDate", "dueTime", "timeZone", "notes", "sourceText", "yearResolved", "calendarIntent", "reminderMinutes", "reminderTime"])
             let title = try CalendarToolDraftMapper.string(f, "title", required: true, limit: 500)!
             let day = try CalendarToolDraftMapper.string(f, "dueDate", limit: 10)
             let resolved = f["yearResolved"] == .bool(true)
@@ -617,6 +640,17 @@ extension CalshotModel {
             if let rawIntent = f["calendarIntent"], rawIntent != .null {
                 guard let raw = rawIntent.stringValue, let intent = CalshotTaskCalendarIntent(rawValue: raw), intent != .existing else { throw CalendarToolArgumentError("Choose none or new for task creation. Link an existing event separately.") }
                 task.calendarIntent = intent; task.intentProvenance = .explicit
+            }
+            if let value = f["reminderMinutes"], value != .null {
+                guard let number = value.numberValue, number == number.rounded(), CalshotTask.reminderChoices.contains(Int(number)) else {
+                    throw CalendarToolArgumentError("reminderMinutes must be one of \(CalshotTask.reminderChoices.map(String.init).joined(separator: ", ")) or null.")
+                }
+                task.reminderMinutes = Int(number)
+                if let time = try CalendarToolDraftMapper.string(f, "reminderTime", limit: 5) {
+                    guard time.range(of: #"^([01]\d|2[0-3]):[0-5]\d$"#, options: .regularExpression) != nil else { throw CalendarToolArgumentError("Use HH:mm for a reminder time.") }
+                    task.reminderTime = time
+                }
+                task.normalizeReminder(deviceID: Self.syncDeviceID)
             }
             task.resolveCalendarIntent()
             if day != nil && !resolved { task.calendarError = "Deadline year is unresolved. Add the full date in Tasks before calendar review." }
@@ -733,6 +767,12 @@ struct CalshotTaskOperationReceipt: Codable, Equatable {
 
 @MainActor
 extension CalshotModel {
+    /// A task sync that started before a request holds the task list for a moment; agent tools wait for it (up to
+    /// 10 seconds) instead of failing with a stale-session error.
+    func waitForTaskSync() async {
+        let deadline = Date.now.addingTimeInterval(10)
+        while taskSyncBusy, Date.now < deadline, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(100)) }
+    }
     func taskContext(origin: CalshotTaskOrigin) throws -> CalshotTaskContext {
         let context = CalshotTaskContext(ownerID: account.userID, storeURL: taskStore.url,
             sessionID: taskSessionID, captureID: currentCaptureSessionID, origin: origin)
@@ -776,7 +816,7 @@ extension CalshotModel {
     func mutateTask(taskID: UUID?, expectedVersion: UUID?, patch: [String: JSONValue],
                     context: CalshotTaskContext, operationID: UUID) throws -> CalshotTaskOperationReceipt {
         try validateTaskContext(context)
-        try CalendarToolDraftMapper.keys(patch, allowed: ["title", "dueDate", "dueTime", "timeZone", "notes", "completed", "archived", "calendarIntent", "calendarID"])
+        try CalendarToolDraftMapper.keys(patch, allowed: ["title", "dueDate", "dueTime", "timeZone", "notes", "completed", "archived", "calendarIntent", "calendarID", "reminderMinutes", "reminderTime"])
         let digest = try taskOperationDigest(.object(["kind": .string("mutate"), "taskID": taskID.map { .string($0.uuidString) } ?? .null,
             "expectedVersion": expectedVersion.map { .string($0.uuidString) } ?? .null, "patch": .object(patch)]))
         if let previous = try previousTaskOperation(operationID, digest: digest) { return previous }
@@ -803,6 +843,15 @@ extension CalshotModel {
         if patch["dueTime"] != nil { task.dueTime = try string("dueTime", limit: 5) }
         if patch["timeZone"] != nil { task.timeZone = try string("timeZone", limit: 100, nullable: false)! }
         if patch["notes"] != nil { task.notes = try string("notes", limit: 8000) ?? "" }
+        if patch["reminderTime"] != nil { task.reminderTime = try string("reminderTime", limit: 5) }
+        if let value = patch["reminderMinutes"] {
+            if value == .null { task.reminderMinutes = nil }
+            else {
+                guard let number = value.numberValue, number == number.rounded(), CalshotTask.reminderChoices.contains(Int(number)) else { throw CalendarToolArgumentError("Choose a listed reminder.") }
+                task.reminderMinutes = Int(number)
+            }
+        }
+        task.normalizeReminder(deviceID: patch["reminderMinutes"] != nil || patch["reminderTime"] != nil ? Self.syncDeviceID : nil)
         for key in ["completed", "archived"] where patch[key] != nil {
             guard case .bool(let flag) = patch[key]! else { throw CalendarToolArgumentError("Choose a valid task state.") }
             if key == "completed" { task.completed = flag } else { task.deleted = flag }

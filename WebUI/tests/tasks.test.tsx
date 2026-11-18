@@ -269,9 +269,9 @@ it("reveals editor fields progressively and keeps the draft when cancelling is n
   });
   expect(screen.getByLabelText("Due time (optional)")).toBeTruthy();
   expect(screen.getByLabelText("Deadline calendar")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: /Notes & reminder/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Notes" }));
   expect(screen.getByLabelText("Notes")).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Remind on this Mac"), {
+  fireEvent.change(screen.getByLabelText("Remind me"), {
     target: { value: "60" },
   });
   expect(screen.getByLabelText("Reminder time")).toBeTruthy();
@@ -466,7 +466,7 @@ it("sends the chosen reminder, with a reminder time for a date-only task", async
   const action = vi.fn().mockResolvedValue(undefined);
   render(<TasksPage state={state([{ ...task, dueTime: undefined }])} onCommand={action} />);
   fireEvent.click(screen.getByRole("button", { name: task.title }));
-  fireEvent.change(screen.getByLabelText("Remind on this Mac"), { target: { value: "1440" } });
+  fireEvent.change(screen.getByLabelText("Remind me"), { target: { value: "1440" } });
   fireEvent.change(screen.getByLabelText("Reminder time"), { target: { value: "08:30" } });
   fireEvent.click(screen.getByRole("button", { name: "Save & add to calendar" }));
   await waitFor(() => expect(action).toHaveBeenCalledWith(expect.objectContaining({ action: "saveTask", reminderMinutes: 1440, reminderTime: "08:30", dueTime: null })));
@@ -480,7 +480,8 @@ it("clears the reminder when the date is removed and blocks a date-only reminder
   expect(await screen.findByText("Choose a time for the reminder.")).toBeDefined();
   expect(action).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "" } });
-  expect(screen.queryByLabelText("Remind on this Mac")).toBeNull();
+  expect((screen.getByLabelText("Remind me") as HTMLSelectElement).disabled).toBe(true);
+  expect(screen.getByText("Add a due date to set a reminder.")).toBeDefined();
   fireEvent.click(screen.getByRole("button", { name: "Save task" }));
   await waitFor(() => expect(action).toHaveBeenCalledWith(expect.objectContaining({ action: "saveTask", dueDate: null, reminderMinutes: null })));
 });

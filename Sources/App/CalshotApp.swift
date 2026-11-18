@@ -90,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         model.registerShortcut()
+        model.alertCenter.start()
 
         DispatchQueue.main.async { [weak self] in
             self?.model.showNotchLauncher()
@@ -100,6 +101,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.model.screenPermissionFlow = ScreenPermissionFlowController()
                 self?.model.workspaceWindowController?.hide()
                 self?.model.screenPermissionFlow?.show(preview: true)
+            }
+            if ProcessInfo.processInfo.arguments.contains("--alert-preview") {
+                // A fictional sample alert in the notch, for visual checks. Nothing is read or written.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self?.model.alertCenter.presentSample() }
             }
             if ProcessInfo.processInfo.arguments.contains("--reminder-check") {
                 Task { await self?.model.runReminderDeliveryCheck() }
@@ -233,6 +238,8 @@ final class CalshotModel: ObservableObject {
         return input
     }()
     lazy var voiceSession = makeVoiceSession()
+    /// Calshot's own event alerts and task reminders on this Mac.
+    lazy var alertCenter = makeAlertCenter()
     var mainChatCache: (key: String, id: UUID)?
     /// The one-time Autonomy default. Off for isolated fixtures (no AI connection), which opt in explicitly.
     lazy var appliesAutonomyDefault = loadsAIConnectionAtLaunch
@@ -272,6 +279,7 @@ final class CalshotModel: ObservableObject {
         didSet { if taskUsesNotch && !notchEnabled { taskUsesNotch = false } }
     }
     var notchLauncherController: NotchExperienceController?
+    var alertCenterSubscription: AnyCancellable?
     /// The hover notch (capture bar, quick menu, tasks in the notch) is switched off for now: only the voice island
     /// shows. Set this to true to bring the notch and its Settings switch back; nothing else needs to change.
     static var notchAvailable = false
@@ -308,6 +316,8 @@ final class CalshotModel: ObservableObject {
     /// Demo and fixture models have no account and never schedule; tests opt in with a recording center.
     var taskRemindersActive: Bool { account.enabled || taskReminderCenterOverride != nil }
     var taskRPC: ((String, JSONValue, UUID) async throws -> JSONValue)?
+    /// Test hook for account sync calls (read/write account state, read sync revisions).
+    var accountRPC: ((String, JSONValue, UUID) async throws -> JSONValue)?
     @Published var workspaceSelection: WorkspaceSection = .capture
     @Published var selectionOverlay: RegionSelectionOverlay?
     @Published var destinations: [CalendarDestinationInfo] = []
@@ -378,6 +388,17 @@ final class CalshotModel: ObservableObject {
     /// What the last sync that changed nothing saw. While it still holds, the 30-second sync skips re-hashing
     /// and merging the whole history on the main thread.
     var accountSyncUnchangedKey: String?
+    /// The account document as the server last held it (read or written by this Mac), with its revision. While the
+    /// server's revision still matches, sync merges against this copy instead of downloading the document again.
+    var accountSyncCache: (user: UUID, response: AccountSyncResponse)?
+    /// The server's current revisions, from Realtime or a periodic check; nil when unknown (sync then reads).
+    var syncRevisions: SyncRevisions?
+    var syncRevisionsCheckedAt: Date?
+    /// The task list revision this Mac last read or wrote.
+    var taskSyncSeenRevision: Int?
+    /// Last snapshot uploaded per Mac calendar mirror (generation, payload hash, time), so unchanged calendars are skipped.
+    var macCalendarUploads: [UUID: (generation: UUID, hash: String, at: Date)] = [:]
+    var macCalendarCheckedAt: [UUID: Date] = [:]
     /// Saved changes from history files, newest first, rebuilt only when a history file changes.
     var calendarHistoryLedgerCache: (key: String, rows: [CalendarActionProposal])?
     @Published var accountSyncStatus = "Not synced yet"
@@ -452,7 +473,7 @@ final class CalshotModel: ObservableObject {
         calendarObservation = calendarActions.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         accountObservation = account.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         if loadsAIConnection { clearTaskSession() } else { loadTasks() }
-        account.onSignedOut = { [weak self] in self?.voiceSession.stop(); self?.selectedEventContext = nil; self?.teardownAgentPermissions(reason: "You signed out."); self?.clearTaskSession() }
+        account.onSignedOut = { [weak self] in self?.resetSyncRevisions(); self?.voiceSession.stop(); self?.selectedEventContext = nil; self?.teardownAgentPermissions(reason: "You signed out."); self?.clearTaskSession() }
         account.onShowWindow = { [weak self] in self?.openPanel() }
         account.onAuthenticated = { [weak self] provider in
             Task { @MainActor in

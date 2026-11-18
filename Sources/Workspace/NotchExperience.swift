@@ -46,6 +46,9 @@ final class NotchExperienceController: ObservableObject {
     @Published private(set) var cameraInset: CGFloat = 24
     @Published private(set) var activity = NotchActivity.idle
     @Published private(set) var voiceActivity: NotchVoiceActivity?
+    /// A Calshot alert takes the closed notch for its duration; voice keeps running underneath.
+    @Published private(set) var alert: CalshotAlert?
+    var alertCenter: CalshotAlertCenter? { model?.alertCenter }
     @Published private(set) var geometry: NotchGeometry?
     private var detail = false
     private var detailHeight: CGFloat = 490
@@ -108,6 +111,9 @@ final class NotchExperienceController: ObservableObject {
         // Audio/status snapshots must never reopen a panel the pointer just left.
         refreshActivity(); pendingOrder = .front; position()
     }
+    func showAlert() {
+        refreshActivity(); pendingOrder = .front; position()
+    }
     func show() {
         guard model?.notchEnabled != false || model?.voiceSession.active == true else { return hide() }
         refreshActivity(); pendingOrder = .front; position()
@@ -157,7 +163,8 @@ final class NotchExperienceController: ObservableObject {
     }
     private func updatePointer(_ inside: Bool, now: Date = .now) {
         // With the notch off, hovering never opens anything; an open voice panel still closes when the pointer leaves.
-        guard quickMenuEnabled || presentation.isExpanded else { return }
+        // An alert card never turns into the quick menu under the pointer.
+        guard (quickMenuEnabled && alert == nil) || presentation.isExpanded else { return }
         var next = presentation
         next.pointerChanged(inside, now: now, location: NSEvent.mouseLocation)
         next.advance(to: now)
@@ -180,6 +187,8 @@ final class NotchExperienceController: ObservableObject {
     private var targetScreen: NSScreen? {
         let screens = NSScreen.screens
         if isExpanded, let current = panel.screen, screens.contains(current) { return current }
+        // An alert appears where the user is working: the display under the pointer.
+        if alert != nil, let pointer = screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }) { return pointer }
         return screens.first(where: { NotchGeometry($0).hasCameraHousing }) ?? screens.first ?? NSScreen.main
     }
     /// AppKit geometry/focus must run after SwiftUI's button, hover and animation transactions unwind.
@@ -210,7 +219,8 @@ final class NotchExperienceController: ObservableObject {
         update(\.geometry, geometry)
         update(\.cameraInset, geometry.barHeight)
         update(\.expandedWidth, geometry.expandedWidth(detail: detail))
-        update(\.launcherSize, voiceActivity.map { showsIsland($0) ? geometry.voiceIslandSize : geometry.voiceIndicatorSize }
+        update(\.launcherSize, alert != nil && voiceActivity.map(showsIsland) != false ? geometry.alertSize
+               : voiceActivity.map { showsIsland($0) ? geometry.voiceIslandSize : geometry.voiceIndicatorSize }
                ?? (showsNotification ? geometry.notificationSize : geometry.closedSize))
         if webSize.height <= geometry.barHeight { update(\.webSize, geometry.voiceIndicatorSize) }
         let size = isExpanded ? NSSize(width: expandedWidth, height: expandedHeight) : launcherSize
@@ -264,6 +274,7 @@ final class NotchExperienceController: ObservableObject {
         update(\.voiceActivity, NotchVoiceActivity.resolve(state: session.state, transmittingAudio: session.transmittingAudio,
                                                             needsAttention: (session.active && session.error != nil) || session.needsAcknowledgement || session.needsKey))
         update(\.colorScheme, model.appearanceMode.colorScheme)
+        update(\.alert, model.alertCenter.current)
         update(\.quickMenuEnabled, model.notchEnabled)
         let executing = model.isSaving
         if executing && !wasExecuting {
@@ -382,6 +393,11 @@ struct NotchGeometry: Equatable {
     }
 
     var closedSize: NSSize { NSSize(width: closedWidth, height: barHeight) }
+    /// Alert card: grows out of the housing (or hangs from the top edge) with one compact row below it.
+    var alertSize: NSSize {
+        let width = hasCameraHousing ? max(closedWidth + Self.islandWing * 2 + 40, 400) : 400
+        return NSSize(width: min(width, screenFrame.width - 32), height: (hasCameraHousing ? barHeight : 6) + 56)
+    }
     var notificationSize: NSSize { NSSize(width: min(max(340, closedWidth + 24), screenFrame.width - 32), height: barHeight + 26) }
     var voiceIndicatorSize: NSSize { NSSize(width: expandedWidth(detail: false), height: barHeight + 66) }
     /// Voice status at menu-bar height: wings beside the camera housing, or a short tab on other displays.
@@ -498,7 +514,15 @@ private struct NotchExperienceView: View {
             .opacity(showsWeb ? 1 : 0)
             .allowsHitTesting(showsWeb)
             .accessibilityHidden(!showsWeb)
-            if !showsWeb, let voice = controller.voiceActivity {
+            if !showsWeb, let alert = controller.alert, let center = controller.alertCenter {
+                AlertIsland(alert: alert, center: center, topInset: controller.geometry?.hasCameraHousing == true ? controller.cameraInset : 6)
+                    .frame(width: controller.launcherSize.width, height: controller.launcherSize.height)
+                    .frame(width: controller.visibleSize.width, height: controller.visibleSize.height, alignment: .top)
+                    .background(.black)
+                    .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 18, bottomTrailingRadius: 18))
+                    .id(alert.id)
+                    .transition(.opacity)
+            } else if !showsWeb, let voice = controller.voiceActivity {
                 Button { controller.openQuickMenu() } label: {
                     VoiceIsland(activity: voice, size: controller.launcherSize,
                                 housingWidth: controller.geometry?.hasCameraHousing == true ? controller.geometry?.closedWidth ?? 0 : 0,
@@ -546,6 +570,73 @@ private struct NotchExperienceView: View {
         .clipped()
         .contentShape(Rectangle()).onHover { controller.pointerChanged($0) }
         .preferredColorScheme(controller.colorScheme)
+    }
+}
+
+/// Calshot's own alert: what is coming, when and where, with Join for meetings, Snooze and dismiss.
+/// Drawn by SwiftUI on the black bezel; the chime and spoken alert are played by the alert center.
+private struct AlertIsland: View {
+    let alert: CalshotAlert
+    @ObservedObject var center: CalshotAlertCenter
+    let topInset: CGFloat
+    var body: some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: topInset)
+            HStack(spacing: 10) {
+                Button { center.open() } label: {
+                    HStack(spacing: 10) {
+                        ZStack {
+                            Circle().fill(alert.kind == .task ? Color(red: 0.36, green: 0.78, blue: 0.55) : Color(red: 0.26, green: 0.52, blue: 1))
+                            Image(systemName: alert.symbol).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                        }.frame(width: 28, height: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(alert.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                            // Refreshes the countdown without re-rendering the shell.
+                            TimelineView(.periodic(from: .now, by: 15)) { context in
+                                Text(alert.subtitle(now: context.date)).font(.system(size: 11)).foregroundStyle(.white.opacity(0.66)).lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: 4)
+                    }.contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(alert.kind == .task ? "Open Tasks" : "Open Calendar")
+                .accessibilityLabel(alert.spokenSummary())
+                .accessibilityHint(alert.kind == .task ? "Opens Tasks" : "Opens Calendar")
+                if alert.joinURL != nil {
+                    AlertIslandButton(title: "Join", prominent: true) { center.join() }
+                        .accessibilityHint("Opens the meeting link")
+                }
+                AlertIslandButton(title: "Snooze", prominent: false) { center.snooze() }
+                    .help("Remind me again: " + center.snoozeLabel(alert))
+                    .accessibilityHint("Shows this alert again later: " + center.snoozeLabel(alert))
+                Button { center.dismiss() } label: {
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.7))
+                        .frame(width: 22, height: 22).background(Circle().fill(.white.opacity(0.12)))
+                }
+                .buttonStyle(.plain).help("Dismiss").accessibilityLabel("Dismiss alert")
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 50)
+            Spacer(minLength: 0)
+        }
+        .onHover { center.setHovering($0) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Calshot alert")
+    }
+}
+
+private struct AlertIslandButton: View {
+    let title: String
+    let prominent: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                .padding(.horizontal, 11).frame(height: 24)
+                .background(Capsule().fill(prominent ? Color(red: 0.26, green: 0.52, blue: 1) : .white.opacity(0.14)))
+        }
+        .buttonStyle(.plain)
     }
 }
 

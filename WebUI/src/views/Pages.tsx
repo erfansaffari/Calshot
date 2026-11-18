@@ -1,3 +1,4 @@
+import { NotificationSettings } from "../components/NotificationSettings";
 import { useAction } from "../useAction";
 import { VoiceInputSettings } from "../components/VoiceInputSettings";
 import { GlassAppearanceSettings } from "../components/GlassAppearanceSettings";
@@ -714,6 +715,7 @@ export function SettingsPage({ state }: { state: AppState }) {
               ["friends", "Friends & sharing"],
               ["ai", "AI service"],
               ["voice", "Voice"],
+              ["notifications", "Notifications"],
               ["privacy", "Privacy & permissions"],
             ] as const
           ).map(([id, label]) => (
@@ -731,6 +733,7 @@ export function SettingsPage({ state }: { state: AppState }) {
           ))}
         </nav>
         {tab === "voice" && <VoiceSettings state={state} />}
+        {tab === "notifications" && <NotificationSettings state={state} />}
         {tab === "calendars" && <CalendarConnections state={state} />}
         {tab === "friends" && (
           <FriendsSettings

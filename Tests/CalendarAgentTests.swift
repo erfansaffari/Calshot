@@ -609,6 +609,11 @@ extension TaskDomainPhaseOneTests {
         XCTAssertNil(m.taskError)
         XCTAssertEqual(Set(m.taskDocument.items.map(\.title)), ["Fictional kept", "Fictional edited on another Mac"])
         XCTAssertEqual(written?.count, 2, "The deleted task is not uploaded again")
+        XCTAssertEqual(m.taskSyncSeenRevision, 5, "The written revision is remembered")
+        m.syncRevisions = SyncRevisions(account: 0, tasks: 5, knowledge: 0)
+        XCTAssertFalse(m.tasksNeedSync, "Nothing changed here or on the server: no download")
+        m.syncRevisions?.tasks = 6
+        XCTAssertTrue(m.tasksNeedSync, "Another Mac changed the list")
         // The other Mac drops the task deleted elsewhere instead of uploading it again.
         let other = model(); signedIn(other, user)
         try other.persistTasks(.init(items: [kept, removed], baseline: [kept.id.uuidString: kept.version, removed.id.uuidString: removed.version]))
@@ -622,6 +627,35 @@ extension TaskDomainPhaseOneTests {
         fresh.taskRPC = { name, _, _ in name == "read_task_state_v2" ? .object(["protocol_version": .number(2), "revision": .number(0), "items": .array([])]) : .number(1) }
         await fresh.syncTasks()
         XCTAssertEqual(fresh.taskDocument.items.map(\.title), ["Fictional kept"])
+    }
+    func testAccountSyncDownloadsTheHistoryOnlyWhenTheServerRevisionMoves() async throws {
+        let m = model(); m.account.onAuthenticated = nil
+        let user = UUID()
+        m.account.accept(User(id: user, appMetadata: [:], userMetadata: [:], aud: "authenticated", email: "fictional@example.invalid", createdAt: .now, updatedAt: .now), provider: "email")
+        m.activeLocalAccountID = user
+        var calls: [String] = [], revision = 7
+        var payload: JSONValue = .object(["preferences": .object([:]), "devices": .object([:]), "history": .object([:]), "deleted": .array([])])
+        m.accountRPC = { name, body, _ in
+            calls.append(name)
+            switch name {
+            case "read_sync_revisions": return .object(["account": .number(Double(revision)), "tasks": .number(0), "knowledge": .number(0)])
+            case "read_account_state": return .object(["revision": .number(Double(revision)), "payload": payload, "displayName": .string("Fictional")])
+            default: payload = body.objectValue?["document"] ?? payload; revision += 1; return .number(Double(revision))
+            }
+        }
+        await m.refreshSyncRevisions()
+        await m.syncAccount()
+        XCTAssertNil(m.accountSyncError)
+        XCTAssertEqual(calls.filter { $0 == "read_account_state" }.count, 1)
+        XCTAssertEqual(calls.filter { $0 == "write_account_state" }.count, 1, "This Mac's device entry is written")
+        calls = []
+        await m.syncAccount(); await m.syncAccount()
+        XCTAssertEqual(calls, [], "The server still holds what this Mac wrote: nothing is downloaded or written")
+        // Another Mac writes; Realtime (or the periodic check) reports the new revision.
+        revision += 1
+        m.syncRevisions?.account = revision
+        await m.syncAccount()
+        XCTAssertEqual(calls, ["read_account_state"])
     }
     func testTaskSyncV2MissingMigrationRetainsPersistedLocalEdits() async throws {
         let m = model(); m.account.onAuthenticated = nil
@@ -939,7 +973,8 @@ final class TaskReminderTests: XCTestCase {
         XCTAssertTrue(request.content.body.hasPrefix("Due Tue, Nov 10"), request.content.body)
         XCTAssertTrue(request.content.body.contains("5:00"), request.content.body)
         XCTAssertFalse(request.content.body.contains("2026-11-10"), "No raw ISO date in the banner")
-        XCTAssertEqual(request.content.sound, .default)
+        XCTAssertNotNil(request.content.sound, "Reminders play the Calshot chime (the system sound when the file is missing)")
+        XCTAssertNil(CalshotAlertSound.notificationSound(enabled: false), "No sound when alert sound is off")
         XCTAssertEqual(request.content.userInfo["taskID"] as? String, task.id.uuidString)
         XCTAssertEqual(request.identifier, "calshot.task.\(owner.uuidString).\(generation.uuidString).\(task.id.uuidString)")
         let trigger = try XCTUnwrap(request.trigger as? UNCalendarNotificationTrigger)

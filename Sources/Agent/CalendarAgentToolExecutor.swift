@@ -21,6 +21,8 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
     var taskImportReceipts: ((JSONValue) -> JSONValue)?
     var finishTaskImport: (() -> Void)?
     var listTasks: (() throws -> JSONValue)?
+    /// Waits for a task sync already in flight, so a task tool does not fail on a briefly busy task list.
+    var waitForTaskSync: (() async -> Void)?
     var selectedTaskContext: ((UUID) throws -> JSONValue)?
     /// Pure preflight; must never save a task or invoke a provider write.
     var prepareTaskMutation: ((AgentPreparedTaskMutation, UUID) async throws -> JSONValue)?
@@ -279,6 +281,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         if (current.location ?? "") != (target.location ?? "") { names.append("location") }
         if current.url != target.url { names.append("url") }
         if (current.notes ?? "") != (target.notes ?? "") { names.append("notes") }
+        if let alerts = target.alertMinutes, alerts != current.alertMinutes { names.append("alerts") }
         return names
     }
     private static func isNetwork(_ id: String) -> Bool { if case .direct = CalendarDestination.resolve(identifier: id) { return true }; return false }
@@ -300,6 +303,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         searched = [:]; ambiguousTargets = []; cancelledTargets = []; confirmedAnswers = []; voiceMode = false; askedChoice = [:]; lastSearchEvents = [:]
     }
 
+    static let taskTools: Set<String> = ["list_tasks", "get_tasks", "get_selected_event_context", "link_event_to_task", "update_tasks", "set_task_completion", "set_task_archived", "create_tasks"]
     func execute(name: String, arguments: JSONValue, sessionID: UUID) async -> String {
         // A write, including one approved in review while this call waits, makes cached reads stale.
         guard Self.writeTools.contains(name) else { return await perform(name: name, arguments: arguments, sessionID: sessionID) }
@@ -319,6 +323,10 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
         do {
             guard let fields = arguments.objectValue else { throw CalendarToolArgumentError("Arguments must be an object.") }
+            if Self.taskTools.contains(name) {
+                await waitForTaskSync?()
+                guard self.sessionID == sessionID, !sessionCancelled, !Task.isCancelled else { return #"{"cancelled":true}"# }
+            }
             switch name {
             case "get_conversation_context":
                 try CalendarToolDraftMapper.keys(fields, allowed: ["query", "limit"])
@@ -706,7 +714,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
                 return await commitCalendarProposals(name: name, destinationID: destination.id, destinationName: destination.name, rows: grantRows, retained: retained, extraSkipped: [], sessionID: sessionID)
             case "update_event", "delete_event":
                 let allowed: Set<String> = name == "delete_event" ? ["eventIdentifier", "reason"] :
-                    ["eventIdentifier", "title", "date", "startTime", "endTime", "allDay", "timeZone", "location", "url", "notes"]
+                    ["eventIdentifier", "title", "date", "startTime", "endTime", "allDay", "timeZone", "location", "url", "notes", "alerts"]
                 try CalendarToolDraftMapper.keys(fields, allowed: allowed)
                 guard let identifier = try CalendarToolDraftMapper.string(fields, "eventIdentifier", required: true, limit: 2000), !identifier.isEmpty else {
                     throw CalendarToolArgumentError("An event identifier is required.")
@@ -831,7 +839,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         guard ["update_tasks", "set_task_completion", "set_task_archived"].contains(name) else { throw CalendarToolArgumentError("Unknown task mutation.") }
         try CalendarToolDraftMapper.keys(fields, allowed: ["tasks"])
         guard let rows = fields["tasks"]?.arrayValue, !rows.isEmpty, rows.count <= 100 else { throw CalendarToolArgumentError("Provide 1–100 task changes.") }
-        let allowed: Set<String> = name == "set_task_completion" ? ["completed"] : name == "set_task_archived" ? ["archived"] : ["title", "dueDate", "dueTime", "timeZone", "notes"]
+        let allowed: Set<String> = name == "set_task_completion" ? ["completed"] : name == "set_task_archived" ? ["archived"] : ["title", "dueDate", "dueTime", "timeZone", "notes", "reminderMinutes", "reminderTime"]
         var seen = Set<UUID>()
         let patches = try rows.map { row -> AgentPreparedTaskMutation.Patch in
             guard let values = row.objectValue else { throw CalendarToolArgumentError("Each task change must be an object.") }
@@ -843,15 +851,19 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
             for (key, value) in patch {
                 if key == "completed" || key == "archived" {
                     guard value.boolValue != nil else { throw CalendarToolArgumentError("Task state must be a boolean.") }
+                } else if key == "reminderMinutes" {
+                    guard value == .null || value.numberValue.map({ CalshotTask.reminderChoices.contains(Int($0)) && $0 == $0.rounded() }) == true else {
+                        throw CalendarToolArgumentError("reminderMinutes must be one of \(CalshotTask.reminderChoices.map(String.init).joined(separator: ", ")) or null.")
+                    }
                 } else {
-                    let nullable = ["dueDate", "dueTime", "notes"].contains(key)
+                    let nullable = ["dueDate", "dueTime", "notes", "reminderTime"].contains(key)
                     let limit = key == "notes" ? 8000 : key == "title" ? 500 : key == "timeZone" ? 100 : key == "dueDate" ? 10 : 5
                     let text = try CalendarToolDraftMapper.string(patch, key, required: !nullable, limit: limit)
                     if let text {
                         if key == "dueDate", text.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) == nil {
                             throw CalendarToolArgumentError("A task date needs an explicit year in YYYY-MM-DD form. Leave missing dates unresolved.")
                         }
-                        if key == "dueTime", text.range(of: #"^([01]\d|2[0-3]):[0-5]\d$"#, options: .regularExpression) == nil { throw CalendarToolArgumentError("Use HH:mm for a task time.") }
+                        if key == "dueTime" || key == "reminderTime", text.range(of: #"^([01]\d|2[0-3]):[0-5]\d$"#, options: .regularExpression) == nil { throw CalendarToolArgumentError("Use HH:mm for a task time.") }
                         if key == "timeZone", TimeZone(identifier: text) == nil { throw CalendarToolArgumentError("Use a valid task timezone.") }
                         if key == "title", text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw CalendarToolArgumentError("A task title is required.") }
                     }
@@ -1064,6 +1076,7 @@ final class CalendarAgentToolExecutor: CalendarAgentToolExecuting {
         return .object(["eventIdentifier": .string(event.eventIdentifier), "title": .string(event.title),
             "start": .string(formatter.string(from: event.start)), "end": .string(formatter.string(from: event.end)),
             "isAllDay": .bool(event.isAllDay), "isFree": event.isFree.map(JSONValue.bool) ?? .null, "timeZone": event.timeZone.map(JSONValue.string) ?? .null,
-            "location": event.location.map(JSONValue.string) ?? .null, "calendarName": .string(event.calendarName)])
+            "location": event.location.map(JSONValue.string) ?? .null, "calendarName": .string(event.calendarName),
+            "alerts": event.alertMinutes.map { .array($0.map { .number(Double($0)) }) } ?? .null])
     }
 }

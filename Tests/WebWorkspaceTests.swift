@@ -1239,9 +1239,22 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertTrue(try failure(400, "Account changed on another device. Sync again; local changes are kept.").contains("merge"))
         XCTAssertTrue(try failure(401, "private response").contains("Sign in again"))
         XCTAssertTrue(try failure(503, "private response").contains("temporarily unavailable"))
+        XCTAssertTrue(try failure(400, "Invalid reminder.").contains("server update"))
         let unknown = try failure(400, "private response with sensitive details")
         XCTAssertTrue(unknown.contains("HTTP 400"))
         XCTAssertFalse(unknown.contains("sensitive"))
+    }
+    /// The task sync server must accept every reminder lead time the app offers, or one reminder blocks all task sync.
+    func testTaskSyncServerAcceptsEveryReminderChoice() throws {
+        let migrations = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("supabase/migrations")
+        let files = try FileManager.default.contentsOfDirectory(atPath: migrations.path).filter { $0.hasSuffix(".sql") }.sorted()
+        let latest = try XCTUnwrap(files.reversed().lazy.compactMap { name -> String? in
+            let sql = try? String(contentsOf: migrations.appendingPathComponent(name), encoding: .utf8)
+            return sql?.contains("raise exception 'Invalid reminder.'") == true ? sql : nil
+        }.first)
+        let check = try XCTUnwrap(latest.range(of: #"task->>'reminderMinutes' not in \(([^)]*)\)"#, options: .regularExpression))
+        let accepted = Set(latest[check].split(separator: "(").last!.dropLast().split(separator: ",").compactMap { Int($0.trimmingCharacters(in: CharacterSet(charactersIn: "' "))) })
+        XCTAssertEqual(accepted, Set(CalshotTask.reminderChoices))
     }
     func testAccountSyncInterruptedWritesCannotRecoverAgainstAnotherDevicesCalendar() throws {
         let store = MemoryStore(directoryURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))

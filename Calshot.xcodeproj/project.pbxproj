@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0A11A0000000000000000007 /* CalshotAlertTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A11A0000000000000000008 /* CalshotAlertTests.swift */; };
+		0A11A0000000000000000005 /* CalshotAlert.wav in Resources */ = {isa = PBXBuildFile; fileRef = 0A11A0000000000000000006 /* CalshotAlert.wav */; };
+		0A11A0000000000000000003 /* CalshotAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A11A0000000000000000004 /* CalshotAlerts.swift */; };
+		0A11A0000000000000000001 /* EventAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A11A0000000000000000002 /* EventAlerts.swift */; };
         CAFE00000000000000000007 = {isa = PBXBuildFile; fileRef = CAFE00000000000000000008; };
         CAFE00000000000000000005 = {isa = PBXBuildFile; fileRef = CAFE00000000000000000006; };
         CAFE00000000000000000001 = {isa = PBXBuildFile; fileRef = CAFE00000000000000000002; };
@@ -82,6 +86,7 @@
 		B30000000000000000000005 /* AppAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005; };
 		C30000000000000000000001 /* CalshotAccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000001; };
 		C30000000000000000000002 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = C90000000000000000000002; };
+		C30000000000000000000004 /* Realtime in Frameworks */ = {isa = PBXBuildFile; productRef = C90000000000000000000004; };
         F30000000000000000000001 = {isa = PBXBuildFile; fileRef = F20000000000000000000001; };
         F30000000000000000000002 = {isa = PBXBuildFile; productRef = F90000000000000000000002; };
 /* End PBXBuildFile section */
@@ -97,6 +102,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0A11A0000000000000000008 /* CalshotAlertTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalshotAlertTests.swift"; path = "Tests/CalshotAlertTests.swift"; sourceTree = SOURCE_ROOT; };
+		0A11A0000000000000000006 /* CalshotAlert.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = "CalshotAlert.wav"; path = "Resources/CalshotAlert.wav"; sourceTree = SOURCE_ROOT; };
+		0A11A0000000000000000004 /* CalshotAlerts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalshotAlerts.swift"; path = "Sources/Notifications/CalshotAlerts.swift"; sourceTree = SOURCE_ROOT; };
+		0A11A0000000000000000002 /* EventAlerts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "EventAlerts.swift"; path = "Sources/Calendar/EventAlerts.swift"; sourceTree = SOURCE_ROOT; };
         CAFE00000000000000000008 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Sources/Voice/VoiceMicrophoneCapture.m; sourceTree = SOURCE_ROOT; };
         CAFE00000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Voice/VoiceInputSettings.swift; sourceTree = SOURCE_ROOT; };
         CAFE00000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Sources/Voice/VoiceAudioBoundary.m; sourceTree = SOURCE_ROOT; };
@@ -182,6 +191,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C30000000000000000000002 /* Auth in Frameworks */,
+				C30000000000000000000004 /* Realtime in Frameworks */,
                 F30000000000000000000002,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -302,6 +312,8 @@
 				A2000000000000000000001A /* CalendarActionCoordinator.swift */,
 				A20000000000000000000019 /* CalendarActionProposal.swift */,
 				C0FFEE0A1B2C3D4E5F60718F /* RecentChanges.swift */,
+				0A11A0000000000000000004 /* CalshotAlerts.swift */,
+				0A11A0000000000000000002 /* EventAlerts.swift */,
 				A20000000000000000000006 /* CalendarDestination.swift */,
 				A2000000000000000000002B /* ConnectedCalendarService.swift */,
 				A20000000000000000000002 /* EventDraft.swift */,
@@ -398,6 +410,7 @@
 				A20000000000000000000026 /* CalendarOperationTests.swift */,
 				A20000000000000000000009 /* EventDraftParserTests.swift */,
 				A20000000000000000000011 /* MemoryStoreTests.swift */,
+				0A11A0000000000000000008 /* CalshotAlertTests.swift */,
 				A20000000000000000000018 /* OpenAIStreamTests.swift */,
 				B20000000000000000000004 /* WebWorkspaceTests.swift */,
 			);
@@ -409,6 +422,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000012 /* Assets.xcassets */,
+				0A11A0000000000000000006 /* CalshotAlert.wav */,
 			);
 			name = "Resources";
 			path = "Resources";
@@ -440,7 +454,7 @@
 			dependencies = (
 			);
 			name = Calshot;
-			packageProductDependencies = (C90000000000000000000002, F90000000000000000000002);
+			packageProductDependencies = (C90000000000000000000002, C90000000000000000000004, F90000000000000000000002);
 			productName = Calshot;
 			productReference = A2000000000000000000000A /* Calshot.app */;
 			productType = "com.apple.product-type.application";
@@ -471,6 +485,7 @@
 /* End XCRemoteSwiftPackageReference section */
 /* Begin XCSwiftPackageProductDependency section */
 		C90000000000000000000002 = {isa = XCSwiftPackageProductDependency; package = C90000000000000000000001; productName = Auth; };
+		C90000000000000000000004 = {isa = XCSwiftPackageProductDependency; package = C90000000000000000000001; productName = Realtime; };
         F90000000000000000000002 = {isa = XCSwiftPackageProductDependency; package = F90000000000000000000001; productName = Sparkle; };
 /* End XCSwiftPackageProductDependency section */
 
@@ -516,6 +531,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A30000000000000000000010 /* Assets.xcassets in Resources */,
+				0A11A0000000000000000005 /* CalshotAlert.wav in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -581,6 +597,8 @@
 				A3000000000000000000001A /* CalendarActionCoordinator.swift in Sources */,
 				A30000000000000000000019 /* CalendarActionProposal.swift in Sources */,
 				C0FFEE0A1B2C3D4E5F60718E /* RecentChanges.swift in Sources */,
+				0A11A0000000000000000003 /* CalshotAlerts.swift in Sources */,
+				0A11A0000000000000000001 /* EventAlerts.swift in Sources */,
 				A30000000000000000000001 /* CalshotApp.swift in Sources */,
 				B30000000000000000000005 /* AppAppearance.swift in Sources */,
 				B30000000000000000000003 /* WebWorkspaceAssets.swift in Sources */,
@@ -627,6 +645,7 @@
 				A30000000000000000000009 /* EventDraftParserTests.swift in Sources */,
 				B30000000000000000000004 /* WebWorkspaceTests.swift in Sources */,
 				A3000000000000000000000F /* MemoryStoreTests.swift in Sources */,
+				0A11A0000000000000000007 /* CalshotAlertTests.swift in Sources */,
 				A30000000000000000000016 /* OpenAIStreamTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -1,3 +1,4 @@
+import { alertSummary } from "../alertPresentation";
 import { useRef, useState } from "react";
 import {
   ArrowRight,
@@ -238,6 +239,11 @@ export function Review({ state }: { state: AppState }) {
                   )}
                   <h3>{item.draft.title || "Untitled event"}</h3>
                   <div className="event-time">{eventWhen(item)}</div>
+                  {item.draft.alertMinutes != null && (item.operation === "create" || (item.operation === "update" && item.draft.changedFieldNames?.includes("alerts"))) && (
+                    <p className="event-time">
+                      Alerts: {item.operation === "update" && item.before ? `${alertSummary(item.before.alertMinutes)} → ` : ""}{alertSummary(item.draft.alertMinutes)}
+                    </p>
+                  )}
                   {(item.operation === "move" || item.operation === "update") && (
                     <p className="event-time">
                       {item.operation === "move"

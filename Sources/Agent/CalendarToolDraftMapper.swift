@@ -111,7 +111,7 @@ enum CalendarToolDraftMapper {
     static func create(_ value: JSONValue, context: String, confirmedContext: String = "", now: Date = .now,
                        spoken: Bool = false, typicalMinutes: ((String) -> Int?)? = nil) throws -> EventDraft {
         guard let fields = value.objectValue else { throw CalendarToolArgumentError("Each event must be an object.") }
-        try keys(fields, allowed: ["title", "date", "startTime", "endTime", "allDay", "timeZone", "location", "url", "notes", "evidence", "yearInferred", "dateAmbiguous"])
+        try keys(fields, allowed: ["title", "date", "startTime", "endTime", "allDay", "timeZone", "location", "url", "notes", "evidence", "yearInferred", "dateAmbiguous", "alerts"])
         guard let title = try string(fields, "title", required: true, limit: 500), !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CalendarToolArgumentError("Every event needs a title.") }
         let dateValue = try string(fields, "date", limit: 20)
         let startTime = try minutes(string(fields, "startTime", limit: 10))
@@ -124,6 +124,7 @@ enum CalendarToolDraftMapper {
         let notes = try string(fields, "notes")
         let yearInferred = try boolean(fields, "yearInferred")
         let dateAmbiguous = try boolean(fields, "dateAmbiguous")
+        let alerts = try EventAlerts.argument(fields["alerts"])
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = zoneName.flatMap(TimeZone.init(identifier:)) ?? .current
         var day = try date(dateValue, calendar: calendar)
@@ -184,9 +185,11 @@ enum CalendarToolDraftMapper {
         }
         else { end = nil }
         if !allDay && endTime == nil && !defaultedEnd { issues.append(.missingEndTime) }
-        return EventDraft(title: title, startDate: start ?? (startTime == nil ? day : nil), endDate: end, isAllDay: allDay,
+        var draft = EventDraft(title: title, startDate: start ?? (startTime == nil ? day : nil), endDate: end, isAllDay: allDay,
                           timeZoneIdentifier: zoneName ?? calendar.timeZone.identifier, location: location, url: validURL(rawURL), notes: notes,
                           sourceText: evidence, confidence: issues.isEmpty ? 0.9 : 0.5, ambiguities: issues)
+        draft.alertMinutes = alerts
+        return draft
     }
 
     static func update(_ fields: [String: JSONValue], before: EventDraft) throws -> EventDraft {
@@ -243,6 +246,8 @@ enum CalendarToolDraftMapper {
         }
         if fields["location"] != nil { draft.location = try string(fields, "location", limit: 1000) }
         if fields["notes"] != nil { draft.notes = try string(fields, "notes") }
+        // null or [] removes every alert.
+        if fields["alerts"] != nil { draft.alertMinutes = try EventAlerts.argument(fields["alerts"]) ?? [] }
         if fields["url"] != nil {
             let value = try string(fields, "url", limit: 2048)
             draft.url = validURL(value)

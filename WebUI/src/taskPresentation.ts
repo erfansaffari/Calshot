@@ -71,14 +71,15 @@ export function taskDueLabel(task: CalshotTask, today = localDay()) {
   };
 }
 
+/** Lead times native validation accepts (CalshotTask.reminderChoices). */
+export const TASK_REMINDER_CHOICES = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
 export function reminderLabel(minutes: number) {
-  return minutes === 0
-    ? "At deadline"
-    : minutes === 60
-      ? "1 hour before"
-      : minutes === 1440
-        ? "1 day before"
-        : minutes + " min before";
+  if (minutes === 0) return "At deadline";
+  const unit = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many} before`;
+  if (minutes % 10080 === 0) return unit(minutes / 10080, "week", "weeks");
+  if (minutes % 1440 === 0) return unit(minutes / 1440, "day", "days");
+  if (minutes % 60 === 0) return unit(minutes / 60, "hour", "hours");
+  return minutes + " min before";
 }
 
 export function taskCounts(items: CalshotTask[], today = localDay()) {

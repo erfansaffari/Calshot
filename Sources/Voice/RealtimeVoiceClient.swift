@@ -340,6 +340,13 @@ final class RealtimeVoiceClient: ObservableObject {
         outstandingTools.remove(callID)
         if outstandingTools.isEmpty { responsePending = false; try await requestResponse() }
     }
+    /// A native proactive alert: added as system context, then one spoken response that cannot call tools.
+    func sendAnnouncement(_ text: String) async throws {
+        try await sendContext(text)
+        guard !responseInFlight else { responsePending = true; return }
+        responseInFlight = true
+        do { try await send(.responseCreate, ["response": ["tool_choice": "none"]]) } catch { responseInFlight = false; throw error }
+    }
     func requestResponse() async throws {
         try requireReady()
         if responseInFlight { responsePending = true; return }

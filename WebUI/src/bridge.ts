@@ -311,6 +311,12 @@ function simulate(message: Command) {
       headline: approved ? "Preview: task change saved" : "Nothing changed",
       rows: approved ? (state.taskReview?.rows || []).slice(0, 12).map((r) => ({ id: r.id, title: r.title, status: "saved" })) : [] } });
   } else if (message.action === "loadAgentPermissions") return;
+  else if (message.action === "notificationPreferences" && state.notifications) {
+    const next = { ...state.notifications };
+    for (const key of ["enabled", "sound", "spoken", "smartAlerts"] as const) if (typeof message[key] === "boolean") next[key] = message[key] as boolean;
+    update({ ...state, notifications: next });
+  }
+  else if (message.action === "previewAlert" || message.action === "refreshAlerts") return;
   else if (message.action === "saveAutonomy" && state.agentPermissions) {
     const on = Boolean(message.enabled), p = state.agentPermissions;
     update({ ...state, agentPermissions: { ...p, revision: p.revision + 2, notice: "Preview only. Nothing was saved.",

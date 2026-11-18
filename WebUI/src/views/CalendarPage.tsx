@@ -1,3 +1,4 @@
+import { alertChoices, alertSummary } from "../alertPresentation";
 import { friendCalendars } from "../types";
 import {
   useEffect,
@@ -874,6 +875,7 @@ export function CalendarPage({
                 {detail.location}
               </p>
             )}
+            {detail.alertMinutes != null && detail.alertMinutes.length > 0 && <p className="event-time">Alerts: {alertSummary(detail.alertMinutes)}</p>}
             {detail.notes && <p className="event-notes">{detail.notes}</p>}
             {detail.timeZone && <small>{detail.timeZone}</small>}
             {detail.calendarIdentifier.startsWith("shared:") && <Badge>Shared · Read-only</Badge>}
@@ -1001,6 +1003,7 @@ function NewEvent({
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [allDay, setAllDay] = useState(false);
+  const [alert, setAlert] = useState("default");
   const [calendarID, setCalendarID] = useState(
     writable.find((c) => c.id === state.selectedCalendarID)?.id ||
       writable[0]?.id ||
@@ -1046,6 +1049,7 @@ function NewEvent({
           endTime: end,
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           calendarID,
+          ...alertField(alert),
         },
         ...(allowDuplicate ? { allowDuplicate: true } : {}),
       });
@@ -1118,6 +1122,7 @@ function NewEvent({
           </div>
         )}
         {invalid === "time" && <InlineError message={error} />}
+        <AlertSelect value={alert} allDay={allDay} onChange={setAlert} />
         <label>
           Calendar
           <select
@@ -1178,7 +1183,29 @@ function eventFormDefaults(event: CalendarEvent) {
     location: event.location || "",
     url: event.url || "",
     notes: event.notes || "",
+    alert: "keep",
   };
+}
+
+/** The alert sent to native code: omitted to keep the calendar's alerts, [] for none, or one lead time. */
+function alertField(choice: string): { alerts?: number[] } {
+  if (choice === "default" || choice === "keep") return {};
+  return { alerts: choice === "none" ? [] : [Number(choice)] };
+}
+
+/** One alert, synced to the calendar account. Existing alerts are kept unless the user picks another. */
+function AlertSelect({ value, allDay, current, onChange }: { value: string; allDay: boolean; current?: number[] | null; onChange: (v: string) => void }) {
+  return (
+    <label>
+      Alert
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {current === undefined ? <option value="default">Calendar default</option>
+          : <option value="keep">{current == null ? "Keep current alerts" : `Keep: ${alertSummary(current)}`}</option>}
+        <option value="none">None</option>
+        {alertChoices(allDay).map(([minutes, label]) => <option key={minutes} value={String(minutes)}>{label}</option>)}
+      </select>
+    </label>
+  );
 }
 
 function DirectEventEditor({
@@ -1233,6 +1260,7 @@ function DirectEventEditor({
           location: form.location,
           url: form.url,
           notes: form.notes,
+          ...alertField(form.alert),
         },
       });
       onSaved();
@@ -1334,6 +1362,7 @@ function DirectEventEditor({
             onChange={(e) => change("notes", e.target.value)}
           />
         </label>
+        <AlertSelect value={form.alert} allDay={form.allDay} current={event.alertMinutes ?? null} onChange={(v) => change("alert", v)} />
         {(!invalid || !["title", "date", "time"].includes(invalid)) && (
           <InlineError message={error} />
         )}

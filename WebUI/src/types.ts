@@ -11,6 +11,9 @@ export interface Draft {
   location?: string;
   url?: string;
   notes?: string;
+  /** Provider alerts in minutes before the start; absent means the calendar's own default. */
+  alertMinutes?: number[] | null;
+  changedFieldNames?: string[] | null;
   sourceText: string;
   ambiguities: string[];
 }
@@ -153,6 +156,8 @@ export interface CalendarEvent {
   url?: string;
   notes?: string;
   isRecurring?: boolean | null;
+  /** Provider alerts in minutes before the start; null when the provider did not say. */
+  alertMinutes?: number[] | null;
 }
 export interface CalendarViewState {
   contentToken?: string;
@@ -225,7 +230,15 @@ export interface GlassAppearance {
   blur: number;
   contrast: number;
 }
+export interface UpcomingAlert { id: string; kind: "event" | "task"; title: string; start: string; fireAt: string; lead: number; calendarName?: string | null; snoozed: boolean; join: boolean }
+/** Device-local alert choices and the next day of alerts, from native code. */
+export interface NotificationsState {
+  enabled: boolean; sound: boolean; spoken: boolean; smartAlerts: boolean;
+  systemPermission: "allowed" | "denied" | "notDetermined" | "unknown";
+  voiceReady: boolean; error?: string | null; lastRefresh?: string | null; upcoming: UpcomingAlert[];
+}
 export interface AppState {
+  notifications?: NotificationsState;
   displayAccessibility?: { reducedTransparency: boolean; increasedContrast: boolean };
   /** Native presentation only; omitted in the full workspace and browser fixtures. */
   notchExpanded?: boolean;
@@ -272,7 +285,7 @@ export interface AppState {
     error?: string;
   };
   aiContextInspection?: { capturedAt: string; sections: { title: string; detail: string; text: string }[] } | null;
-  settingsSection?: "general" | "calendars" | "friends" | "ai" | "voice" | "privacy";
+  settingsSection?: "general" | "calendars" | "friends" | "ai" | "voice" | "notifications" | "privacy";
   calendarView?: CalendarViewState;
   calendarContentToken?: string;
   /** From the provider receipt of the last direct Calendar change. */

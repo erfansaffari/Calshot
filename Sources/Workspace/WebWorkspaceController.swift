@@ -383,8 +383,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             "thisDateOnly": .bool(result.targetOccurrence?.isRecurring == true),
         ])
     }
-    private static let directCreateFields: Set<String> = ["title", "date", "allDay", "startTime", "endTime", "timeZone", "calendarID", "location", "url", "notes"]
-    private static let directUpdateFields: Set<String> = ["title", "date", "allDay", "startTime", "endTime", "timeZone", "location", "url", "notes"]
+    private static let directCreateFields: Set<String> = ["title", "date", "allDay", "startTime", "endTime", "timeZone", "calendarID", "location", "url", "notes", "alerts"]
+    private static let directUpdateFields: Set<String> = ["title", "date", "allDay", "startTime", "endTime", "timeZone", "location", "url", "notes", "alerts"]
     private func writableCalendarInfo(_ id: String) throws -> CalendarDestinationInfo {
         guard !id.hasPrefix("shared:"), !id.hasPrefix("friend:"),
               let calendar = model.destinations.first(where: { $0.id == id && !$0.isReadOnly && !$0.id.hasPrefix("unavailable:") }) else {
@@ -465,12 +465,24 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         guard urlText == nil || (url?.host != nil && ["http", "https"].contains(url?.scheme?.lowercased() ?? "")) else {
             throw CalendarToolArgumentError("Enter a valid https or http link.")
         }
-        return EventDraft(title: title, startDate: start, endDate: end, isAllDay: allDay,
+        var draft = EventDraft(title: title, startDate: start, endDate: end, isAllDay: allDay,
                           timeZoneIdentifier: zoneID,
                           location: try optionalString(fields, "location", limit: 500),
                           url: url,
                           notes: try optionalString(fields, "notes", limit: 8000),
                           sourceText: sourceText, confidence: 1, ambiguities: [])
+        // Absent or null keeps the calendar's alerts; a list replaces them ([] removes every alert).
+        if let raw = fields["alerts"], !(raw is NSNull) {
+            guard let items = raw as? [Any], items.count <= EventAlerts.maximumCount else { throw CalendarToolArgumentError("Choose up to five alerts.") }
+            let minutes = try items.map { item -> Int in
+                guard let number = item as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue == number.doubleValue.rounded(), number.intValue >= 0 else {
+                    throw CalendarToolArgumentError("Choose alerts from the list.")
+                }
+                return number.intValue
+            }
+            draft.alertMinutes = try EventAlerts.normalized(minutes)
+        }
+        return draft
     }
     private func changedFields(before: EventDraft, after: EventDraft) -> [String] {
         var fields: [String] = []
@@ -482,6 +494,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
         if before.location != after.location { fields.append("location") }
         if before.url != after.url { fields.append("url") }
         if before.notes != after.notes { fields.append("notes") }
+        if let alerts = after.alertMinutes, alerts != before.alertMinutes { fields.append("alerts") }
         return Array(Set(fields)).sorted()
     }
     nonisolated private static func browseEvents(service: any CalendarDestinationService, start: Date, end: Date, calendarID: String, depth: Int = 0) async throws -> (events: [CalendarEventSnapshot], truncated: Bool) {
@@ -730,7 +743,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             model.voiceSession.stop()
             try requireIdle()
             model.cancelCalendarConnection()
-            model.accountSyncTask?.cancel(); model.accountSyncTimer?.invalidate()
+            model.accountSyncTask?.cancel(); model.accountSyncTimer?.invalidate(); model.resetSyncRevisions()
             model.voiceInput.stopTest()
             try await model.account.signOut()
             model.accountSyncDevices = [:]; model.accountSyncError = nil; model.accountSyncLastDate = nil
@@ -759,13 +772,14 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             guard let raw = body["page"] as? String, let page = WorkspaceSection(rawValue: raw) else { return }
             if page == .settings {
                 let section = body["section"] as? String ?? "general"
-                guard ["general", "calendars", "friends", "ai", "voice", "privacy"].contains(section) else { throw CalendarToolArgumentError("Unknown settings section.") }
+                guard ["general", "calendars", "friends", "ai", "voice", "notifications", "privacy"].contains(section) else { throw CalendarToolArgumentError("Unknown settings section.") }
                 settingsSection = section
             }
             if page != .settings || settingsSection != "voice" { model.voiceInput.stopTest() }
             else { model.voiceInput.refresh() }
             model.workspaceSelection = page
             if page == .settings && settingsSection == "friends" { Task { await model.refreshSharing() } }
+            if page == .settings && settingsSection == "notifications" { model.alertCenter.refresh(); Task { await model.alertCenter.refreshSystemPermission() } }
             if page == .tasks { model.loadTasks(); Task { await model.recoverDirectCalendarWrites(); await model.syncTasks() } }
             if page == .library { model.refreshMemory() }
             if page == .settings && ["privacy", "ai"].contains(settingsSection) && !isNotch { Task { _ = try? await model.openAgentPermissionStore() } }
@@ -1085,6 +1099,30 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             guard CalshotModel.notchAvailable else { throw CalendarToolArgumentError("The notch is turned off in this version.") }
             model.notchEnabled = enabled
         case "copyCaptures": CaptureClipboard.automaticallyCopyCapture = body["enabled"] as? Bool == true
+        case "notificationPreferences":
+            // Device-local choices from Settings only; exact keys and real booleans, never inferred.
+            guard !isNotch, Set(body.keys).isSubset(of: ["id", "action", "enabled", "sound", "spoken", "smartAlerts"]) else { throw CalendarToolArgumentError("Change notifications in Settings.") }
+            var next = model.alertCenter.preferences
+            for key in ["enabled", "sound", "spoken", "smartAlerts"] {
+                guard let value = body[key] else { continue }
+                guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { throw CalendarToolArgumentError("Choose on or off.") }
+                switch key {
+                case "enabled": next.enabled = number.boolValue
+                case "sound": next.sound = number.boolValue
+                case "spoken": next.spoken = number.boolValue
+                default: next.smartAlerts = number.boolValue
+                }
+            }
+            model.alertCenter.update(next)
+        case "previewAlert":
+            guard !isNotch else { throw CalendarToolArgumentError("Preview alerts in Settings.") }
+            model.alertCenter.presentSample()
+        case "requestNotificationPermission":
+            guard !isNotch else { throw CalendarToolArgumentError("Allow notifications in Settings.") }
+            await model.alertCenter.requestSystemPermission()
+        case "notificationSystemSettings":
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
+        case "refreshAlerts": model.alertCenter.refresh(); await model.alertCenter.refreshSystemPermission()
         case "saveAPIKey":
             try requireIdle(); try model.saveOpenAIAPIKey(body["key"] as? String ?? "")
         case "testAI": notice = try await model.testOpenAIConnection()

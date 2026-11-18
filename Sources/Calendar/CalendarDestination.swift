@@ -34,6 +34,8 @@ struct CalendarDestinationInfo: Sendable, Equatable, Identifiable {
     var systemAccountIdentifier: String?
     var sourceName: String?
     var timeZone: String?
+    /// Google's per-calendar default alerts, used when an event keeps the calendar default.
+    var defaultAlertMinutes: [Int]?
 
     enum Provider: String, Sendable { case apple, google, outlook, other }
 
@@ -112,11 +114,15 @@ public struct CalendarEventSnapshot: Codable, Sendable {
     public var hasAttendees: Bool? = nil
     /// Provider modification time; absence does not imply an unchanged source.
     public var modifiedAt: Date? = nil
+    /// Alerts the provider will show, in minutes before the start. nil when the provider did not say.
+    public var alertMinutes: [Int]? = nil
 
     public var draft: EventDraft {
-        EventDraft(title: title, startDate: start, endDate: end, isAllDay: isAllDay,
+        var draft = EventDraft(title: title, startDate: start, endDate: end, isAllDay: isAllDay,
                    timeZoneIdentifier: timeZone, location: location, url: url, notes: notes,
                    sourceText: "Existing calendar event", confidence: 1, ambiguities: [])
+        draft.alertMinutes = alertMinutes
+        return draft
     }
 }
 

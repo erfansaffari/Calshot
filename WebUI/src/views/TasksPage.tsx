@@ -19,6 +19,7 @@ import {
   duplicatePrefix,
   localDay,
   reminderLabel,
+  TASK_REMINDER_CHOICES,
   taskCounts,
   taskDueLabel,
   taskNeedsPublication,
@@ -735,7 +736,7 @@ function TaskEditor({
   const intent = linked ? "existing" : intentChoice ?? (task?.intentProvenance === "suppressed" ? "none" : task?.calendarIntent === "none" && task.intentProvenance === "defaulted" ? "new" : task?.calendarIntent ?? "new");
   const publishes = intent === "new";
   const [more, setMore] = useState(
-    readOnly || Boolean(task?.notes) || task?.reminderMinutes != null,
+    readOnly || Boolean(task?.notes),
   );
   const [error, setError] = useState("");
   const [titleError, setTitleError] = useState("");
@@ -768,7 +769,6 @@ function TaskEditor({
           return;
         }
         if (day && time === "" && reminder !== "none" && !reminderTime) {
-          setMore(true);
           setError("Choose a time for the reminder.");
           return;
         }
@@ -861,6 +861,32 @@ function TaskEditor({
           </label>
         )}
       </div>
+      <div className="task-form-grid">
+        <label>
+          {readOnly ? "Mac reminder" : "Remind me"}
+          <select
+            value={reminder}
+            disabled={locked || !day}
+            aria-describedby={day ? undefined : "task-reminder-hint"}
+            onChange={(e) => setReminder(e.target.value)}
+          >
+            <option value="none">No reminder</option>
+            {TASK_REMINDER_CHOICES.map((minutes) => <option key={minutes} value={String(minutes)}>{reminderLabel(minutes)}</option>)}
+          </select>
+        </label>
+        {day && !time && reminder !== "none" && (
+          <label>
+            Reminder time
+            <input
+              type="time"
+              value={reminderTime}
+              disabled={locked}
+              onChange={(e) => setReminderTime(e.target.value)}
+            />
+          </label>
+        )}
+      </div>
+      {!day && !locked && <p className="fine-print" id="task-reminder-hint">Add a due date to set a reminder.</p>}
       {!linked && (
         <label>
           Calendar use
@@ -908,7 +934,7 @@ function TaskEditor({
         onClick={() => setMore(!more)}
       >
         <ChevronRight size={14} />
-        Notes{day ? " & reminder" : ""}
+        Notes
       </button>
       {more && (
         <div className="task-more-fields" id="task-more-fields">
@@ -922,34 +948,6 @@ function TaskEditor({
               onChange={(e) => setNotes(e.target.value)}
             />
           </label>
-          {day && (
-            <div className="task-form-grid">
-              <label>
-                {readOnly ? "Mac reminder" : "Remind on this Mac"}
-                <select
-                  value={reminder}
-                  disabled={locked}
-                  onChange={(e) => setReminder(e.target.value)}
-                >
-                  <option value="none">No reminder</option>
-                  <option value="0">At deadline</option>
-                  <option value="60">1 hour before</option>
-                  <option value="1440">1 day before</option>
-                </select>
-              </label>
-              {!time && reminder !== "none" && (
-                <label>
-                  Reminder time
-                  <input
-                    type="time"
-                    value={reminderTime}
-                    disabled={locked}
-                    onChange={(e) => setReminderTime(e.target.value)}
-                  />
-                </label>
-              )}
-            </div>
-          )}
         </div>
       )}
       {task?.sourceText && (

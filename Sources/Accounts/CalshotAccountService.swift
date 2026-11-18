@@ -3,6 +3,7 @@ import AuthenticationServices
 import Combine
 import Foundation
 import Auth
+import Realtime
 
 /// Calshot identity is separate from calendar OAuth and AI billing credentials.
 /// Supabase Auth owns PKCE, verification and refresh; sessions stay in Keychain.
@@ -29,6 +30,8 @@ final class CalshotAccountService: ObservableObject {
     private let webAuthentication = AccountWebAuthentication()
     private let client: AuthClient?
     private var observer: Task<Void, Never>?
+    private var realtime: RealtimeClientV2?
+    private var revisionWatch: Task<Void, Never>?
     private var generation = UUID()
     var requiresLogin: Bool { enabled && userID == nil }
     var canUseWorkspace: Bool { !enabled || (userID != nil && onboarded && phase != "passwordRecovery") }
@@ -166,10 +169,44 @@ final class CalshotAccountService: ObservableObject {
         request.httpBody = try JSONEncoder().encode(fields)
         return request
     }
+    /// Listens for this account's sync revisions over Realtime. Only the small `sync_revisions` row travels, never
+    /// a document. If the subscription fails, nothing is delivered and the periodic check keeps sync working.
+    func watchSyncRevisions(user: UUID, onChange: @escaping @MainActor (SyncRevisions) -> Void) {
+        stopWatchingSyncRevisions()
+        guard let client, userID == user else { return }
+        let realtime = RealtimeClientV2(url: Self.projectURL.appendingPathComponent("realtime/v1"),
+            options: RealtimeClientOptions(headers: ["apikey": Self.publishableKey], accessToken: { try await client.session.accessToken }))
+        self.realtime = realtime
+        let owner = user.uuidString.lowercased()
+        revisionWatch = Task { @MainActor [weak self] in
+            let channel = realtime.channel("sync-revisions-" + owner)
+            let changes = channel.postgresChange(AnyAction.self, schema: "public", table: "sync_revisions", filter: "user_id=eq." + owner)
+            do { try await channel.subscribeWithError() } catch { return }
+            for await change in changes {
+                guard !Task.isCancelled, let self, self.userID == user else { return }
+                let record: [String: AnyJSON]
+                switch change {
+                case .insert(let action): record = action.record
+                case .update(let action): record = action.record
+                default: continue
+                }
+                let number = { (key: String) in record[key]?.intValue ?? record[key]?.doubleValue.map { Int($0) } ?? Int(record[key]?.stringValue ?? "") }
+                guard let account = number("account"), let tasks = number("tasks"), let knowledge = number("knowledge") else { continue }
+                onChange(SyncRevisions(account: account, tasks: tasks, knowledge: knowledge))
+            }
+        }
+    }
+    /// Refreshes the Realtime token after the session renews; sends nothing when it is unchanged.
+    func refreshSyncRevisionsAuth() async { await realtime?.setAuth() }
+    func stopWatchingSyncRevisions() {
+        revisionWatch?.cancel(); revisionWatch = nil
+        if let realtime { Task { await realtime.removeAllChannels(); realtime.disconnect() } }
+        realtime = nil
+    }
     static let knowledgeRPCNames: Set<String> = ["read_personal_knowledge", "write_personal_knowledge", "clear_personal_knowledge"]
     static let sharingRPCNames: Set<String> = ["read_calendar_sharing", "publish_calendar", "request_calendar_share", "respond_calendar_request", "manage_calendar_request", "withdraw_calendar", "calendar_publication_status", "read_shared_calendar", "search_friend_calendars"]
     func syncRPC<T: Decodable>(_ name: String, body: JSONValue, user: UUID) async throws -> T {
-        guard let client, userID == user, (["read_task_state", "write_task_state", "read_task_state_v2", "write_task_state_v2", "read_account_state", "write_account_state", "read_mac_calendar_sync", "set_mac_calendar_sync", "write_mac_calendar_snapshot", "disable_mac_calendar_sync"].contains(name) || Self.sharingRPCNames.contains(name) || Self.knowledgeRPCNames.contains(name)) else { throw CancellationError() }
+        guard let client, userID == user, (["read_task_state", "write_task_state", "read_task_state_v2", "write_task_state_v2", "read_account_state", "write_account_state", "read_sync_revisions", "read_mac_calendar_sync", "set_mac_calendar_sync", "write_mac_calendar_snapshot", "disable_mac_calendar_sync"].contains(name) || Self.sharingRPCNames.contains(name) || Self.knowledgeRPCNames.contains(name)) else { throw CancellationError() }
         let session = try await client.session
         guard userID == user, session.user.id == user else { throw CancellationError() }
         var request = URLRequest(url: Self.projectURL.appendingPathComponent("rest/v1/rpc/" + name))
@@ -222,6 +259,8 @@ final class CalshotAccountService: ObservableObject {
             return "Your account changed during sync. Sync again to merge the latest changes." + kept
         case "Invalid history metadata. Images remain local.", "Invalid account sync document.", "Invalid account preferences.", "Invalid device.", "Invalid connection metadata.":
             return "The sync server rejected this app’s data format. Account sync needs a compatibility fix; retrying your connection won’t resolve it." + kept
+        case "Invalid reminder.":
+            return "The sync server doesn’t accept this task reminder yet: it needs Calshot’s latest server update. Until then, choose At due time, 1 hour before or 1 day before." + kept
         case "Account sync limit reached. Your local history is kept.":
             return "Your account exceeds the cloud sync limit." + kept
         default:

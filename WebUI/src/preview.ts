@@ -474,3 +474,19 @@ if (scenario?.startsWith("voice-input")) {
     testState: scenario === "voice-input-testing" ? "testing" : scenario === "voice-input-error" ? "failed" : "idle", detectedSound: false,
     error: scenario === "voice-input-error" ? "The selected microphone is unavailable. Reconnect it or choose another microphone in Settings → Voice." : null };
 }
+
+// Settings → Notifications with fictional upcoming alerts; nothing reads a calendar.
+preview.notifications = { enabled: true, sound: true, spoken: false, smartAlerts: true, systemPermission: "notDetermined", voiceReady: false,
+  error: null, lastRefresh: new Date().toISOString(), upcoming: [] };
+if (scenario?.startsWith("notifications")) {
+  preview.page = "settings"; preview.settingsSection = "notifications";
+  const at = (minutes: number) => new Date(Date.now() + minutes * 60000).toISOString();
+  preview.notifications = { ...preview.notifications, spoken: scenario === "notifications-voice",
+    systemPermission: scenario === "notifications-error" ? "denied" : "allowed",
+    error: scenario === "notifications-error" ? "Couldn’t read Fictional Work. Alerts from it may be missing until it reconnects." : null,
+    upcoming: scenario === "notifications-empty" ? [] : [
+      { id: "a1", kind: "event", title: "Fictional design review", start: at(40), fireAt: at(30), lead: 10, calendarName: "Work", snoozed: false, join: true },
+      { id: "a2", kind: "task", title: "Submit fictional lab report — a deliberately long task title to check wrapping in compact settings", start: at(180), fireAt: at(120), lead: 60, calendarName: null, snoozed: false, join: false },
+      { id: "a3", kind: "event", title: "Fictional exam", start: at(26 * 60), fireAt: at(20 * 60), lead: 1440, calendarName: "School", snoozed: false, join: false },
+    ] };
+}

@@ -28,7 +28,7 @@ Limitation: this reclassification is presentation only. The earlier timed copy s
 
 ## Reminders
 
-Mac reminders are explicit local notifications, independent of calendar time. Choices are None, At deadline, 1 hour before and 1 day before. A date-only task needs a visible chosen reminder time; it remains separate from the task’s due time. Swift owns notification permission, scheduling and cancellation. Versioned notification identifiers and session checks reject stale scheduling work. Completion, archive and sign-out clear pending reminders; new-account loads clear previous-account notifications. Permission denial or scheduling failure appears on Tasks. The UI promises scheduling, not guaranteed delivery; macOS controls delivery and notification settings. The web does not deliver reminders.
+Mac reminders are explicit local notifications, independent of calendar time. Choices are None, At deadline, 5, 10, 15 or 30 minutes, 1 or 2 hours, 1 or 2 days and 1 week before; the agent can set or change them (see [NOTIFICATIONS.md](NOTIFICATIONS.md)). While Calshot runs, the reminder appears as the notch alert and the system notification is withdrawn. A date-only task needs a visible chosen reminder time; it remains separate from the task’s due time. Swift owns notification permission, scheduling and cancellation. Versioned notification identifiers and session checks reject stale scheduling work. Completion, archive and sign-out clear pending reminders; new-account loads clear previous-account notifications. Permission denial or scheduling failure appears on Tasks. The UI promises scheduling, not guaranteed delivery; macOS controls delivery and notification settings. The web does not deliver reminders.
 
 ## Persistence and sync
 

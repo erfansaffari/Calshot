@@ -25,6 +25,9 @@ public struct EventDraft: Identifiable, Sendable, Codable {
     public var taskOwnerID: UUID?
     public var taskDeadlineTime: String?
     public var taskBaseTitle: String?
+    /// Provider alerts in minutes before the start (see EventAlerts). nil leaves the calendar's alerts unchanged;
+    /// an update writes them only when `alerts` is among the changed fields.
+    public var alertMinutes: [Int]?
 
     public init(id: UUID = UUID(), title: String, startDate: Date?, endDate: Date?, isAllDay: Bool,
                 timeZoneIdentifier: String?, location: String?, url: URL?, notes: String?,

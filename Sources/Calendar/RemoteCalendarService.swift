@@ -47,6 +47,7 @@ actor RemoteCalendarService: CalendarDestinationService {
                         title: (item[account.provider == .google ? "summary" : "name"] as? String ?? "Calendar") + " · " + account.email,
                         provider: account.provider == .google ? .google : .outlook, isReadOnly: readOnly,
                         accountIdentifier: account.email, remoteCalendarIdentifier: id, sourceName: account.provider.title, timeZone: item["timeZone"] as? String)
+                    if account.provider == .google { found[route.calendarIdentifier]?.defaultAlertMinutes = Self.popupMinutes(item["defaultReminders"]) }
                 }
                 calendars = calendars.filter { Route(identifier: $0.key)?.accountID != account.id }
                 calendars.merge(found) { _, new in new }
@@ -111,6 +112,7 @@ actor RemoteCalendarService: CalendarDestinationService {
         if draft.isTaskDeadline == true { body[account.provider == .google ? "transparency" : "showAs"] = account.provider == .google ? "transparent" : "free" }
         if fields.contains("notes") { body[account.provider == .google ? "description" : "body"] = full[account.provider == .google ? "description" : "body"] }
         if fields.contains("url") { throw CalendarDestinationError.invalidDraft("this provider does not support changing an event URL") }
+        if fields.contains("alerts"), let alerts = draft.alertMinutes { try Self.alertFields(alerts, provider: account.provider).forEach { body[$0.key] = $0.value } }
         _ = try await request(eventPath(route, provider: account.provider) + "/" + Self.escape(id), account: account, method: "PATCH", body: body)
         return identifier
     }
@@ -179,6 +181,7 @@ actor RemoteCalendarService: CalendarDestinationService {
             url: (value[account.provider == .google ? "htmlLink" : "webLink"] as? String).flatMap(URL.init(string:)), notes: account.provider == .google ? value["description"] as? String : body?["content"] as? String)
         event.isFree = account.provider == .google ? value["transparency"] as? String == "transparent" : value["showAs"] as? String == "free"
         event.externalEventIdentifier = value[account.provider == .google ? "iCalUID" : "iCalUId"] as? String
+        event.alertMinutes = Self.alertMinutes(value, provider: account.provider, calendar: calendar)
         if let attendees = value["attendees"] as? [Any] { event.hasAttendees = !attendees.isEmpty } else if account.provider == .google { event.hasAttendees = false }
         if account.provider == .google {
             event.isRecurring = value["recurringEventId"] != nil || value["recurrence"] != nil || value["originalStartTime"] != nil
@@ -239,11 +242,38 @@ actor RemoteCalendarService: CalendarDestinationService {
             if draft.isAllDay { formatter.dateFormat = "yyyy-MM-dd"; startValue = ["date": formatter.string(from: start)]; endValue = ["date": formatter.string(from: end)] }
             else { startValue = ["dateTime": ISO8601DateFormatter().string(from: start), "timeZone": zone]; endValue = ["dateTime": ISO8601DateFormatter().string(from: end), "timeZone": zone] }
             var notes = draft.notes ?? ""; if includeURL, let url = draft.url { notes += "\n" + url.absoluteString }
-            return ["transparency": draft.isTaskDeadline == true ? "transparent" : "opaque", "summary": draft.title, "start": startValue, "end": endValue, "location": draft.location ?? "", "description": notes]
+            var body: [String: Any] = ["transparency": draft.isTaskDeadline == true ? "transparent" : "opaque", "summary": draft.title, "start": startValue, "end": endValue, "location": draft.location ?? "", "description": notes]
+            if let alerts = draft.alertMinutes { try alertFields(alerts, provider: provider).forEach { body[$0.key] = $0.value } }
+            return body
         }
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         var notes = draft.notes ?? ""; if includeURL, let url = draft.url { notes += "\n" + url.absoluteString }
-        return ["showAs": draft.isTaskDeadline == true ? "free" : "busy", "subject": draft.title, "start": ["dateTime": formatter.string(from: start), "timeZone": zone], "end": ["dateTime": formatter.string(from: end), "timeZone": zone], "isAllDay": draft.isAllDay,
+        var body: [String: Any] = ["showAs": draft.isTaskDeadline == true ? "free" : "busy", "subject": draft.title, "start": ["dateTime": formatter.string(from: start), "timeZone": zone], "end": ["dateTime": formatter.string(from: end), "timeZone": zone], "isAllDay": draft.isAllDay,
                 "location": ["displayName": draft.location ?? ""], "body": ["contentType": "text", "content": notes]]
+        if let alerts = draft.alertMinutes { try alertFields(alerts, provider: provider).forEach { body[$0.key] = $0.value } }
+        return body
+    }
+
+    /// Google keeps up to five pop-up alerts per event; Outlook keeps one, so the alert nearest the start is kept.
+    static func alertFields(_ alerts: [Int], provider: CalendarAccountConnection.Provider) throws -> [String: Any] {
+        let minutes = try EventAlerts.normalized(alerts)
+        guard minutes.allSatisfy({ $0 >= 0 }) else { throw CalendarDestinationError.invalidDraft("\(provider.title) alerts must be at or before the event start") }
+        if provider == .google { return ["reminders": ["useDefault": false, "overrides": minutes.map { ["method": "popup", "minutes": $0] }]] }
+        guard let nearest = minutes.first else { return ["isReminderOn": false] }
+        return ["isReminderOn": true, "reminderMinutesBeforeStart": nearest]
+    }
+    static func popupMinutes(_ value: Any?) -> [Int]? {
+        guard let items = value as? [[String: Any]] else { return nil }
+        return Array(Set(items.compactMap { ($0["method"] as? String) == "popup" ? ($0["minutes"] as? NSNumber)?.intValue : nil })).sorted()
+    }
+    static func alertMinutes(_ value: [String: Any], provider: CalendarAccountConnection.Provider, calendar: CalendarDestinationInfo) -> [Int]? {
+        if provider == .outlook {
+            guard let on = value["isReminderOn"] as? Bool else { return nil }
+            return on ? ((value["reminderMinutesBeforeStart"] as? NSNumber)?.intValue).map { [$0] } ?? [] : []
+        }
+        guard let reminders = value["reminders"] as? [String: Any] else { return nil }
+        // Google's calendar defaults are for timed events; an all-day event's own defaults aren't exposed.
+        if reminders["useDefault"] as? Bool == true { return (value["start"] as? [String: Any])?["date"] != nil ? nil : calendar.defaultAlertMinutes }
+        return popupMinutes(reminders["overrides"]) ?? []
     }
 }

@@ -69,7 +69,7 @@ Each item has kind (`preference`, `fact`, `person`, `routine`, `style`, `goal`),
 
 - **On the Mac (the fast path):** the account's knowledge file is what every request reads — in memory, no network on the hot path.
 - **In Supabase (the account copy):** `supabase/migrations/20261112090000_personal_knowledge_sync.sql` adds one row per item (`personal_knowledge`) and SHA-256 tombstones for forgotten text (`personal_knowledge_tombstones`), owner-only through RLS, written only through validating RPCs (`read_/write_/clear_personal_knowledge`). Newer copy wins per item; deletes travel as rows without text; the same knowledge learned on two Macs keeps the copy with the smaller id everywhere. Behavior counters and the calendar profile stay on each device.
-- **App:** `Sources/Memory/KnowledgeSync.swift` syncs with the 30-second account sync (read, merge, then send), on by default for signed-in accounts, with a Settings → Memory switch and "Remove synced copy". Until the migration is applied the app says sync isn't set up yet and keeps everything local.
+- **App:** `Sources/Memory/KnowledgeSync.swift` syncs with the account sync tick (read changes since its cursor, merge, then send; at once when Realtime reports a knowledge change), on by default for signed-in accounts, with a Settings → Memory switch and "Remove synced copy". Until the migration is applied the app says sync isn't set up yet and keeps everything local.
 - Verified: SQL authorization test on Postgres 17 (`supabase/tests/personal_knowledge_authorization.sql`), merge-rule unit tests. Not yet verified against the live project.
 - Still to do: encrypt the local file with a Keychain key.
 

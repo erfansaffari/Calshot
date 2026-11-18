@@ -81,6 +81,7 @@ extension CalshotModel {
             guard let self else { throw CancellationError() }
             return try await self.listAgentFriends()
         }
+        executor.waitForTaskSync = { [weak self] in await self?.waitForTaskSync() }
         executor.listTasks = { [weak self] in
             guard let self, let runID = self.activeAgentRunID else { throw CancellationError() }
             _ = try self.taskContext(origin: .agent(runID: runID))
@@ -427,6 +428,8 @@ extension CalshotModel {
         .object(["id": .string(task.id.uuidString), "version": .string(task.version.uuidString),
             "title": .string(task.title), "dueDate": task.dueDate.map(JSONValue.string) ?? .null,
             "dueTime": task.dueTime.map(JSONValue.string) ?? .null, "timeZone": .string(task.timeZone),
+            "reminderMinutes": task.reminderMinutes.map { .number(Double($0)) } ?? .null,
+            "reminderTime": task.reminderTime.map(JSONValue.string) ?? .null,
             "notes": .string(task.notes), "completed": .bool(task.completed), "archived": .bool(task.deleted),
             "calendarIntent": .string(task.resolvedCalendarIntent.rawValue),
             "calendarName": task.calendarName.map(JSONValue.string) ?? .null,
@@ -547,9 +550,9 @@ struct AgentTaskRowResult {
 extension CalshotModel {
     /// Fields each saved family may touch. Subsets of the kernel allowlist; background is never granted here.
     static let agentTaskGrantFields: [AgentPermissionAction: Set<String>] = [
-        .taskCreate: ["title", "notes", "dueDate", "dueTime", "timeZone", "calendarIntent"],
+        .taskCreate: ["title", "notes", "dueDate", "dueTime", "timeZone", "calendarIntent", "reminderMinutes", "reminderTime"],
         .taskLink: ["sourceLink", "title", "dueDate", "dueTime", "timeZone"],
-        .taskEdit: ["title", "notes", "dueDate", "dueTime", "timeZone"],
+        .taskEdit: ["title", "notes", "dueDate", "dueTime", "timeZone", "reminderMinutes", "reminderTime"],
         .taskComplete: ["completed"],
         .taskArchive: ["deleted"]]
     static let agentTaskFamilies: [(id: String, action: AgentPermissionAction, label: String, detail: String)] = [
@@ -560,7 +563,7 @@ extension CalshotModel {
         ("archive", .taskArchive, "Archive or restore tasks", "Move tasks out of your list, or bring them back.")]
     static let agentSupportedTaskActions: Set<AgentPermissionAction> = [.taskCreate, .taskLink, .taskEdit, .taskComplete, .taskArchive]
     /// Fields a calendar grant may cover. Subset of the kernel allowlist; background is never granted.
-    static let agentCalendarGrantFields: Set<String> = ["title", "startDate", "endDate", "isAllDay", "timeZoneIdentifier", "location", "url", "notes"]
+    static let agentCalendarGrantFields: Set<String> = ["title", "startDate", "endDate", "isAllDay", "timeZoneIdentifier", "location", "url", "notes", "alerts"]
     static let agentCalendarFamilies: [(id: String, action: AgentPermissionAction, label: String, detail: String)] = [
         ("create", .calendarCreate, "Add new events", "Save new events you ask for when the date, year and time are already clear."),
         ("edit", .calendarEdit, "Edit event details", "Change the title, date, time or details of one event you ask about."),
@@ -842,7 +845,7 @@ extension CalshotModel {
                 let rowKind: AgentTaskPlan.Kind, action: AgentPermissionAction, fields: Set<String>
                 if keys == ["completed"] { rowKind = .complete; action = .taskComplete; fields = ["completed"] }
                 else if keys == ["archived"] { rowKind = .archive; action = .taskArchive; fields = ["deleted"] }
-                else if !keys.isEmpty, keys.isSubset(of: ["title", "dueDate", "dueTime", "timeZone", "notes"]) { rowKind = .edit; action = .taskEdit; fields = keys }
+                else if !keys.isEmpty, keys.isSubset(of: ["title", "dueDate", "dueTime", "timeZone", "notes", "reminderMinutes", "reminderTime"]) { rowKind = .edit; action = .taskEdit; fields = keys }
                 else { throw CalendarToolArgumentError("Change one kind of task detail per request: details, completion or archive.") }
                 guard kind == nil || kind == rowKind else { throw CalendarToolArgumentError("Change one kind of task detail per request.") }
                 kind = rowKind
@@ -855,10 +858,13 @@ extension CalshotModel {
                 titles.append(task.title)
                 var changes: [AgentTaskReview.Change] = []
                 let current: [String: String] = ["title": task.title, "dueDate": task.dueDate ?? "None", "dueTime": task.dueTime ?? "None",
-                    "timeZone": task.timeZone, "notes": task.notes.isEmpty ? "None" : String(task.notes.prefix(160))]
-                let labels = ["title": "Title", "dueDate": "Due date", "dueTime": "Due time", "timeZone": "Time zone", "notes": "Notes"]
-                for key in ["title", "dueDate", "dueTime", "timeZone", "notes"] where patch.fields[key] != nil {
-                    changes.append(.init(label: labels[key]!, before: current[key], after: Self.display(patch.fields[key])))
+                    "timeZone": task.timeZone, "notes": task.notes.isEmpty ? "None" : String(task.notes.prefix(160)),
+                    "reminderMinutes": CalshotTask.reminderLabel(task.reminderMinutes), "reminderTime": task.reminderTime ?? "None"]
+                let labels = ["title": "Title", "dueDate": "Due date", "dueTime": "Due time", "timeZone": "Time zone", "notes": "Notes",
+                              "reminderMinutes": "Reminder", "reminderTime": "Reminder time"]
+                for key in ["title", "dueDate", "dueTime", "timeZone", "notes", "reminderMinutes", "reminderTime"] where patch.fields[key] != nil {
+                    let after = key == "reminderMinutes" ? CalshotTask.reminderLabel(patch.fields[key]?.numberValue.map { Int($0) }) : Self.display(patch.fields[key])
+                    changes.append(.init(label: labels[key]!, before: current[key], after: after))
                 }
                 if let value = patch.fields["completed"]?.boolValue { changes.append(.init(label: "Status", before: task.completed ? "Complete" : "Open", after: value ? "Complete" : "Open")) }
                 if let value = patch.fields["archived"]?.boolValue { changes.append(.init(label: "In your list", before: task.deleted ? "Archived" : "Active", after: value ? "Archived" : "Active")) }
@@ -1110,11 +1116,14 @@ extension CalshotModel {
             if task.dueDate != nil { fields.insert("dueDate") }
             if task.dueTime != nil { fields.insert("dueTime") }
             if task.intentProvenance == .explicit { fields.insert("calendarIntent") }
+            if task.reminderMinutes != nil { fields.insert("reminderMinutes") }
+            if task.reminderTime != nil { fields.insert("reminderTime") }
         }
         let effect = JSONValue.array(batch.items.map { task in
             .object(["id": .string(task.id.uuidString), "title": .string(task.title), "dueDate": task.dueDate.map(JSONValue.string) ?? .null,
                      "dueTime": task.dueTime.map(JSONValue.string) ?? .null, "timeZone": .string(task.timeZone), "notes": .string(task.notes),
-                     "intent": .string(task.resolvedCalendarIntent.rawValue)])
+                     "intent": .string(task.resolvedCalendarIntent.rawValue),
+                     "reminderMinutes": task.reminderMinutes.map { .number(Double($0)) } ?? .null, "reminderTime": task.reminderTime.map(JSONValue.string) ?? .null])
         })
         let operation = AgentPermissionOperation(operationID: UUID(), runID: runID, ownerID: agentPermissionOwnerID, deviceID: Self.syncDeviceID,
             action: .taskCreate, resourceIDs: Set(batch.items.map { $0.id.uuidString }), expectedVersions: [:], calendarIDs: [], fields: fields,
@@ -1249,6 +1258,7 @@ extension CalshotModel {
             if draft.location != nil { fields.insert("location") }
             if draft.url != nil { fields.insert("url") }
             if !(draft.notes ?? "").isEmpty { fields.insert("notes") }
+            if draft.alertMinutes != nil { fields.insert("alerts") }
             return fields
         }
         guard proposal.operation == .update else { return nil }
@@ -1263,6 +1273,7 @@ extension CalshotModel {
             case "location": fields.insert("location")
             case "url": fields.insert("url")
             case "notes": fields.insert("notes")
+            case "alerts": fields.insert("alerts")
             default: return nil
             }
         }
@@ -1352,7 +1363,8 @@ extension CalshotModel {
                 "title": .string(row.proposal.draft.title), "resource": .string(resourceID),
                 "start": row.proposal.draft.startDate.map { .string(ISO8601DateFormatter().string(from: $0)) } ?? .null,
                 "end": row.proposal.draft.endDate.map { .string(ISO8601DateFormatter().string(from: $0)) } ?? .null,
-                "allDay": .bool(row.proposal.draft.isAllDay)])
+                "allDay": .bool(row.proposal.draft.isAllDay),
+                "alerts": row.proposal.draft.alertMinutes.map { .array($0.map { .number(Double($0)) }) } ?? .null])
             let operation = AgentPermissionOperation(operationID: UUID(), runID: runID, ownerID: agentPermissionOwnerID, deviceID: Self.syncDeviceID,
                 action: action, resourceIDs: [resourceID], expectedVersions: versions, calendarIDs: calendarIDs, fields: fields,
                 effectDigest: Self.agentEffectDigest(effect), hasGuestEffects: row.guests, affectsSeries: row.recurring == true, hasSharingEffects: false)
@@ -1490,7 +1502,10 @@ extension CalshotModel {
             guard Set(active.map(\.action)) == calendarActions else { return }
             let soonest = active.map(\.expiresAt).min() ?? now
             let scope = active.reduce(writable) { $0.intersection($1.calendarIDs) }
-            guard soonest < now.addingTimeInterval(30 * 86_400) || scope != writable else { return }
+            // Grants saved before a field existed (alerts) widen to the current fields while Autonomy is on.
+            let outdated = active.contains { !Self.agentCalendarGrantFields(for: $0.action).isSubset(of: $0.fields) } ||
+                policy.grants.contains { $0.requestedEnabled && $0.expiresAt > now && !(Self.agentTaskGrantFields[$0.action] ?? []).isSubset(of: $0.fields) }
+            guard soonest < now.addingTimeInterval(30 * 86_400) || scope != writable || outdated else { return }
             try? await saveAgentAutonomy(enabled: true, revision: policy.revision)
             return
         }

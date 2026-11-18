@@ -78,6 +78,7 @@ actor EventKitCalendarService: CalendarDestinationService {
 
         let notes = draft.notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         event.notes = notes.isEmpty ? nil : notes
+        if let alerts = draft.alertMinutes { Self.setAlerts(try EventAlerts.normalized(alerts), on: event) }
         try store.save(event, span: .thisEvent, commit: true)
         let eventIdentifier = event.eventIdentifier ?? event.calendarItemIdentifier
         savedEventIdentifiers[draft.id] = eventIdentifier
@@ -207,6 +208,17 @@ actor EventKitCalendarService: CalendarDestinationService {
         if fields.contains("location") { event.location = draft.location }
         if fields.contains("url") { event.url = draft.url }
         if fields.contains("notes") { event.notes = draft.notes }
+        if fields.contains("alerts"), let alerts = draft.alertMinutes { Self.setAlerts(try EventAlerts.normalized(alerts), on: event) }
+    }
+
+    /// Replaces relative alerts only; an alert at a fixed date set in another app is kept.
+    static func setAlerts(_ minutes: [Int], on event: EKEvent) {
+        let fixed = (event.alarms ?? []).filter { $0.absoluteDate != nil }
+        event.alarms = fixed + minutes.map { EKAlarm(relativeOffset: -Double($0) * 60) }
+    }
+    static func alertMinutes(_ event: EKEvent) -> [Int] {
+        let values = (event.alarms ?? []).compactMap { $0.absoluteDate == nil ? Int((-$0.relativeOffset / 60).rounded()) : nil }
+        return Array(Set(values.filter { (EventAlerts.minimumMinutes...EventAlerts.maximumMinutes).contains($0) })).sorted()
     }
 
     private func readableCalendar(_ destination: CalendarDestination) throws -> EKCalendar {
@@ -236,6 +248,7 @@ actor EventKitCalendarService: CalendarDestinationService {
         result.isRecurring = event.hasRecurrenceRules || event.isDetached || event.occurrenceDate != nil
         result.hasAttendees = event.hasAttendees
         result.modifiedAt = event.lastModifiedDate
+        result.alertMinutes = Self.alertMinutes(event)
         if let original = event.occurrenceDate {
             if event.isAllDay {
                 // A detached exception may have changed from timed to all-day.
