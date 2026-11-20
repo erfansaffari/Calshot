@@ -46,6 +46,17 @@ extension SCShareableContent: FocusWindowInventory {
 /// No timers, persistence or network access. Step D requests one frame per turn/drawing.
 @MainActor
 final class FocusFrameComposer {
+    /// Opens screen capture and loads the text recognizer once, off the main actor; nothing is captured or kept.
+    func warm() {
+        guard CGPreflightScreenCaptureAccess() else { return }
+        Task.detached(priority: .utility) {
+            _ = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            let context = CGContext(data: nil, width: 64, height: 16, bitsPerComponent: 8, bytesPerRow: 0,
+                                    space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
+            context?.setFillColor(gray: 1, alpha: 1); context?.fill(CGRect(x: 0, y: 0, width: 64, height: 16))
+            if let image = context?.makeImage() { _ = try? await ScreenTextRecognizer.recognizeLayout(in: image) }
+        }
+    }
     func captureFrame(marks: [FocusMark], preferredDisplayID: CGDirectDisplayID? = nil) async throws -> FocusFrame {
         guard CGPreflightScreenCaptureAccess() else { throw FocusFrameError.screenRecordingPermissionMissing }
         do {

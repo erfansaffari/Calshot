@@ -1,0 +1,62 @@
+AgentHarnessPlace: mac, cloud
+AgentHarnessModel: standard, astra, sol, terra, luna, fable, opus, sonnet, haiku
+AgentHarnessRunnerProcess: process, stdinPipe, endpoint, starting
+AgentHarnessTurn: harnessThreadID, appThreadID, isFirstTurn, text, imagePaths, workspace, model, context, leaseMetadata, turnID
+AgentHarnessTurnContext: instructions, mcpServers, skillDirectories, userSkillDirectories, workerBaseURL, sessionToken, notePath, isKeptThing, writesNoteWithTools, usesPlanTool, model
+AgentHarnessEvent: turnStats, commentary, thinking, plan, toolStarted, toolFinished, webSearch, programBatch, answerDelta, finished, notePreview, noteSaved, connectedAppsUnreachable, compacted
+ClickyJob.Outcome: working, done, failed, stopped
+ClickyJobMessageRoute: targetThreadID, newRunFollowsThreadID, resumesFinishedRun
+ClickyJobRailPhase: queued, working, needsYou, done, failed, stopped
+ClickyJobUserStep: step, page, doneWhenURLContains, askedAt
+ClickyInkBrief.NoteWriter: applyPatch, fileTools, noteTools
+ClickyInkDocument: title, pages
+ClickyInkDocument.Page: name, isBoard, blocks
+ClickyInkDocument.Block: kind, text, attributes, items, columns
+ClickyInkDocument.Item: text, detail, cells, mark, isChecked, url, number
+ClickyInkDocument.Mark: new, needs, done, pick, now, gone
+ClickyInkDocument.Kind: heading, paragraph, answer, quote, list, checklist, numbered, table, code, rule, figure, sticky, ticket, receipt, photo, place, day, letter, clip, file, link, ask, question, chart, note, spark, status, progress, tally, streak, countdown, pipeline, run, quiet, review, tiles, form, connect, items, quiz, todo, gallery, event, criteria, drawing, unknown
+ClickyInkLiveNote.Page: id, name, isBoard, blocks, landsAt
+ClickyInkLiveNote.Block: id, stamps, words, items, landsAt, goneAt, vanishesAt, bornInEdit, goneInEdit, isPreview, penArrivals, numberShownSince, numberLineWrittenAt
+ClickyInkLiveNote.Segment: text, written, struck, vanishesAt, edit, struckInEdit, isPreview
+ClickyInkNoteVersion: at, text, isEdit, isPartial, startsNewEdit
+ClickyInkNoteStore: _revision, scopeKey, baseDirectoryOverride, versionsByNoteID, lastDocumentByNoteID, liveNotes, settledNotes, keptNoteIDs, writeQueue, watched, finishTimes, turnsAwaitingTheirFirstEdit, freshPageNoteIDs, lastReadStat, pendingStat, watchTimer
+ClickyInkNoteAction.Kind: ask, answer, send, review
+ClickyInkSketchModel.Shape: box, circle, line, arrow, path, text, icon, dot, badge
+ClickyInkPenSchedule: busy, arrivals
+ClickyLessonDraft: title, question, model, program, screenJPEG, canvasSize, displaySize, lines, duration, narrationSamples, narrationSampleRate, poster, photos
+ClickyLessonRecorder: question, screenJPEG, canvasSize, displayFrame, startedAt, program, model, lineStarts, lineAudio, linePlaybackRate
+ClickyNotchTabs: _selected, selectionDidChange, _chatFocusEntryID, _expandedReplyEntryID, _fullReplyContentHeight, _settingsSection, _documentPath, documentThreadID, tabBeforeDocument, expandedReplyBeforeDocument, composerDraftText, composerDraftAttachmentURLs, _composerFocusRequestID, hasPendingComposerFocusRequest, pendingTab, pendingExpandedReplyEntryID, tabBeforeFullReply, fullReplyOpenedAt, rememberedPlace, documentLeftOnClose, forgetsReplyAndDocumentOnClose
+NotchLiveEvent: activityCustomStatus, dictation, agentMultiActivity, handoffSent, handoffQueued, dictionaryWordLearned, dictationCopiedToClipboard, voiceReplyMutedCopiedToClipboard, microphoneTrouble, documentFolderAccessDenied, appUpdated, meetingCountdown, clickyUpdate, clickyDriveConsent, onboardingTutorialResume, integrationConnected, skillPinned, restingMark, agentPeek, activityListening, activityThinking, activitySpeaking, agentTask, integrationSuggestion, sidecarLearningSuggestion, spotifyVoiceTip, clickyDriving, onboardingTutorialInvite, morningSuggestions, introHatchPeek, introSkillPing, dockedIdle
+NotchPresentation: liveEvent, idle, onboardingPinned, textInput, textResponse
+NotchScreenInstance: displayIdentifier, panel, hostingView, panelState, envelopeFrame, lastAppliedFrame
+NotchPanelViewState: _visibleSize, _notchScreenOrigin, _presentationOverride, _isFloatingSliver, _isSuppressedForFullscreen, _contentScale
+ClickyDriveNotchState: _drivingToken, _status, _isActing, _isWaitingForUserMouse, _userMouseNudgeCount, _accent, _consent, acceptConsent, declineConsent, alwaysConsent
+ClickyTakeOverController.Phase: offered, driving, idle
+ClickyTakeOverController.AgentDriveOutcome.Ending: finished, userTookOver, safetyStop, couldNotSee, outOfAgentMessages, failed
+OneBrainGeminiTranscriber: queue, tokenProxyURL, urlSession, tracingHeaders, workerAuthorizationProvider, languageCode, keyterms, makeSocket, readyGraceSeconds, finalTimeoutSeconds, socket, outgoing, sending, connectionTask, timer, timeout, uploadWatchdog, warming, ready, activityStarted, finishRequested, finishSent, ended, pendingAudio, resampler, outgoingChunk, capturedBytes, bufferedAudioBytes, sentBytes, finalSegments, interim, loudestLevel, mintedReceipt, onFinalResult, onError, pressStartedAt, pressStartedWarm, tokenReadyAt, readyAt, firstTextAt, finishCalledAt, finalReceivedAt
+OneBrainToolRunner: run, tasks, finishedOutputs, startOrder, lastOrderedTask
+OneBrainTurnTiming.Marks: releasedAt, transcriptAt, requestStartedAt, headersAt, firstTokenAt, requestBodyBytes, requestBodyWasGzip, isTyped
+OneBrainVoice: hasLookedForSavedSession, sessionID, codeOfDrawingOnScreen, environmentSentForSessionID, isCompacting, compactionGeneration, compactionNextCheckInputTokens, lastTurnInputTokens, sessionBaselineInputTokens, sessionScreenshotFiles, screenshotFilesOffForSession, isFirstKeyDownAfterReload, lastCanvasSize, lastPrewarmAt, sessionStartedAt, authHost, userLayer, userLayerSignature, userLayerSkillsFingerprint, accountID, thread, pendingAppNotes, pendingHighlight, pageReadStartedAtKeyDown, pageReference, pageApplicationProcessIdentifier, pageReadTask, pageReadStartedAt, pageReadGeneration, lastTurnAt, previousTurnAt, statsTurnCount, inFlightTurnIsOnboarding, latestTurnHeardLines, latestTurnDrewMarks, currentTurnProgramSoFar, latestTurnWasTyped, latestTurnAnswersInText, idleSessionEndTask, actionsWaitingForTheDrawing, automaticRestartsInARow, advanceArmedUntil, advanceTask, microphone, earsPressID, lingeringBluetoothMicrophone, lingeringBluetoothMicrophoneTask, microphoneFailover, hasReportedIrrecoverableMicrophone, consecutiveDeadAirPressCount, pressAudio, transcriber, transcriptWaiter, warmEars, warmEarsWakeObserver, listeningStartedAt, heardAudioSecondsForNextTurn, pressWasRefused, deliveredBufferCount, liveTranscriptTask, lastPressEarsFailed, lastPressHeldSeconds, lastPressShowedMicrophoneTrouble
+OneBrainClient.ToolCall: callID, name, arguments, isAsync
+OneBrainClient.ComputerCall: callID, actions, pendingSafetyChecks
+OneBrainClient.Reply: code, computerCalls, spokenSentence, items, searchRecords, toolCalls, userLayer, modelIdentifier, firstTokenMilliseconds, totalMilliseconds, costUSD, usage, keepsReasoning, turnToken, userLayerSignature, guidedMaxRounds, screenshotFile
+OneBrainClient.CompactResult: noteItem, keepFromIndex, keepLeadingItems, dropLeadingItems
+OneBrainClient.CompactReply: compacted, wait
+OverlayCursorPerformanceController: presentation, bubbleStageView, navigationStageView, bodyStageView, bubbleMotion, bodyMotion, statePositionWrittenWithoutMoving, followAnimationSerial, flightGeneration, activeFlightPath, activeFlightBeginTime, flightCompletionTimer, isFlightTriangleShown, flightTriangleRestingRotationDegrees, flightTriangleSettleGeneration, pointerSubscription, visibilitySubscription, shakeSamples, lastShakeDetectedAt, lastShakeSampleTime, isBubbleChasingBody, isFloating, isTriangleFloatPaused, detachedFloatBeginTime, isDetachedLookShown, detachedLookGeneration, wantedDetachedLook
+NotchHoverTickScheduler: tick, nextDeadline, housekeepingInterval, pointerSubscription, housekeepingTimer, housekeepingTimerInterval, deadlineTimer, scheduledDeadline, trailingTickTimer, isRequestedTickPending, isRunning
+ClickyPointerEvaluationDriver: maximumPointerRateHz, slowCheckIntervalSeconds, evaluation, pointerSubscription, slowCheckTimer, deadlineTimer, scheduledDeadline, isEvaluationScheduled, lastEvaluationTime, isRunning
+ClickyThreeKernel: queue, lock, shapes, useOrder, cachedBytes, cachedPositionIndexBytes, failed, queued, context, buildFunction, loadFailed, idleRelease
+ScreenDrawing3DRenderers: device, commandQueue, objects, words, overlayPipeline, underSheetPipeline, overSheetPipeline
+ScreenDrawing3DClick: name, partID, isLabelled
+ScreenDrawingNativeEngine: painter, clock, context, timerTokens, screenshotPixels, screenshotSize, onCaption, onButtonReady, onRenderOps, pendingMarkSounds, lastAmbientSoundTime, lastAccentSoundTime, lastSoundTimeByID, onSoundsScheduled
+ScreenDrawingPreparedProgram: lines, pointerActions, markCount, inkedMarkCount, drawsPicture, engineError, pointingLines, cardLines
+OneBrainModelChoice: sol, solMedium, solFast, solFastMedium, solUltrafast, solUltrafastMedium, solUltrafastHigh, terraFastMedium, haiku, sonnet, opus, deepSeekMedium, deepSeekHigh
+ClickyBrowserBridge.Pending: profile, session, task, continuation
+ClickyBrowserBridge.TurnBrowserUsage: thread, firstCallAt, operationCount, operationCounts, batchStepCount, commandsSentToBrowser, errorCount, errorKinds, detachReasons, timeoutCount, timeoutOperations, tabsKept, screenshotsSaved, wasStoppedByUser, accessEndedByTimeout, endedAt
+RealtimeWalkthroughSync: beatFractions, drawLeadFraction, playbackFraction, isFinished, reachWaiters, finishWaiters
+ScreenDrawingStreamState: lines, pointers, pointingLines, cardLines, markCount, inkedMarkCount, drawsPicture, finished, failure, lessonRecorder, firstLineIndex, earlierCode, isContinuationDecided, capture, isDisplayDecided, drewOnOtherDisplay, programSoFar, followUpRound, startedFromTypedTurn, answersInTextOnly, isSearchingTheWeb, isReadingConnectedApps, runningToolName, readConnectedAppsThisTurn, handOff, modelIdentifier
+ScreenDrawingNarrationOutcome: droppedBeforeFirstLine, stoppedMidway, completed, targetArmed, failed, superseded
+GeminiMouthTurnLedger.Turn: verbatimLine, discarded, generationComplete, sawAudio, transcript
+RealtimeDuplexAudioEngine: onRouteChangeRequiringRebuild, pinPolicy, audioEngine, playerNode, captureProcessor, playerFormat, hasStartedEngine, isShutDown, outstandingScheduledBufferCount, totalScheduledFrameCount, totalPlayedFrameCount, drainNotification, scheduledBufferSerial, playedBufferSerial, playbackTailNotifications, playbackGeneration, realtimeAudioLog, audioEngineConfigurationChangeObserver, hasInstalledDefaultDeviceListeners, defaultDeviceListenerBlock, defaultDeviceChangeDebounceTask, lastObservedOutputTransport, lastObservedOutputDeviceName
+RealtimeVoiceProvider: openAI, gemini
+RealtimeVoiceTurnDetectionMode: manualPushToTalk, serverVoiceActivityDetection

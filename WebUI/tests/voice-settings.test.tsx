@@ -7,14 +7,21 @@ import { preview } from "../src/preview";
 import { command } from "../src/bridge";
 vi.mock("../src/bridge", () => ({ command: vi.fn().mockResolvedValue(undefined) }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
-it("saves device voice settings with the current native token and discloses audio and screen sharing", async () => {
-  render(<SettingsPage state={{ ...preview, settingsSection: "voice", voice: { token: "fixture", state: "idle", active: false, inputLevel: 0, caption: "", userTranscript: "", drawing: false, usage: { seconds: 0, estimatedCost: 0 }, needsKey: false, needsAcknowledgement: false, permissions: { microphone: false, screen: false }, model: "fictional-realtime", voice: "marin", monthlyCap: 10 } }} />);
-  expect(screen.getByText(/ChatGPT plan billing does not cover voice/)).toBeTruthy();
-  await userEvent.click(screen.getByText("Save voice settings"));
-  expect(command).toHaveBeenCalledWith({ action: "voiceSettings", token: "fixture", model: "fictional-realtime", voice: "marin", cap: 10 });
-  expect(screen.getByText(/Microphone audio and screen frames are sent to OpenAI/)).toBeTruthy();
+it("discloses who listens, speaks and thinks, and saves a listed voice with the current native token", async () => {
+  render(<SettingsPage state={{ ...preview, settingsSection: "voice", voice }} />);
+  expect(screen.getByText(/goes to Google through Calshot/)).toBeTruthy();
+  expect(screen.getByText(/go to OpenAI through Calshot for the answer/)).toBeTruthy();
+  expect(screen.queryByLabelText("Engine")).toBeNull(); expect(screen.queryByLabelText("Model")).toBeNull();
+  expect((screen.getByText("Save voice") as HTMLButtonElement).disabled).toBe(true);
+  await userEvent.selectOptions(screen.getByLabelText("Voice"), "Kore");
+  await userEvent.click(screen.getByText("Save voice"));
+  expect(command).toHaveBeenCalledWith({ action: "voiceSettings", token: "fixture", voice: "Kore" });
 });
-const voice = { token: "fixture", state: "idle", active: false, inputLevel: 0, caption: "", userTranscript: "", drawing: false, usage: { seconds: 0, estimatedCost: 0 }, needsKey: false, needsAcknowledgement: false, permissions: { microphone: true, screen: true }, model: "fictional-realtime", voice: "marin", monthlyCap: 10 };
+it("keeps the voice fixed while a session is running", () => {
+  render(<SettingsPage state={{ ...preview, settingsSection: "voice", voice: { ...voice, active: true } }} />);
+  expect((screen.getByLabelText("Voice") as HTMLSelectElement).disabled).toBe(true);
+});
+const voice = { token: "fixture", state: "idle", active: false, inputLevel: 0, caption: "", userTranscript: "", drawing: false, needsKey: false, needsAcknowledgement: false, permissions: { microphone: true, screen: true }, voice: "Sulafat", voices: [{ name: "Sulafat", style: "Warm" }, { name: "Kore", style: "Firm" }] };
 const shortcuts = (patch = {}) => ({ recording: null, capture: { label: "⌃⇧C", isDefault: true }, voice: { label: "⌃⇧V", isDefault: true }, ...patch });
 it("starts native listening for the capture shortcut with the current token", async () => {
   render(<SettingsPage state={{ ...preview, voice, shortcuts: shortcuts() }} />);

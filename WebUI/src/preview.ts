@@ -467,8 +467,8 @@ export const learningSample = {
 if (scenario?.startsWith("voice-input")) {
   preview.page = "settings"; preview.settingsSection = "voice";
   preview.voice = { token: "preview-voice", state: "idle", active: false, caption: "", userTranscript: "", drawing: false,
-    usage: { seconds: 0, estimatedCost: 0 }, needsKey: false, needsAcknowledgement: false,
-    permissions: { microphone: true, screen: false }, model: "gpt-realtime", voice: "marin", monthlyCap: 10 };
+    needsKey: false, needsAcknowledgement: false,
+    permissions: { microphone: true, screen: false }, voice: "Sulafat", voices: [{ name: "Sulafat", style: "Warm" }, { name: "Kore", style: "Firm" }] };
   preview.voiceInput = { token: "preview-input", devices: [{ uid: "fictional-built-in", name: "Built-in microphone" }, { uid: "fictional-phone", name: "Avery’s phone microphone — a deliberately long device name for compact settings" }],
     selectedUID: scenario === "voice-input-missing" ? "fictional-disconnected" : "", selectedAvailable: scenario !== "voice-input-missing",
     testState: scenario === "voice-input-testing" ? "testing" : scenario === "voice-input-error" ? "failed" : "idle", detectedSound: false,

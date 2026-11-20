@@ -666,7 +666,7 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             let voice = model.voiceSession
             var fields: Set<String> = ["action", "id", "token"]
             if action == "setVoiceDrawing" { fields.insert("drawing") }
-            if action == "voiceSettings" { fields.formUnion(["model", "voice", "cap"]) }
+            if action == "voiceSettings" { fields.insert("voice") }
             guard Set(body.keys).isSubset(of: fields) else { throw CalendarToolArgumentError("Invalid voice control.") }
             guard body["token"] as? String == voice.token else { throw CalendarToolArgumentError("Voice controls changed. Try again.") }
             if action == "voiceAISettings" { settingsSection = "ai"; model.openSettings() }
@@ -678,10 +678,8 @@ final class WebWorkspaceController: NSObject, WKScriptMessageHandler, WKNavigati
             else if action == "voiceMicrophoneSettings" { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!) }
             else {
                 guard !isNotch, model.workspaceSelection == .settings, !voice.active else { throw CalendarToolArgumentError("Stop voice and change its preferences in Settings.") }
-                guard let name = body["model"] as? String, (1...100).contains(name.count), name.range(of: "^[a-zA-Z0-9._-]+$", options: .regularExpression) != nil,
-                      let selectedVoice = body["voice"] as? String, ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"].contains(selectedVoice),
-                      let cap = body["cap"] as? Double, cap.isFinite, (0...10000).contains(cap) else { throw CalendarToolArgumentError("Choose a valid voice, model and monthly cap ($0–10,000).") }
-                voice.defaults.set(name, forKey: "voice.model"); voice.defaults.set(selectedVoice, forKey: "voice.voice"); voice.defaults.set(cap, forKey: "voice.cap")
+                guard let selected = body["voice"] as? String, VoiceMouth.voices.contains(where: { $0.name == selected }) else { throw CalendarToolArgumentError("Choose one of the listed voices.") }
+                voice.defaults.set(selected, forKey: "voice.voice")
                 voice.invalidateControls()
             }
         case "shortcutRecording", "resetShortcut":

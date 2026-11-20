@@ -106,6 +106,30 @@ struct AgentRunMetrics: Codable, Equatable, Sendable {
 protocol CalendarAgentModelClient {
     func turn(conversation: [AgentMessage], imageDataURL: String?, instructions: String,
               tools: [JSONValue], onText: @escaping @MainActor (String) -> Void) async throws -> AgentModelResponse
+    /// Voice asks for speed: low reasoning effort, short text and the fastest service tier the route accepts.
+    func turn(conversation: [AgentMessage], imageDataURL: String?, instructions: String, tools: [JSONValue],
+              options: AgentRequestOptions, onText: @escaping @MainActor (String) -> Void) async throws -> AgentModelResponse
+}
+extension CalendarAgentModelClient {
+    func turn(conversation: [AgentMessage], imageDataURL: String?, instructions: String, tools: [JSONValue],
+              options: AgentRequestOptions, onText: @escaping @MainActor (String) -> Void) async throws -> AgentModelResponse {
+        try await turn(conversation: conversation, imageDataURL: imageDataURL, instructions: instructions, tools: tools, onText: onText)
+    }
+}
+/// Optional speed settings for one request. A route that rejects one of them gets the request again without it,
+/// and is not sent it again in this app run (the billing route itself never changes).
+struct AgentRequestOptions: Equatable, Sendable {
+    var reasoningEffort: String?
+    var verbosity: String?
+    /// Requested only on the ChatGPT plan route, where it uses plan limits instead of per-token billing.
+    var serviceTier: String?
+    /// Routes requests that share a prefix to the same cache, so a session's fixed prefix is read once.
+    var cacheKey: String?
+    static let voice = AgentRequestOptions(reasoningEffort: "low", verbosity: "low", serviceTier: "ultrafast")
+    /// Voice settings for one session, whose requests all extend the same conversation.
+    static func voice(session: UUID) -> AgentRequestOptions {
+        var options = voice; options.cacheKey = "calshot-voice-" + session.uuidString.lowercased(); return options
+    }
 }
 @MainActor
 protocol CalendarAgentToolExecuting: AnyObject {

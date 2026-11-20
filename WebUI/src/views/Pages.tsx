@@ -1504,19 +1504,15 @@ export function PersonalMemorySettings({ state }: { state: AppState }) {
 function VoiceSettings({ state }: { state: AppState }) {
   const v = state.voice;
   const a = useAction();
-  const [model, setModel] = useState(v?.model || "");
-  const [voice, setVoice] = useState(v?.voice || "marin");
-  const [cap, setCap] = useState(String(v?.monthlyCap ?? 10));
+  const [voice, setVoice] = useState(v?.voice || "");
   if (!v) return <p>Voice settings are available in the Mac app.</p>;
   return <section className="card settings-card voice-settings"><h2>Voice</h2>
-    <p>Microphone audio and screen frames are sent to OpenAI. Voice uses paid OpenAI Realtime API billing and requires an OpenAI API key. ChatGPT plan billing does not cover voice. The estimate includes transcription.</p>
+    <p>Calshot provides voice: while you hold the voice key, your microphone audio goes to Google through Calshot to be transcribed, your request and the text on your screen go to OpenAI through Calshot for the answer, and replies are spoken through Google. Nothing is billed to you or your AI service for voice.</p>
     <InlineError message={a.error || v.error}>{v.audioIssue === "devices" && <button className="text-button" onClick={() => void a.run("voiceInputSettings", { token: v.token })}>Open Sound settings</button>}{v.audioIssue === "devices" && !v.active && <button className="text-button" disabled={a.busy} onClick={() => void a.run("startVoice", { token: v.token })}>Retry voice</button>}</InlineError>
     <VoiceInputSettings state={state} />
     <ShortcutControl state={state} target="voice" title="Voice shortcut" description="Hold to talk from anywhere. Tap to end voice." />
-    <label>Model <input value={model} disabled={v.active} onChange={e => setModel(e.target.value)} /></label>
-    <label>Voice <select value={voice} disabled={v.active} onChange={e => setVoice(e.target.value)}>{["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"].map(name => <option key={name}>{name}</option>)}</select></label>
-    <label>Monthly cap (USD) <input type="number" min="0" max="10000" value={cap} disabled={v.active} onChange={e => setCap(e.target.value)} /></label>
-    <button className="button primary" disabled={v.active || a.busy} onClick={() => void a.run("voiceSettings", { token: v.token, model, voice, cap: Number(cap) })}>Save voice settings</button>
+    <label>Voice <select value={voice || v.voice} disabled={v.active} onChange={e => setVoice(e.target.value)}>{v.voices.map(option => <option key={option.name} value={option.name}>{option.name} · {option.style}</option>)}</select></label>
+    <button className="button primary" disabled={v.active || a.busy || !voice || voice === v.voice} onClick={() => void a.run("voiceSettings", { token: v.token, voice })}>Save voice</button>
     <p>Microphone: {v.permissions.microphone ? "Allowed" : "Check access"} <button className="text-button" onClick={() => void a.run("voiceMicrophoneSettings", { token: v.token })}>Open microphone settings</button></p>
     <p>Screen Recording: {v.permissions.screen ? "Allowed" : "Voice only until allowed"} <button className="text-button" onClick={() => void a.run("screenSettings")}>Set up Screen Recording</button></p>
   </section>;

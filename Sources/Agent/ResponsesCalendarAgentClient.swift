@@ -1,6 +1,10 @@
 import Foundation
 import CoreGraphics
 import ImageIO
+import os
+
+/// Option names and routes only: never request content.
+private let speedLog = Logger(subsystem: "com.calshot.agent", category: "speed")
 
 @MainActor
 final class ResponsesCalendarAgentClient: CalendarAgentModelClient {
@@ -46,9 +50,53 @@ final class ResponsesCalendarAgentClient: CalendarAgentModelClient {
 
     func turn(conversation: [AgentMessage], imageDataURL: String?, instructions: String,
               tools: [JSONValue], onText: @escaping @MainActor (String) -> Void) async throws -> AgentModelResponse {
+        try await turn(conversation: conversation, imageDataURL: imageDataURL, instructions: instructions, tools: tools, options: .init(), onText: onText)
+    }
+    /// Options a route rejected in this app run, per route, so later requests do not pay for the rejection again.
+    private static var rejected: [Bool: Set<String>] = [:]
+    /// Which speed option a 400 rejected. A plan "unsupported capability" that names no field drops the likeliest
+    /// one still being sent: the service tier, then verbosity, then reasoning effort.
+    nonisolated static func rejectedOption(in message: String, alreadyRejected: Set<String> = []) -> String? {
+        let text = message.lowercased()
+        if text.contains("service_tier") || text.contains("service tier") || text.contains("service-tier") { return "service_tier" }
+        if text.contains("verbosity") || text.contains("parameter: text") { return "text" }
+        if text.contains("reasoning") { return "reasoning" }
+        if text.contains("prompt_cache_key") { return "prompt_cache_key" }
+        if ChatGPTConnection.ultrafastModels.contains(where: text.contains) || text.contains("model_not_found") || text.contains("unsupported model") { return "model" }
+        if text.contains("unsupported_capability") || text.contains("unsupported capability") {
+            return ["service_tier", "text", "reasoning", "prompt_cache_key"].first { !alreadyRejected.contains($0) }
+        }
+        return nil
+    }
+    nonisolated static func apply(_ options: AgentRequestOptions, to payload: inout [String: JSONValue], usesPlan: Bool, skipping: Set<String>) {
+        if let effort = options.reasoningEffort, !skipping.contains("reasoning") { payload["reasoning"] = .object(["effort": .string(effort)]) }
+        if let verbosity = options.verbosity, !skipping.contains("text") { payload["text"] = .object(["verbosity": .string(verbosity)]) }
+        if usesPlan, let tier = options.serviceTier, !skipping.contains("service_tier") { payload["service_tier"] = .string(tier) }
+        if let key = options.cacheKey, !skipping.contains("prompt_cache_key") { payload["prompt_cache_key"] = .string(key) }
+    }
+    func turn(conversation: [AgentMessage], imageDataURL: String?, instructions: String, tools: [JSONValue],
+              options: AgentRequestOptions, onText: @escaping @MainActor (String) -> Void) async throws -> AgentModelResponse {
+        let usesPlan = !prefersAPIKey()
+        do { return try await send(conversation: conversation, imageDataURL: imageDataURL, instructions: instructions, tools: tools, options: options, onText: onText) }
+        catch ClientError.http(400, let message, _) where options != .init() {
+            // Retry once per rejected option; a 400 that names none of them is the request's own problem.
+            guard let option = Self.rejectedOption(in: message, alreadyRejected: Self.rejected[usesPlan] ?? []), !(Self.rejected[usesPlan] ?? []).contains(option) else { throw ClientError.http(400, message, nil) }
+            Self.rejected[usesPlan, default: []].insert(option)
+            speedLog.info("\(usesPlan ? "plan" : "api key", privacy: .public) route rejected \(option, privacy: .public); retrying without it")
+            return try await turn(conversation: conversation, imageDataURL: imageDataURL, instructions: instructions, tools: tools, options: options, onText: onText)
+        }
+    }
+    private func send(conversation: [AgentMessage], imageDataURL: String?, instructions: String, tools: [JSONValue],
+                      options: AgentRequestOptions, onText: @escaping @MainActor (String) -> Void) async throws -> AgentModelResponse {
         let token: String
         let model: String
-        if !prefersAPIKey() {
+        let usesPlanRoute = !prefersAPIKey()
+        var options = options
+        if usesPlanRoute, options.serviceTier != nil, !(Self.rejected[true] ?? []).contains("model") {
+            // A speed request on the plan uses the plan's fastest model and tier (still the plan).
+            let access = try await ChatGPTConnection.shared.fastestAccess()
+            token = access.token; model = access.model; options.serviceTier = access.tier
+        } else if usesPlanRoute {
             let access = try await ChatGPTConnection.shared.access()
             token = access.token; model = access.model
         } else {
@@ -65,14 +113,20 @@ final class ResponsesCalendarAgentClient: CalendarAgentModelClient {
                 .object(["type": .string("input_image"), "image_url": .string(imageDataURL), "detail": .string("high")])
             ])])
         }
-        let payload = JSONValue.object(["model": .string(model), "store": .bool(false), "stream": .bool(true),
-            "instructions": .string(instructions), "input": .array(input), "tools": .array(Self.requestTools(tools, usesChatGPTPlan: !prefersAPIKey())), "parallel_tool_calls": .bool(false),
-            "include": .array([.string("reasoning.encrypted_content")])])
+        var fields: [String: JSONValue] = ["model": .string(model), "store": .bool(false), "stream": .bool(true),
+            "input": .array(input), "tools": .array(Self.requestTools(tools, usesChatGPTPlan: !prefersAPIKey())), "parallel_tool_calls": .bool(false),
+            "include": .array([.string("reasoning.encrypted_content")])]
+        // Voice sends its fixed instructions as the leading developer message, so the prefix stays cacheable.
+        if !instructions.isEmpty { fields["instructions"] = .string(instructions) }
+        Self.apply(options, to: &fields, usesPlan: !prefersAPIKey(), skipping: Self.rejected[!prefersAPIKey()] ?? [])
+        let payload = JSONValue.object(fields)
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(payload)
+        // Sorted keys keep identical requests byte-identical, so their shared prefix stays cacheable.
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        request.httpBody = try encoder.encode(payload)
         request.timeoutInterval = 90
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         let bytes = try await Self.withRetry(operation: {
@@ -92,7 +146,18 @@ final class ResponsesCalendarAgentClient: CalendarAgentModelClient {
             if let event = try parser.consume(line: line) {
                 if let delta = event.objectValue?["delta"]?.stringValue,
                    event.objectValue?["type"]?.stringValue == "response.output_text.delta" { onText(delta) }
-                if let completed = parser.completed { return try Self.decodeResponse(completed) }
+                // Voice speaks a finished text item at once ("Checking your calendar.") instead of waiting for the
+                // tool call that follows it to finish streaming.
+                if options.serviceTier != nil || options.reasoningEffort != nil,
+                   event.objectValue?["type"]?.stringValue == "response.output_text.done" { onText("\n") }
+                if let completed = parser.completed {
+                    if options != .init() {
+                        let response = completed.objectValue
+                        let usage = AgentUsage(responses: response?["usage"])
+                        speedLog.info("\(usesPlanRoute ? "plan" : "api key", privacy: .public) \(response?["model"]?.stringValue ?? model, privacy: .public) tier \(response?["service_tier"]?.stringValue ?? "none", privacy: .public), input \(usage?.input ?? 0, privacy: .public) cached \(usage?.cachedInput ?? 0, privacy: .public)")
+                    }
+                    return try Self.decodeResponse(completed)
+                }
             }
         }
         throw ClientError.invalidResponse

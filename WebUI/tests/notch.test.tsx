@@ -88,7 +88,7 @@ it("preserves unfinished event edits when pointer leave hides the notch", async 
 });
 function voiceFixture() {
   mock.state.proposals = []; mock.state.messages = []; mock.state.running = false; mock.state.waitingApproval = false;
-  mock.state.voice = { token: "voice-current", state: "listening", active: true, inputLevel: .5, caption: "", userTranscript: "", drawing: false, usage: { seconds: 12, estimatedCost: .03 }, needsKey: false, needsAcknowledgement: false, permissions: { microphone: true, screen: true }, model: "fictional-model", voice: "marin", monthlyCap: 10 };
+  mock.state.voice = { token: "voice-current", state: "listening", active: true, inputLevel: .5, caption: "", userTranscript: "", drawing: false, needsKey: false, needsAcknowledgement: false, permissions: { microphone: true, screen: true }, voice: "Sulafat", voices: [{ name: "Sulafat", style: "Warm" }] };
 }
 it("holds to talk: press uses the session token, release does not need it", async () => {
   voiceFixture(); mock.state.voice!.shortcut = "⌃⇧V"; render(<NotchApp />);

@@ -188,21 +188,22 @@ final class CalshotAlertPlannerTests: XCTestCase {
 final class SpokenAlertTests: XCTestCase {
     func testAnnouncementWaitsForAnIdleSessionAndCannotCallTools() async throws {
         let defaults = UserDefaults(suiteName: "SpokenAlert." + UUID().uuidString)!
-        defaults.set(2, forKey: "voice.acknowledgementVersion")
-        let client = PreviewVoiceClient(), audio = PreviewVoiceAudio()
-        let session = VoiceSessionController(client: client, audio: audio, overlay: PreviewVoiceOverlay(), frames: PreviewVoiceFrames(), defaults: defaults, permission: { true }, screenPermission: { false })
+        defaults.set(VoiceSessionController.acknowledgementVersion, forKey: "voice.acknowledgementVersion")
+        let mouth = PreviewVoiceMouth(), client = ScriptedModelClient()
+        client.replies = [.init(text: "Standup starts in five minutes.")]
+        let session = VoiceSessionController(ears: PreviewVoiceEars(), mouth: mouth, audio: PreviewVoiceAudio(), overlay: PreviewVoiceOverlay(), frames: PreviewVoiceFrames(), defaults: defaults, permission: { true }, screenPermission: { false })
         session.eligible = { true }; session.hasKey = { true }; session.microphoneAuthorized = { true }
+        session.makeBrain = { _ in VoiceBrain(client: client, executor: ScriptedExecutor(), sessionID: UUID()) }
         XCTAssertTrue(session.readyForProactiveStart)
         let started = await session.announce("Event alert: Standup, in 5 min.")
         XCTAssertTrue(started); XCTAssertTrue(session.proactive)
-        XCTAssertTrue(client.announcements.isEmpty, "Nothing is said before the session is ready")
-        session.handle(.sessionUpdated)
         session.tick(now: Date())
-        for _ in 0..<100 where client.announcements.isEmpty { await Task.yield() }
-        XCTAssertEqual(client.announcements.count, 1)
-        XCTAssertTrue(client.announcements[0].contains("not a user request"))
-        XCTAssertTrue(client.announcements[0].contains("Standup"))
-        XCTAssertEqual(client.responses, 0, "The announcement uses its own tool-free response")
+        for _ in 0..<2000 where mouth.spoken.isEmpty { await Task.yield() }
+        XCTAssertEqual(mouth.spoken, ["Standup starts in five minutes."])
+        let request = try XCTUnwrap(client.turnRequests.first)
+        XCTAssertEqual(request.tools, [], "The announcement can only speak")
+        let words = request.conversation.last?.value.objectValue?["content"]?.stringValue ?? ""
+        XCTAssertTrue(words.contains("not a user request")); XCTAssertTrue(words.contains("Standup"))
         session.stop()
         XCTAssertFalse(session.proactive)
     }

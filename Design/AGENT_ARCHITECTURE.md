@@ -48,12 +48,18 @@ Calshot's one ongoing chat never grows without bound in the request, because the
 3. The current request and the current run are never summarized.
 4. The memory store is never rewritten by a model.
 
-### 4. Voice: one brain, a conversational front end
+### 4. Voice: ears, one brain, mouth
 
-The current Realtime voice model receives the whole typed prompt, picks tools itself, and produces every word. That makes it verbose and gives it a second, weaker copy of the agent's judgment.
+Measured 2026-11-19: a GPT-Live request spent 10.1 s in the agent (7.3 s to the first text) for two model calls of 28,788 input tokens with none cached, because every request re-sent the 46,000-character typed prompt with the context inside it. HeyClicky's voice is fast for structural reasons visible in its app (1.1.3): listening is warmed before the key is pressed, the model's prompt cache is warmed ahead of time, context is prepared while the user talks, one fast model call writes the spoken sentence and the tool calls, and speech is generated line by line. Calshot now does the same:
 
-- **Done now:** audio from a reply that follows a tool call now waits behind the words still playing, instead of cutting them off. On barge-in, only the audio the user actually heard is kept in the model's memory. A short speaking-style block leads the voice prompt.
-- **Next: GPT-Live with client delegation.** GPT-Live (`gpt-live-1`, $0.05/minute) listens and speaks. When work is needed it delegates, and Calshot's own typed agent does the work with the same prompt, tools, permissions, memory and receipts. Results return as `session.commentary.append` (spoken, paraphrased, without cutting off current speech), and background facts as `session.thinking.append` (not spoken). This gives typed and voice the same intelligence, puts the permission kernel on one path, removes the long prompt from the audio model, and fixes interruptions structurally. The screen goes to the backend model, because GPT-Live does not take images. It ships behind a Voice setting until it passes the voice fixtures on real hardware.
+First live session on the new pipeline, 2026-11-19: release to first audio 6.1 s and 6.7 s. Words 0.5 s; a cold first screen capture held the agent 0.9 s; the agent took 2.8 to 3.5 s to its first text with 0 of 13,561 and 14,997 input tokens cached; speech took 1.1 to 1.6 s through the server. The fixes below (a per-session `prompt_cache_key`, byte-stable request JSON, a 0.4 s screen wait, warm capture, and early speech for a locally verified session) target each part; the logs (`com.calshot.voice`, `com.calshot.agent` speed) report the model, tier and cached tokens per request and the server's `Server-Timing`.
+
+- **Ears.** `GeminiEars` streams the held audio to `gemini-3.5-transcribe-live` through a one-use listening token from Calshot's voice server. The connection opens when voice starts; audio held before it is ready is buffered. Measured against the live service: the final words arrive about 0.26 s after release, in English and Persian, and calendar words in the token's vocabulary are spelled as the calendar spells them ("CS 245").
+- **Brain.** `VoiceBrain` keeps one append-only conversation per session: the fixed voice prompt (speaking style, then every typed-agent rule, then the voice rules) as the leading developer message, then what Calshot knows (memory, earlier conversation, the schedule snapshot), then each turn (native context, then the words). Each request starts with the whole previous one and carries the session's `prompt_cache_key` (the ChatGPT plan caches nothing without one, as measured), with sorted JSON keys, so the provider's cache covers the prefix; the prefix is read into the cache at session start while the user is still talking. Each request goes to Calshot's voice server (`/api/voice/brain`), which runs it on GPT-6.1 Sol with the Ultrafast tier, low reasoning effort, low verbosity, a 2,000-token output limit and `store: false`, with Calshot's OpenAI key; the owner chose this on 2026-11-19 after the third live session showed that ChatGPT plans list no Ultrafast tier for any model (every plan model offered only "priority") and answered on the default tier. Measured with the server's key on a 15,800-token voice prompt: first text in 1.4 s uncached and 0.8 to 1.1 s cached on Ultrafast, against 1.5 to 2.5 s on the default tier and 1.5 to 3.5 s on the plan. Typed requests, reflection and other model work stay on the user's selected route. The schedule snapshot answers "what's on Friday" in one call. Before a tool the model says a two-to-four word acknowledgement, and the answer after the tool never repeats it.
+- **Mouth.** `VoiceMouth` sends each sentence to `gemini-3.8-flash-lite-tts` through the voice server as soon as it is complete, fetches one sentence ahead and plays them in order. First audio arrives about 0.7 s after a sentence is sent. Speaking ends when the last sentence has arrived and the speaker is quiet, so the state cannot stick on "speaking".
+- **Screen.** The capture starts when the key is pressed and screen capture is warmed when voice starts. The agent waits at most 0.4 s after the words for the screen text; when it is late the turn says so, and `look_at_screen` waits for that same capture. A drawing always waits, because its picture is the subject.
+- **Turn rules.** Holding the key while Calshot speaks stops it at once, tells the next turn the user cut it off and replaces a request still running unless its review is open. Typed messages during voice take the same path without the ears. A spoken alert is a tool-free turn. A review is announced by Calshot itself, once.
+- **Server.** `Server/` (Vercel `calshot-voice`) holds the Google and OpenAI keys, checks the session signature locally (Supabase's published ES256 keys) so speech can start while it draws on the allowance through `consume_voice_allowance` (a refusal cancels the speech before any audio is returned; a session it cannot check waits for the database) (verified, non-anonymous accounts; 60 listening sessions, 40,000 spoken characters and 400 model requests per UTC day), mints listening tokens locked to the transcription setup, relays speech as raw PCM, relays the brain's Responses stream (conversation items and function tools only; model, tier and limits fixed on the server; a hashed account id as OpenAI's safety identifier), and stores nothing.
 
 ### 5. Proactivity
 
@@ -73,7 +79,7 @@ These are the minimum fixtures, from the review's "what would change this recomm
 1. A preference that changes: the new value is current, the old one is history, and the old one is not re-learned by inference.
 2. A fact the user told Calshot to forget never returns.
 3. An early tool result in a long loop is still available at step eight.
-4. A tool result that arrives while voice is still speaking queues behind it instead of cutting it off.
+4. A sentence that arrives while an earlier one is still speaking plays after it, in order.
 5. No unprompted speech while the user or Calshot is talking.
 
 Plus: an old but still-true conversation note is found by relevance long after it falls out of the recent window.
@@ -83,7 +89,7 @@ Plus: an old but still-true conversation note is found by relevance long after i
 | Phase | Work | State |
 | --- | --- | --- |
 | 1 | Voice queueing and speaking style; typed run metrics; memory validity and history; long-lived notes found by relevance; screen-inference evidence rule; typed schedule preload; voice sends an unchanged screen as one line; one typed learning pass per burst; fixtures | Done 2026-11-18 |
-| 2 | GPT-Live voice engine with client delegation to the typed agent, behind a Voice setting | Specified below; needs live hardware sessions |
+| 2 | Voice rebuilt as ears (live transcription), one brain (the agent, append-only and cached) and mouth (sentence speech), with Calshot's voice server; Realtime and GPT-Live removed | Built 2026-11-19; needs the hardware checks below |
 | 3 | Visual proactive suggestions at boundaries with accept/dismiss learning | Planned |
 | 4 | Optional local ambient timeline (idle bypass, contact sheets, redaction) | Exploring |
 
@@ -91,31 +97,19 @@ Not adopted, on the evidence:
 - **A rolling model summary of the chat.** The window plus notes and search covers it, and a summary risks the ACE collapse.
 - **Clearing tool results in the middle of a run.** It would break the prompt cache inside the run.
 - **An embedding service or graph database.** Measure keyword misses on real questions first.
-- **Lower reasoning effort or parallel tool calls.** Not until the run metrics and fixtures show they keep quality.
+- **Lower reasoning effort or parallel tool calls for typed requests.** Not until the run metrics and fixtures show they keep quality. Voice uses low effort because the spoken answer is short and latency dominates; its run metrics are logged with outcome "voice …".
 
-### Phase 2 specification: GPT-Live voice
+### Phase 2: checks on real hardware
 
-These are protocol facts from OpenAI's GPT-Live guides and WebSocket reference, read 2026-11-18.
+1. Time from release to the first audible word, for an agenda question and for a change.
+2. No self-interruption, and no stuck "speaking" after the reply.
+3. Talking over a reply, and a correction while a request runs ("Friday… no, Thursday").
+4. Undo by voice, and a review opened by voice.
+5. English and Persian in one session.
+6. The daily allowance message, and a lost connection mid-hold.
+7. `AgentRuns.jsonl` shows cached input on the second and later turns of a session.
 
-- **Connection.** `wss://api.openai.com/v1/live/sessions` with the API key. The first message is `session.start` with `model: "gpt-live-1"`, short conversation instructions, `audio.format` `{type: "audio/pcm", rate: 24000}` (the same as today's capture and playback), a voice, and `delegation: {type: "client", acknowledgement_delay_ms: 800}`. Wait for `session.started` before sending audio.
-- **Audio.** Send `session.input_audio.append` with base64 PCM16. Receive `session.output_audio.delta` (with `start_ms`/`end_ms`) and queue it. There is no output-done or interruption event over WebSocket, so the app's player owns playback state.
-- **Push-to-talk.** `session.input_audio.unmute` while the key is held and `session.input_audio.mute` on release. Muted input is silence to the model, so it takes its turn at the pause. Holding the key while Calshot speaks flushes local playback, as barge-in does now. Speakers are never captured while the key is up, which keeps echo out without echo cancellation.
-- **Delegation.**
-  1. `session.delegation.created` carries only an id. Calshot builds the request from `session.input_transcript.delta`/`session.output_transcript.delta` and its own state.
-  2. It immediately sends an empty `session.thinking.append` with that id to cancel the automatic acknowledgment, when a short "checking" is not wanted.
-  3. It runs the typed `CalendarAgent` with the same grants, reviews and receipts.
-  4. It returns verified facts with `session.commentary.append` (spoken and paraphrased, at most 500 tokens), or `session.thinking.append` for quiet context.
-  5. A result for a request the user has since corrected is dropped.
-- **Screen.** GPT-Live takes no images. Screen text and drawn marks go to the backend request; the image goes only to the backend model.
-- **Context.** `session.input` seeds recent turns as text at start. GPT-Live summarizes its own long sessions (128k window; a replacement engine gets 8,192 tokens). Calshot's records remain the source of truth.
-- **Cost.** $0.05 per voice minute, billed per second, plus backend tokens on the selected typed route. The monthly voice cap counts minutes.
-- **Before it becomes the default,** these must pass on real hardware against today's engine:
-  1. time to the first useful spoken answer;
-  2. no self-interruption;
-  3. a question asked while a tool runs;
-  4. a correction that arrives mid-task;
-  5. Undo by voice;
-  6. a review opened by voice.
+Known limits: the Ultrafast tier and WebSocket mode are not documented for ChatGPT plan tokens, so the tier is requested and dropped if the plan rejects it, and requests use HTTP streaming. Listening and speech go to Google through Calshot; the agent's requests go to the user's AI service as before.
 
 ## Sources
 
@@ -127,7 +121,10 @@ These are protocol facts from OpenAI's GPT-Live guides and WebSocket reference, 
 - OpenAI, Unrolling the Codex agent loop (2026-01): https://openai.com/index/unrolling-the-codex-agent-loop/
 - Zep temporal knowledge graph: https://arxiv.org/abs/2501.13956 · Graphiti: https://github.com/getzep/graphiti
 - Mem0: https://github.com/mem0ai/mem0 · Letta: https://github.com/letta-ai/letta · OpenClaw: https://github.com/openclaw/openclaw
-- OpenAI GPT-Live delegation: https://developers.openai.com/api/docs/guides/live-delegation · sessions: https://developers.openai.com/api/docs/guides/live-conversations · costs: https://developers.openai.com/api/docs/guides/voice-latency-cost
+- Google live transcription (2026-11-19): https://aistudio.google.com/docs/live-api/live-transcribe · ephemeral tokens: https://aistudio.google.com/docs/live-api/ephemeral-tokens · speech generation: https://aistudio.google.com/docs/speech-generation
+- OpenAI Ultrafast mode: https://developers.openai.com/api/docs/guides/ultrafast-mode · prompt caching: https://developers.openai.com/api/docs/guides/prompt-caching · plan usage limits: https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations
+- HeyClicky 1.1.3 architecture notes: Design/Research/HeyClicky-1.1.3
+- OpenAI GPT-Live delegation (the engine this replaced): https://developers.openai.com/api/docs/guides/live-delegation · sessions: https://developers.openai.com/api/docs/guides/live-conversations · costs: https://developers.openai.com/api/docs/guides/voice-latency-cost
 - OpenAI gpt-realtime (2025-08): https://openai.com/index/introducing-gpt-realtime/
 - Proactive timing studies: https://arxiv.org/html/2602.00880v1 · https://dl.acm.org/doi/full/10.1145/3742413.3789148
 - Clicky: https://github.com/farzaa/clicky · OpenMausBot: https://github.com/milind-soni/OpenMausBot · Dayflow: https://github.com/JerryZLiu/dayflow · Coast: https://coast.app/

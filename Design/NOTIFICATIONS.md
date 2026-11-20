@@ -34,7 +34,7 @@ Questions about upcoming reminders ("what's my earliest reminder?") use the read
 
 ## Spoken alerts (optional)
 
-Settings → Notifications → **Say alerts out loud**, off by default. For events starting within 15 minutes and task reminders, up to three an hour, never during a call: an open voice session says it when idle; otherwise Calshot opens voice only when nothing would need the user first (signed in, AI consent, API key, billing notice acknowledged, under the monthly cap, microphone already allowed, no run, review or question pending). The alert goes in as native system context marked as untrusted data, with a response that cannot call tools, so an announcement can never change anything. Push-to-talk means nothing is heard unless the user holds the voice key to answer ("push it 15 minutes"), which is then an ordinary spoken request under Autonomy. An unanswered proactive session ends after 20 seconds of silence.
+Settings → Notifications → **Say alerts out loud**, off by default. For events starting within 15 minutes and task reminders, up to three an hour, never during a call: an open voice session says it when idle; otherwise Calshot opens voice only when nothing would need the user first (signed in, AI consent, an AI service connected, the voice notice acknowledged, microphone already allowed, no run, review or question pending). The alert goes in as native system context marked as untrusted data, with a turn that offers the agent no tools, so an announcement can never change anything. Push-to-talk means nothing is heard unless the user holds the voice key to answer ("push it 15 minutes"), which is then an ordinary spoken request under Autonomy. An unanswered proactive session ends after 20 seconds of silence.
 
 ## Settings → Notifications
 

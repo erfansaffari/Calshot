@@ -3,6 +3,9 @@ import CryptoKit
 import Foundation
 import Network
 import Security
+import os
+
+private let planLog = Logger(subsystem: "com.calshot.agent", category: "plan")
 
 /// OpenAI's local Sign in with ChatGPT flow. Credentials never leave this Mac
 /// except for requests to OpenAI's authorization and Responses endpoints.
@@ -14,8 +17,16 @@ actor ChatGPTConnection {
     struct ModelOption: Identifiable, Equatable, Sendable {
         let slug: String
         let displayName: String
+        /// Speed tiers the plan offers for this model ("priority", "ultrafast"); nil when the list does not say.
+        var serviceTiers: [String]? = nil
         var id: String { slug }
     }
+    /// The plan's fastest choice for voice, read once per selected model and app run.
+    private var fastest: (selected: String, model: String, tier: String?)?
+    /// Models known to answer on the Ultrafast tier, best first: GPT-6.1 Sol (OpenAI's Ultrafast model, HeyClicky's
+    /// voice choice), then GPT-5.6 Sol (Ultrafast in the earlier plan catalog). Used when the plan's list does not
+    /// say which tiers each model offers.
+    nonisolated static let ultrafastModels = ["gpt-6.1-sol", "gpt-5.6-sol"]
 
     struct UsageRecord: Codable, Identifiable, Sendable {
         var id = UUID()
@@ -228,6 +239,33 @@ actor ChatGPTConnection {
         return updated
     }
 
+    /// For latency-sensitive voice turns on the plan: a model offering the Ultrafast tier (HeyClicky's choice for
+    /// voice), else the selected model on the Fast tier when it offers one, else the selected model as it is.
+    /// The billing route stays the plan; only the model and tier for these requests change.
+    func fastestAccess() async throws -> (token: String, model: String, tier: String?) {
+        let access = try await access()
+        if let fastest, fastest.selected == access.model { return (access.token, fastest.model, fastest.tier) }
+        let models: [ModelOption]
+        do { models = try await fetchModels(accessToken: access.token) }
+        catch { planLog.error("plan model list unavailable: \(error.localizedDescription, privacy: .public)"); models = [] }
+        let choice = Self.fastest(in: models, selected: access.model)
+        // Model names and tiers only, so a slow voice can be traced to what the plan offers.
+        planLog.info("plan models: \(models.map { "\($0.slug)[\(($0.serviceTiers ?? ["?"]).joined(separator: ","))]" }.joined(separator: " "), privacy: .public); voice uses \(choice.model, privacy: .public) tier \(choice.tier ?? "none", privacy: .public)")
+        fastest = (access.model, choice.model, choice.tier)
+        return (access.token, choice.model, choice.tier)
+    }
+    nonisolated static func fastest(in models: [ModelOption], selected: String) -> (model: String, tier: String?) {
+        let offering = models.filter { $0.serviceTiers?.contains("ultrafast") == true }
+        let known = ultrafastModels.compactMap { slug in models.first { $0.slug == slug && $0.serviceTiers == nil } }
+        // A model the plan says offers Ultrafast wins (known ones first); otherwise a known Ultrafast model the list
+        // lists without tiers. A request the plan refuses drops the tier or the model, never the plan.
+        if let ultrafast = ultrafastModels.lazy.compactMap({ slug in offering.first { $0.slug == slug } }).first ?? offering.first ?? known.first {
+            return (ultrafast.slug, "ultrafast")
+        }
+        if models.first(where: { $0.slug == selected })?.serviceTiers?.contains("priority") == true { return (selected, "priority") }
+        return (selected, nil)
+    }
+
     func availableModels() async throws -> [ModelOption] {
         let access = try await access()
         return try await fetchModels(accessToken: access.token)
@@ -313,7 +351,8 @@ actor ChatGPTConnection {
         let listed = models.filter { ($0["visibility"] as? String ?? "list") == "list" }
         let options = listed.compactMap { item -> ModelOption? in
             guard let slug = item["slug"] as? String else { return nil }
-            return ModelOption(slug: slug, displayName: item["display_name"] as? String ?? slug)
+            let tiers = (item["service_tiers"] as? [[String: Any]])?.compactMap { $0["id"] as? String }
+            return ModelOption(slug: slug, displayName: item["display_name"] as? String ?? slug, serviceTiers: tiers)
         }
         guard !options.isEmpty else { throw ConnectionError.noModel }
         return options

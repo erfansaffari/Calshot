@@ -141,6 +141,13 @@ final class CalshotAccountService: ObservableObject {
             throw CalendarToolArgumentError(self.error!)
         }
     }
+    /// The current Calshot session for the voice server; Supabase refreshes it when needed. Never stored elsewhere.
+    func voiceSessionToken() async throws -> String {
+        guard let client, let owner = userID else { throw CalendarToolArgumentError("Sign in to Calshot to use voice.") }
+        let session = try await client.session
+        guard userID == owner, session.user.id == owner else { throw CancellationError() }
+        return session.accessToken
+    }
     /// The app registration stays on the server; provider tokens return only to native Keychain storage.
     func exchangeGoogleCalendarToken(_ fields: [String: String]) async throws -> Data {
         guard let client, let owner = userID else { throw CalendarToolArgumentError("Sign in to Calshot before connecting Google Calendar.") }

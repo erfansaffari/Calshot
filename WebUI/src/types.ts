@@ -221,8 +221,8 @@ export interface ShortcutStatus { label: string; isDefault: boolean; error?: str
 export interface VoiceState {
   audioIssue?: "permission" | "devices" | null;
   token: string; state: string; active: boolean; inputLevel?: number; caption: string; userTranscript: string; drawing: boolean;
-  usage: { seconds: number; estimatedCost: number }; error?: string; needsKey: boolean; needsAcknowledgement: boolean; talking?: boolean; shortcut?: string; outputLevel?: number;
-  permissions: { microphone: boolean; screen: boolean }; model: string; voice: string; monthlyCap: number;
+  error?: string; needsKey: boolean; needsAcknowledgement: boolean; talking?: boolean; shortcut?: string; outputLevel?: number;
+  permissions: { microphone: boolean; screen: boolean }; voice: string; voices: { name: string; style: string }[];
 }
 export interface GlassAppearance {
   enabled: boolean;

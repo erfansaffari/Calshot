@@ -412,38 +412,38 @@ final class WebWorkspaceTests: XCTestCase {
         do { try await bridge.handle("voiceInputSettings", ["token": "stale"]); XCTFail("Stale audio recovery control accepted") } catch {}
         do { try await bridge.handle("voiceInputSettings", ["token": model.voiceSession.token, "url": "https://example.invalid"]); XCTFail("Recovery must not accept a caller-supplied destination") } catch {}
         let notch = WebWorkspaceController(model: model, isNotch: true)
-        do { try await notch.handle("voiceSettings", ["token": model.voiceSession.token, "model": "fictional", "voice": "marin", "cap": 10.0]); XCTFail("Notch settings accepted") } catch {}
+        do { try await notch.handle("voiceSettings", ["token": model.voiceSession.token, "voice": "Kore"]); XCTFail("Notch settings accepted") } catch {}
         let snapshot = WebWorkspaceState.make(model, imageURL: nil, notice: nil, accounts: [], googleReady: false)
         XCTAssertEqual(snapshot.objectValue?["voice"]?.objectValue?["state"]?.stringValue, "idle")
     }
-    private func wiredVoice(_ model: CalshotModel, audio: PreviewVoiceAudio? = nil) -> (VoiceSessionController, PreviewVoiceClient) {
+    private func wiredVoice(_ model: CalshotModel, audio: PreviewVoiceAudio? = nil) -> (VoiceSessionController, VoiceRig) {
         let defaults = UserDefaults(suiteName: "VoiceWiring." + UUID().uuidString)!
-        defaults.set(2, forKey: "voice.acknowledgementVersion")
-        let client = PreviewVoiceClient()
-        let raw = VoiceSessionController(client: client, audio: audio ?? PreviewVoiceAudio(), overlay: PreviewVoiceOverlay(), frames: PreviewVoiceFrames(), defaults: defaults, permission: { true }, screenPermission: { false })
+        defaults.set(VoiceSessionController.acknowledgementVersion, forKey: "voice.acknowledgementVersion")
+        let rig = VoiceRig()
+        let raw = VoiceSessionController(ears: rig.ears, mouth: rig.mouth, audio: audio ?? PreviewVoiceAudio(), overlay: PreviewVoiceOverlay(), frames: PreviewVoiceFrames(), defaults: defaults, permission: { true }, screenPermission: { false })
         let session = model.makeVoiceSession(using: raw); model.voiceSession = session
         session.eligible = { true }; session.hasKey = { true }; model.openAIAnalysisEnabled = true
-        return (session, client)
+        return (session, rig)
     }
     func testVoiceSpokenApprovalStopAndTimedReviewUseRealExecutor() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, client) = wiredVoice(model)
-        await voice.toggle(); voice.handle(.sessionUpdated)
+        await voice.toggle()
         XCTAssertEqual(model.agentToolExecutor?.voiceMode, true)
         let args = #"{"events":[{"title":"Fictional workshop","date":"2026-11-10","startTime":"10:00","endTime":"11:00","allDay":false,"timeZone":"America/Toronto","location":null,"url":null,"notes":null,"evidence":"Fictional workshop November 10 2026 10-11am"}]}"#
-        voice.handle(.functionCall(callID: "pending", name: "create_events", argumentsJSON: args))
+        voiceCall(voice, "create_events", args, into: client)
         for _ in 0..<1000 { if model.agentIsWaitingForApproval { break }; await Task.yield() }
         XCTAssertTrue(model.agentIsWaitingForApproval); XCTAssertFalse(model.calendarActions.proposals.isEmpty)
-        voice.handle(.userTranscript(itemID: "yes", text: "yes approve it", final: true))
-        voice.handle(.assistantTranscript(itemID: "reply", text: "Click Approve in the notch.", final: true)); voice.handle(.speechStopped)
-        XCTAssertTrue(model.calendarActions.proposals.allSatisfy { !$0.isFinished && $0.receipt == nil }); XCTAssertTrue(client.results.isEmpty)
+        try? voice.transcript?("user", "yes approve it")
+        try? voice.transcript?("assistant", "Click Approve in the notch.")
+        XCTAssertTrue(model.calendarActions.proposals.allSatisfy { !$0.isFinished && $0.receipt == nil }); XCTAssertTrue(client.results.isEmpty, "A spoken yes never approves")
         voice.tick(now: Date().addingTimeInterval(61)); XCTAssertFalse(voice.active); XCTAssertNil(model.voiceRunID)
         XCTAssertTrue(model.agentIsWaitingForApproval); XCTAssertThrowsError(try voice.prepare?())
         model.skipAgentApproval()
         for _ in 0..<100 { await Task.yield() }
         XCTAssertFalse(model.agentIsWaitingForApproval)
         // A second request is cancelled by explicit Stop, even with the text agent idle.
-        await voice.toggle(); voice.handle(.sessionUpdated)
-        voice.handle(.functionCall(callID: "second", name: "create_events", argumentsJSON: args))
+        await voice.toggle()
+        voiceCall(voice, "create_events", args)
         for _ in 0..<1000 { if model.agentIsWaitingForApproval { break }; await Task.yield() }
         XCTAssertTrue(model.agentIsWaitingForApproval); model.stopAgent()
         for _ in 0..<100 { await Task.yield() }
@@ -455,7 +455,7 @@ final class WebWorkspaceTests: XCTestCase {
         model.agentTypedRunID = UUID(); model.recognizedText = "Stale private OCR"
         model.ocrTask = Task { ScreenTextRecognition(lines: []) }; model.analysisTask = Task {}
         let billing = model.agentUseAPIKey
-        await voice.toggle(); voice.handle(.sessionUpdated)
+        await voice.toggle()
         XCTAssertNil(model.ocrTask); XCTAssertNil(model.analysisTask); XCTAssertNil(model.agentTypedRunID); XCTAssertTrue(model.recognizedText.isEmpty)
         XCTAssertEqual(model.agentUseAPIKey, billing)
         let text = await voice.execute?("read_screen_text", .object([:]))
@@ -475,16 +475,16 @@ final class WebWorkspaceTests: XCTestCase {
         XCTAssertThrowsError(try voice.prepare?())
     }
     func testTypedHistoryAndSavedReceiptsReachVoiceAndOlderLookupRejectsStaleRuns() async throws {
-        let model = fixture(agentClient: VoiceFixtureTextClient())
+        let text = VoiceFixtureTextClient(); let model = fixture(agentClient: text)
         var turns = [AgentTurn(role: "user", content: "Fictional Aurora plan: reserve the library"), AgentTurn(role: "assistant", content: "Keep the Tuesday preference")]
         turns += (0..<65).map { AgentTurn(role: "user", content: "Fictional unrelated note \($0)") }
         let record = try model.memoryStore.recordCommand("Fictional typed plan", transcript: turns)
         var saved = row(); saved.state = .added
         saved.receipt = CalendarActionReceipt(destinationID: "demo", calendarName: "Fictional calendar", eventIdentifier: "fictional-saved", savedAt: .now)
         _ = try model.memoryStore.updateProposals(for: record.id, proposals: [saved])
-        let (voice, client) = wiredVoice(model); await voice.toggle(); voice.handle(.sessionUpdated)
-        for _ in 0..<100 { await Task.yield() }
-        XCTAssertTrue(client.contexts.contains { $0.contains("Fictional unrelated note 64") && $0.contains("Reviewed exam") && $0.contains("Recently saved calendar changes") })
+        let (voice, _) = wiredVoice(model); await voice.toggle()
+        for _ in 0..<2000 where text.conversations.isEmpty { await Task.yield() }
+        XCTAssertTrue(text.conversations.contains { $0.contains("Fictional unrelated note 64") && $0.contains("Reviewed exam") && $0.contains("Recently saved calendar changes") })
         let result = await voice.execute?("get_conversation_context", .object(["query": .string("Aurora")]))
         XCTAssertTrue(result?.contains("reserve the library") == true)
         try voice.transcript?("user", "Fictional latest spoken correction")
@@ -755,22 +755,21 @@ final class WebWorkspaceTests: XCTestCase {
         guard let proposal, let start = proposal.draft.startDate else { return nil }
         return CalendarDraftValidation.calendar(for: proposal.draft).component(.year, from: start)
     }
-    /// A session with audio committed: the model replies, and only later does the transcript of that audio arrive.
-    private func speakAndRelease(_ model: CalshotModel, transcriptWait: Duration = .seconds(3)) async -> VoiceSessionController {
-        let audio = PreviewVoiceAudio(); let (voice, _) = wiredVoice(model, audio: audio)
-        voice.releaseTail = .zero; voice.tapThreshold = 0; voice.transcriptWait = transcriptWait
-        await voice.toggle(); voice.handle(.sessionUpdated)
+    /// A held turn: the transcriber returns `words`, which are saved before the agent runs.
+    private func speakAndRelease(_ model: CalshotModel, words: String) async -> VoiceSessionController {
+        let audio = PreviewVoiceAudio(); let (voice, rig) = wiredVoice(model, audio: audio)
+        voice.releaseTail = .zero; voice.tapThreshold = 0
+        await voice.toggle()
+        rig.ears.results = [.success(words)]
         await voice.talk(true); audio.onInput?(Data(count: 9600)); await voice.talk(false)
+        for _ in 0..<2000 where model.agentMessages.last(where: { $0.role == "user" })?.content != words { await Task.yield() }
         return voice
     }
-    func testASpokenMonthAndDayGetsItsYearEvenWhenTheToolCallBeatsTheTranscript() async throws {
+    func testASpokenMonthAndDayGetsItsNextOccurrenceWhenTheModelGuessesAPastYear() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
-        let voice = await speakAndRelease(model)
-        // The model guessed last year and marked it inferred. Native waits for the words, then settles the date.
-        voice.handle(.functionCall(callID: "early", name: "create_events", argumentsJSON: spokenEvent("2019-11-12")))
-        try await Task.sleep(for: .milliseconds(60))
-        XCTAssertTrue(model.calendarActions.proposals.isEmpty, "Nothing is proposed before the user's words arrive")
-        voice.handle(.userTranscript(itemID: "turn", text: "add the dentist November twelfth from 3 to 4", final: true))
+        // The words are final before the agent runs, so the spoken month and day settle the date natively.
+        let voice = await speakAndRelease(model, words: "add the dentist November twelfth from 3 to 4")
+        voiceCall(voice, "create_events", spokenEvent("2019-11-12"))
         await waitForReview(model)
         let row = try XCTUnwrap(model.calendarActions.proposals.first)
         XCTAssertFalse(row.draft.ambiguities.contains(.missingYear))
@@ -788,34 +787,34 @@ final class WebWorkspaceTests: XCTestCase {
     }
     func testASpokenDateWithoutItsTranscriptTakesItsNextOccurrence() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
-        let voice = await speakAndRelease(model, transcriptWait: .milliseconds(50))
-        voice.handle(.functionCall(callID: "late", name: "create_events", argumentsJSON: spokenEvent("2019-11-12")))
+        let voice = await speakAndRelease(model, words: "add the dentist")
+        voiceCall(voice, "create_events", spokenEvent("2019-11-12"))
         await waitForReview(model)
         assertNextOccurrence(model.calendarActions.proposals.first)
         voice.stop()
     }
     func testAScreenOnlyDateTakesItsNextOccurrenceInVoice() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
-        await voice.toggle(); voice.handle(.sessionUpdated)
-        voice.handle(.userTranscript(itemID: "turn", text: "add this to my calendar", final: true))
-        voice.handle(.functionCall(callID: "screen", name: "create_events", argumentsJSON: spokenEvent("2019-11-12", evidence: "Dentist Nov 12 3 PM")))
+        await voice.toggle()
+        try? voice.transcript?("user", "add this to my calendar")
+        voiceCall(voice, "create_events", spokenEvent("2019-11-12", evidence: "Dentist Nov 12 3 PM"))
         await waitForReview(model)
         assertNextOccurrence(model.calendarActions.proposals.first)
         XCTAssertNil(model.calendarActions.proposals.first?.receipt); voice.stop()
     }
     func testAScreenYearIsKeptInVoice() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
-        await voice.toggle(); voice.handle(.sessionUpdated)
-        voice.handle(.functionCall(callID: "screen", name: "create_events", argumentsJSON: spokenEvent("2031-11-12", evidence: "Dentist Nov 12 2031 3 PM")))
+        await voice.toggle()
+        voiceCall(voice, "create_events", spokenEvent("2031-11-12", evidence: "Dentist Nov 12 2031 3 PM"))
         await waitForReview(model)
         XCTAssertEqual(year(model.calendarActions.proposals.first), 2031)
         XCTAssertFalse(model.calendarActions.proposals.first?.draft.ambiguities.contains(.missingYear) ?? true); voice.stop()
     }
     func testASpokenStartWithoutAnEndUsesTheUsualLength() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
-        await voice.toggle(); voice.handle(.sessionUpdated)
+        await voice.toggle()
         model.agentToolExecutor?.typicalDuration = { _ in 45 }
-        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: spokenEvent("2031-11-12", end: nil, evidence: "Dentist Nov 12 2031 3 PM")))
+        voiceCall(voice, "create_events", spokenEvent("2031-11-12", end: nil, evidence: "Dentist Nov 12 2031 3 PM"))
         await waitForReview(model)
         let row = try XCTUnwrap(model.calendarActions.proposals.first)
         XCTAssertFalse(row.draft.ambiguities.contains(.missingEndTime))
@@ -824,10 +823,10 @@ final class WebWorkspaceTests: XCTestCase {
     }
     func testAVoiceRowWithoutATimeIsAskedAloudNotReviewed() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, client) = wiredVoice(model)
-        await voice.toggle(); voice.handle(.sessionUpdated)
+        await voice.toggle()
         let args = JSONValue.object(["events": .array([.object(["title": .string("Fictional dentist"), "date": .string("2031-11-12"), "startTime": .null, "endTime": .null,
             "allDay": .bool(false), "timeZone": .string("America/Toronto"), "location": .null, "url": .null, "notes": .null, "evidence": .string("Dentist Nov 12 2031"), "yearInferred": .bool(false), "dateAmbiguous": .bool(false)])])]).jsonString()
-        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: args))
+        voiceCall(voice, "create_events", args, into: client)
         for _ in 0..<2000 where client.results.isEmpty { await Task.yield() }
         XCTAssertTrue(client.results.first?.contains("needsDetails") == true)
         XCTAssertFalse(model.agentIsWaitingForApproval, "No review opens for a missing time in voice")
@@ -837,8 +836,8 @@ final class WebWorkspaceTests: XCTestCase {
     func testAQuickTapOfTheVoiceKeyLeavesAnOpenReviewInPlace() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars(); let (voice, _) = wiredVoice(model)
         voice.releaseTail = .zero; voice.tapThreshold = 0.35
-        await voice.toggle(); voice.handle(.sessionUpdated)
-        voice.handle(.functionCall(callID: "row", name: "create_events", argumentsJSON: spokenEvent("2031-11-12", evidence: "Dentist Nov 12 2031 3 PM")))
+        await voice.toggle()
+        voiceCall(voice, "create_events", spokenEvent("2031-11-12", evidence: "Dentist Nov 12 2031 3 PM"))
         await waitForReview(model)
         await voice.talk(true); await voice.talk(false)
         XCTAssertFalse(voice.active); XCTAssertTrue(model.agentIsWaitingForApproval); XCTAssertEqual(model.calendarActions.proposals.count, 1)
@@ -884,21 +883,21 @@ final class WebWorkspaceTests: XCTestCase {
     func testStartVoiceBridgeRequiresConsentKeyAndNewAcknowledgement() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, client) = wiredVoice(model); let bridge = WebWorkspaceController(model: model)
         model.openAIAnalysisEnabled = false
-        try await bridge.handle("startVoice", ["token": voice.token]); XCTAssertNil(client.configuration); XCTAssertTrue(voice.error?.contains("OpenAI analysis") == true)
+        try await bridge.handle("startVoice", ["token": voice.token]); XCTAssertTrue(client.ears.warmed.isEmpty); XCTAssertTrue(voice.error?.contains("OpenAI analysis") == true)
         model.openAIAnalysisEnabled = true; voice.hasKey = { false }
-        try await bridge.handle("startVoice", ["token": voice.token]); XCTAssertNil(client.configuration); XCTAssertTrue(voice.needsKey)
+        try await bridge.handle("startVoice", ["token": voice.token]); XCTAssertTrue(client.ears.warmed.isEmpty); XCTAssertTrue(voice.needsKey)
         voice.hasKey = { true }; voice.defaults.set(0, forKey: "voice.acknowledgementVersion")
-        try await bridge.handle("startVoice", ["token": voice.token]); XCTAssertNil(client.configuration); XCTAssertTrue(voice.needsAcknowledgement)
+        try await bridge.handle("startVoice", ["token": voice.token]); XCTAssertTrue(client.ears.warmed.isEmpty); XCTAssertTrue(voice.needsAcknowledgement)
     }
     func testVoiceBridgeValidationAndExclusiveActions() async throws {
-        let model = fixture(agentClient: VoiceFixtureTextClient()); let (voice, client) = wiredVoice(model); model.workspaceSelection = .settings
+        let text = VoiceFixtureTextClient(); let model = fixture(agentClient: text); let (voice, _) = wiredVoice(model); model.workspaceSelection = .settings
         let bridge = WebWorkspaceController(model: model)
         let invalid: [(String, [String: Any])] = [("setVoiceDrawing", ["drawing": "true"]), ("shortcutRecording", ["enabled": "true", "target": "voice"]), ("shortcutRecording", ["enabled": true, "target": "notch"]), ("shortcutRecording", ["enabled": true]), ("stopVoice", ["unknown": "value"])]
         for (action, extra) in invalid {
             var body = extra; body["token"] = voice.token
             do { try await bridge.handle(action, body); XCTFail("Accepted invalid control") } catch {}
         }
-        await voice.toggle(); voice.handle(.sessionUpdated)
+        await voice.toggle()
         // Only actions that would replace the voice conversation or its shortcut wait for voice to end.
         for action in ["retryAgent", "startCalendarTask", "importCapturedScreenshot", "restoreMemory", "deleteMemory", "syncAccount", "shortcutRecording", "resetShortcut"] {
             do { try await bridge.handle(action, ["token": voice.token]); XCTFail("Accepted \(action) during voice") } catch { XCTAssertTrue(error.localizedDescription.contains("Finish talking"), action) }
@@ -908,8 +907,8 @@ final class WebWorkspaceTests: XCTestCase {
         try await bridge.handle("dismissNotice", [:]); XCTAssertTrue(voice.active)
         // Typing while voice is on continues the same conversation and is answered aloud.
         try await bridge.handle("send", ["text": "Fictional typed question"])
-        for _ in 0..<200 where client.texts.isEmpty { await Task.yield() }
-        XCTAssertEqual(client.texts.last, "Fictional typed question")
+        for _ in 0..<2000 where !text.conversations.contains(where: { $0.hasSuffix("Fictional typed question") }) { await Task.yield() }
+        XCTAssertTrue(text.conversations.contains { $0.hasSuffix("Fictional typed question") })
         XCTAssertEqual(model.agentMessages.last { $0.role == "user" }?.content, "Fictional typed question")
         let record = try model.memoryStore.recordCommand("Fictional history")
         model.restoreCalendarReview(record); XCTAssertTrue(voice.active)
@@ -1073,7 +1072,7 @@ final class WebWorkspaceTests: XCTestCase {
     }
     func testCalendarCanReadWhileVoiceIsActiveAndReflectsItsConfirmedWrites() async throws {
         let model = fixture(agentClient: VoiceFixtureTextClient()); await model.loadCalendars()
-        let (voice, _) = wiredVoice(model); await voice.toggle(); voice.handle(.sessionUpdated)
+        let (voice, _) = wiredVoice(model); await voice.toggle()
         defer { voice.stop() }
         let bridge = WebWorkspaceController(model: model, loadsResources: false)
         let draft = row().draft
@@ -2679,11 +2678,30 @@ final class AgentTaskReviewIntegrationTests: XCTestCase {
     }
 }
 
+/// Records what each request carried (the conversation's text, last message last) and never answers.
 @MainActor
-private struct VoiceFixtureTextClient: CalendarAgentModelClient {
+private final class VoiceFixtureTextClient: CalendarAgentModelClient {
+    var conversations: [String] = []
     func turn(conversation: [AgentMessage], imageDataURL: String?, instructions: String,
               tools: [JSONValue], onText: @escaping @MainActor (String) -> Void) async throws -> AgentModelResponse {
+        conversations.append(conversation.map { $0.value.objectValue?["content"]?.stringValue ?? $0.value.jsonString() }.joined(separator: "\n"))
         throw CancellationError()
+    }
+}
+/// The voice session's fake listening and speaking, and the results of tool calls made as the agent would.
+@MainActor
+final class VoiceRig {
+    let ears = PreviewVoiceEars()
+    let mouth = PreviewVoiceMouth()
+    var results: [String] = []
+}
+/// Runs a tool call through the voice session's executor, as the agent does during a turn.
+@MainActor
+private func voiceCall(_ voice: VoiceSessionController, _ name: String, _ json: String, into rig: VoiceRig? = nil) {
+    let arguments = (try? JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))) ?? .object([:])
+    Task { @MainActor in
+        let result = await voice.execute?(name, arguments) ?? "{\"error\":\"Tools unavailable\"}"
+        rig?.results.append(result)
     }
 }
 

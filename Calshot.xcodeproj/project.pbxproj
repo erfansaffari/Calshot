@@ -20,13 +20,17 @@
 		C0FFEE0A1B2C3D4E5F60718A /* CalendarProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0A1B2C3D4E5F60718B; };
 		C0FFEE0A1B2C3D4E5F60718C /* ContextReflection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0A1B2C3D4E5F60718D; };
 		C0FFEE0A1B2C3D4E5F607190 /* KnowledgeSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0A1B2C3D4E5F607191; };
-		E3DCECAC7AD4CDD0C06F91F9 /* RealtimeVoiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8494EAD4600247B362F45E9; };
+		E3DCECAC7AD4CDD0C06F91F9 /* VoiceSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8494EAD4600247B362F45E9; };
+		C30000000000000000000011 /* VoiceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C90000000000000000000011; };
+		C30000000000000000000014 /* VoiceBrain.swift in Sources */ = {isa = PBXBuildFile; fileRef = C90000000000000000000014; };
+		C30000000000000000000013 /* VoiceMouth.swift in Sources */ = {isa = PBXBuildFile; fileRef = C90000000000000000000013; };
+		C30000000000000000000012 /* VoiceEars.swift in Sources */ = {isa = PBXBuildFile; fileRef = C90000000000000000000012; };
 		90DF6323D49B1AE000342C7F /* VoiceAudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C49AFEE5793CF85304544B3F; };
 		D1728034BEF312B46E0B9A4D /* FocusOverlayController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40146CC37DACA6CB1B55E038; };
 		65B0B6BCFAE7C5638C128A88 /* FocusFrameComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE66089867DD77D53E9DEA0F; };
 		882EB43220D0481ECF71D26C /* VoiceSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D039F976DA3AE372D5383F; };
 		A5753E8E7009E1E01D2A1D84 /* PersonalMemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7D0E036087F9FFA7F2DA048; };
-		706282BAEFDC99C9D1C76199 /* RealtimeVoiceClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE7997CD9661BBFFC5009705; };
+		706282BAEFDC99C9D1C76199 /* VoiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE7997CD9661BBFFC5009705; };
 		857A314566AA789088D2C4B2 /* FocusOverlayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D062906FE342D3A59AF6CF1; };
 		C73000000000000000000001 /* CalshotAgentPermissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = C72000000000000000000001; };
 		C73000000000000000000002 /* AgentPermissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C72000000000000000000002; };
@@ -115,13 +119,17 @@
 		C0FFEE0A1B2C3D4E5F60718B /* CalendarProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalendarProfile.swift"; path = "Sources/Memory/CalendarProfile.swift"; sourceTree = SOURCE_ROOT; };
 		C0FFEE0A1B2C3D4E5F60718D /* ContextReflection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "ContextReflection.swift"; path = "Sources/Memory/ContextReflection.swift"; sourceTree = SOURCE_ROOT; };
 		C0FFEE0A1B2C3D4E5F607191 /* KnowledgeSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "KnowledgeSync.swift"; path = "Sources/Memory/KnowledgeSync.swift"; sourceTree = SOURCE_ROOT; };
-		A8494EAD4600247B362F45E9 /* RealtimeVoiceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "RealtimeVoiceClient.swift"; path = "Sources/Voice/RealtimeVoiceClient.swift"; sourceTree = SOURCE_ROOT; };
+		A8494EAD4600247B362F45E9 /* VoiceSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceSocket.swift"; path = "Sources/Voice/VoiceSocket.swift"; sourceTree = SOURCE_ROOT; };
+		C90000000000000000000011 /* VoiceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceService.swift"; path = "Sources/Voice/VoiceService.swift"; sourceTree = SOURCE_ROOT; };
+		C90000000000000000000014 /* VoiceBrain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceBrain.swift"; path = "Sources/Voice/VoiceBrain.swift"; sourceTree = SOURCE_ROOT; };
+		C90000000000000000000013 /* VoiceMouth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceMouth.swift"; path = "Sources/Voice/VoiceMouth.swift"; sourceTree = SOURCE_ROOT; };
+		C90000000000000000000012 /* VoiceEars.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceEars.swift"; path = "Sources/Voice/VoiceEars.swift"; sourceTree = SOURCE_ROOT; };
 		C49AFEE5793CF85304544B3F /* VoiceAudioEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceAudioEngine.swift"; path = "Sources/Voice/VoiceAudioEngine.swift"; sourceTree = SOURCE_ROOT; };
 		40146CC37DACA6CB1B55E038 /* FocusOverlayController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "FocusOverlayController.swift"; path = "Sources/Voice/FocusOverlayController.swift"; sourceTree = SOURCE_ROOT; };
 		BE66089867DD77D53E9DEA0F /* FocusFrameComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "FocusFrameComposer.swift"; path = "Sources/Voice/FocusFrameComposer.swift"; sourceTree = SOURCE_ROOT; };
 		B0D039F976DA3AE372D5383F /* VoiceSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceSessionController.swift"; path = "Sources/Voice/VoiceSessionController.swift"; sourceTree = SOURCE_ROOT; };
 		D7D0E036087F9FFA7F2DA048 /* PersonalMemoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "PersonalMemoryTests.swift"; path = "Tests/PersonalMemoryTests.swift"; sourceTree = SOURCE_ROOT; };
-		CE7997CD9661BBFFC5009705 /* RealtimeVoiceClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "RealtimeVoiceClientTests.swift"; path = "Tests/RealtimeVoiceClientTests.swift"; sourceTree = SOURCE_ROOT; };
+		CE7997CD9661BBFFC5009705 /* VoiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "VoiceTests.swift"; path = "Tests/VoiceTests.swift"; sourceTree = SOURCE_ROOT; };
 		8D062906FE342D3A59AF6CF1 /* FocusOverlayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "FocusOverlayTests.swift"; path = "Tests/FocusOverlayTests.swift"; sourceTree = SOURCE_ROOT; };
 		C72000000000000000000001 /* CalshotAgentPermissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "CalshotAgentPermissions.swift"; path = "Sources/Agent/CalshotAgentPermissions.swift"; sourceTree = SOURCE_ROOT; };
 		C72000000000000000000002 /* AgentPermissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "AgentPermissionTests.swift"; path = "Tests/AgentPermissionTests.swift"; sourceTree = SOURCE_ROOT; };
@@ -209,7 +217,11 @@
 		9E7DB4BEF03B97A50BC03C97 /* Voice */ = {
 			isa = PBXGroup;
 			children = (
-				A8494EAD4600247B362F45E9 /* RealtimeVoiceClient.swift */,
+				A8494EAD4600247B362F45E9 /* VoiceSocket.swift */,
+				C90000000000000000000011 /* VoiceService.swift */,
+				C90000000000000000000014 /* VoiceBrain.swift */,
+				C90000000000000000000013 /* VoiceMouth.swift */,
+				C90000000000000000000012 /* VoiceEars.swift */,
 				C49AFEE5793CF85304544B3F /* VoiceAudioEngine.swift */,
                 CAFE00000000000000000002,
                 CAFE00000000000000000006,
@@ -399,7 +411,7 @@
 			isa = PBXGroup;
 			children = (
 				D7D0E036087F9FFA7F2DA048 /* PersonalMemoryTests.swift */,
-				CE7997CD9661BBFFC5009705 /* RealtimeVoiceClientTests.swift */,
+				CE7997CD9661BBFFC5009705 /* VoiceTests.swift */,
 				8D062906FE342D3A59AF6CF1 /* FocusOverlayTests.swift */,
 				A20000000000000000000028 /* AgentMemoryTests.swift */,
 				C72000000000000000000002 /* AgentPermissionTests.swift */,
@@ -568,7 +580,11 @@
 				C0FFEE0A1B2C3D4E5F60718A /* CalendarProfile.swift in Sources */,
 				C0FFEE0A1B2C3D4E5F60718C /* ContextReflection.swift in Sources */,
 				C0FFEE0A1B2C3D4E5F607190 /* KnowledgeSync.swift in Sources */,
-				E3DCECAC7AD4CDD0C06F91F9 /* RealtimeVoiceClient.swift in Sources */,
+				E3DCECAC7AD4CDD0C06F91F9 /* VoiceSocket.swift in Sources */,
+				C30000000000000000000011 /* VoiceService.swift in Sources */,
+				C30000000000000000000014 /* VoiceBrain.swift in Sources */,
+				C30000000000000000000013 /* VoiceMouth.swift in Sources */,
+				C30000000000000000000012 /* VoiceEars.swift in Sources */,
 				90DF6323D49B1AE000342C7F /* VoiceAudioEngine.swift in Sources */,
                 CAFE00000000000000000001,
                 CAFE00000000000000000005,
@@ -632,7 +648,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A5753E8E7009E1E01D2A1D84 /* PersonalMemoryTests.swift in Sources */,
-				706282BAEFDC99C9D1C76199 /* RealtimeVoiceClientTests.swift in Sources */,
+				706282BAEFDC99C9D1C76199 /* VoiceTests.swift in Sources */,
                 CAFE00000000000000000003,
 				857A314566AA789088D2C4B2 /* FocusOverlayTests.swift in Sources */,
 				C73000000000000000000002 /* AgentPermissionTests.swift in Sources */,
